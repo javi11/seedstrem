@@ -117,6 +117,26 @@ func TestManifest(t *testing.T) {
 	}
 }
 
+func TestManifestVersion(t *testing.T) {
+	tests := map[string]string{
+		"1.2.3":          "1.2.3",
+		"v1.2.3":         "1.2.3",
+		"1.2.3-rc.1":     "1.2.3-rc.1",
+		"0.0.0-main.abc": "0.0.0-main.abc",
+		"main":           fallbackVersion,
+		"docker":         fallbackVersion,
+		"dev":            fallbackVersion,
+		"a1b2c3d":        fallbackVersion,
+		"1.2":            fallbackVersion,
+		"":               fallbackVersion,
+	}
+	for in, want := range tests {
+		if got := manifestVersion(in); got != want {
+			t.Errorf("manifestVersion(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestStreamDiscovery(t *testing.T) {
 	h := newHarness(t)
 	resp, err := http.Get(h.server.URL + "/stremio/stream/movie/tt1375666.json")

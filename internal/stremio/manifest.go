@@ -1,5 +1,10 @@
 package stremio
 
+import (
+	"regexp"
+	"strings"
+)
+
 // Manifest is the Stremio addon manifest. seedstrem is a stream-only
 // addon: it declares no catalogs and relies on Cinemeta for metadata.
 type Manifest struct {
@@ -15,6 +20,25 @@ type Manifest struct {
 }
 
 const manifestID = "com.seedstrem.stremio"
+
+// fallbackVersion is served when the build-injected version isn't a valid
+// semantic version (e.g. "dev", "docker", a branch name, or a git sha).
+// Stremio rejects a manifest whose "version" isn't semver.
+const fallbackVersion = "0.0.0"
+
+// semverRE matches a semantic version with an optional leading "v" and
+// optional prerelease/build metadata. This mirrors what Stremio accepts.
+var semverRE = regexp.MustCompile(`^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+
+// manifestVersion coerces the build version into something Stremio can
+// parse, falling back to fallbackVersion when it isn't semver.
+func manifestVersion(version string) string {
+	v := strings.TrimPrefix(strings.TrimSpace(version), "v")
+	if semverRE.MatchString(v) {
+		return v
+	}
+	return fallbackVersion
+}
 
 // BuildManifest assembles the manifest given the enabled content types.
 func BuildManifest(version string, addon AddonSettings) Manifest {
