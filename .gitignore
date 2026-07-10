@@ -1,0 +1,23 @@
+# Binaries
+/seedstrem
+/bin/
+/dist/
+
+# Test artifacts
+coverage.out
+*.test
+
+# Web
+web/node_modules/
+web/dist/*
+!web/dist/.gitkeep
+
+# Local state
+*.db
+config.yaml
+!config.example.yaml
+
+# Editor/OS
+.DS_Store
+.idea/
+.vscode/

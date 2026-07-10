@@ -1,0 +1,418 @@
+// Package admin serves the internal REST API used by the web UI:
+// session login, configuration management, and status/torrent views.
+package admin
+
+import (
+	"context"
+	"crypto/subtle"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/javib/seedstrem/internal/config"
+	"github.com/javib/seedstrem/internal/prowlarr"
+	"github.com/javib/seedstrem/internal/qbit"
+	"github.com/javib/seedstrem/internal/store"
+	"github.com/javib/seedstrem/internal/torrents"
+)
+
+const passwordMask = "••••••••"
+
+// Handler serves the admin API.
+type Handler struct {
+	config  *config.Manager
+	store   *store.Store
+	qb      *qbit.Swappable
+	logger  *slog.Logger
+	version string
+}
+
+// New creates the admin handler. qb must be the swappable client so
+// qBittorrent setting changes apply live.
+func New(cm *config.Manager, st *store.Store, qb *qbit.Swappable, version string, logger *slog.Logger) *Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Handler{config: cm, store: st, qb: qb, logger: logger, version: version}
+}
+
+// Router returns the router to mount at /api.
+func (h *Handler) Router() http.Handler {
+	r := chi.NewRouter()
+
+	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+	r.Post("/session", h.login)
+	r.Group(func(r chi.Router) {
+		r.Use(h.requireSession)
+		r.Delete("/session", h.logout)
+		r.Get("/session", h.sessionInfo)
+		r.Get("/config", h.getConfig)
+		r.Put("/config", h.putConfig)
+		r.Post("/config/test-qbit", h.testQbit)
+		r.Post("/config/test-prowlarr", h.testProwlarr)
+		r.Get("/status", h.status)
+		r.Get("/torrents", h.torrents)
+	})
+	return r
+}
+
+func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	want := h.config.Get().Server.AdminPassword
+	if want == "" || subtle.ConstantTimeCompare([]byte(body.Password), []byte(want)) != 1 {
+		writeJSONError(w, http.StatusUnauthorized, "wrong password")
+		return
+	}
+	expiry := time.Now().Add(sessionLifetime)
+	setSessionCookie(w, mintSession(want, expiry), expiry)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) logout(w http.ResponseWriter, _ *http.Request) {
+	clearSessionCookie(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) sessionInfo(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
+}
+
+// configDTO is the JSON shape exchanged with the UI. The qBittorrent
+// and admin passwords are masked on read; sending the mask back (or an
+// empty string) keeps the stored value.
+type configDTO struct {
+	Server struct {
+		Listen        string `json:"listen"`
+		ExternalURL   string `json:"external_url"`
+		AdminPassword string `json:"admin_password"`
+	} `json:"server"`
+	QBittorrent struct {
+		URL      string `json:"url"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Category string `json:"category"`
+	} `json:"qbittorrent"`
+	Prowlarr struct {
+		URL             string `json:"url"`
+		APIKey          string `json:"api_key"`
+		MovieCategories []int  `json:"movie_categories"`
+		TVCategories    []int  `json:"tv_categories"`
+		AnimeCategories []int  `json:"anime_categories"`
+	} `json:"prowlarr"`
+	Addon struct {
+		EnableMovies bool `json:"enable_movies"`
+		EnableSeries bool `json:"enable_series"`
+		EnableAnime  bool `json:"enable_anime"`
+	} `json:"addon"`
+	Filters struct {
+		MinSeeders int      `json:"min_seeders"`
+		MinSizeMB  int64    `json:"min_size_mb"`
+		MaxSizeMB  int64    `json:"max_size_mb"`
+		Qualities  []string `json:"qualities"`
+		MaxResults int      `json:"max_results"`
+	} `json:"filters"`
+	Meta struct {
+		CinemetaURL            string `json:"cinemeta_url"`
+		MetadataTimeoutSeconds int    `json:"metadata_timeout_seconds"`
+	} `json:"meta"`
+	Paths struct {
+		Mappings []config.Mapping `json:"mappings"`
+	} `json:"paths"`
+	Storage struct {
+		DeleteFilesOnRemove bool `json:"delete_files_on_remove"`
+	} `json:"storage"`
+	Stream struct {
+		WaitTimeoutSeconds int   `json:"wait_timeout_seconds"`
+		ReadChunk          int64 `json:"read_chunk"`
+	} `json:"stream"`
+}
+
+func toDTO(cfg config.Config) configDTO {
+	var dto configDTO
+	dto.Server.Listen = cfg.Server.Listen
+	dto.Server.ExternalURL = cfg.Server.ExternalURL
+	dto.Server.AdminPassword = passwordMask
+	dto.QBittorrent.URL = cfg.QBittorrent.URL
+	dto.QBittorrent.Username = cfg.QBittorrent.Username
+	if cfg.QBittorrent.Password != "" {
+		dto.QBittorrent.Password = passwordMask
+	}
+	dto.QBittorrent.Category = cfg.QBittorrent.Category
+	dto.Prowlarr.URL = cfg.Prowlarr.URL
+	if cfg.Prowlarr.APIKey != "" {
+		dto.Prowlarr.APIKey = passwordMask
+	}
+	dto.Prowlarr.MovieCategories = cfg.Prowlarr.MovieCategories
+	dto.Prowlarr.TVCategories = cfg.Prowlarr.TVCategories
+	dto.Prowlarr.AnimeCategories = cfg.Prowlarr.AnimeCategories
+	dto.Addon.EnableMovies = cfg.Addon.EnableMovies
+	dto.Addon.EnableSeries = cfg.Addon.EnableSeries
+	dto.Addon.EnableAnime = cfg.Addon.EnableAnime
+	dto.Filters.MinSeeders = cfg.Filters.MinSeeders
+	dto.Filters.MinSizeMB = cfg.Filters.MinSizeMB
+	dto.Filters.MaxSizeMB = cfg.Filters.MaxSizeMB
+	dto.Filters.Qualities = cfg.Filters.Qualities
+	dto.Filters.MaxResults = cfg.Filters.MaxResults
+	dto.Meta.CinemetaURL = cfg.Meta.CinemetaURL
+	dto.Meta.MetadataTimeoutSeconds = int(cfg.Meta.MetadataTimeout / time.Second)
+	dto.Paths.Mappings = cfg.Paths.Mappings
+	dto.Storage.DeleteFilesOnRemove = cfg.Storage.DeleteFilesOnRemove
+	dto.Stream.WaitTimeoutSeconds = int(cfg.Stream.WaitTimeout / time.Second)
+	dto.Stream.ReadChunk = cfg.Stream.ReadChunk
+	return dto
+}
+
+// apply merges a DTO into an existing config, respecting mask/empty
+// semantics for secrets.
+func (dto configDTO) apply(cfg config.Config) config.Config {
+	cfg.Server.Listen = dto.Server.Listen
+	cfg.Server.ExternalURL = dto.Server.ExternalURL
+	if pw := dto.Server.AdminPassword; pw != "" && pw != passwordMask {
+		cfg.Server.AdminPassword = pw
+	}
+	cfg.QBittorrent.URL = dto.QBittorrent.URL
+	cfg.QBittorrent.Username = dto.QBittorrent.Username
+	// Empty or masked = keep the stored password. Clearing a qBittorrent
+	// password entirely isn't supported via the UI (qBittorrent always
+	// has one); set a new value to change it.
+	if pw := dto.QBittorrent.Password; pw != "" && pw != passwordMask {
+		cfg.QBittorrent.Password = pw
+	}
+	cfg.QBittorrent.Category = dto.QBittorrent.Category
+	cfg.Prowlarr.URL = dto.Prowlarr.URL
+	// Empty or masked API key = keep the stored key.
+	if k := dto.Prowlarr.APIKey; k != "" && k != passwordMask {
+		cfg.Prowlarr.APIKey = k
+	}
+	cfg.Prowlarr.MovieCategories = dto.Prowlarr.MovieCategories
+	cfg.Prowlarr.TVCategories = dto.Prowlarr.TVCategories
+	cfg.Prowlarr.AnimeCategories = dto.Prowlarr.AnimeCategories
+	cfg.Addon.EnableMovies = dto.Addon.EnableMovies
+	cfg.Addon.EnableSeries = dto.Addon.EnableSeries
+	cfg.Addon.EnableAnime = dto.Addon.EnableAnime
+	cfg.Filters.MinSeeders = dto.Filters.MinSeeders
+	cfg.Filters.MinSizeMB = dto.Filters.MinSizeMB
+	cfg.Filters.MaxSizeMB = dto.Filters.MaxSizeMB
+	cfg.Filters.Qualities = dto.Filters.Qualities
+	cfg.Filters.MaxResults = dto.Filters.MaxResults
+	cfg.Meta.CinemetaURL = dto.Meta.CinemetaURL
+	if dto.Meta.MetadataTimeoutSeconds > 0 {
+		cfg.Meta.MetadataTimeout = time.Duration(dto.Meta.MetadataTimeoutSeconds) * time.Second
+	}
+	cfg.Paths.Mappings = dto.Paths.Mappings
+	cfg.Storage.DeleteFilesOnRemove = dto.Storage.DeleteFilesOnRemove
+	if dto.Stream.WaitTimeoutSeconds > 0 {
+		cfg.Stream.WaitTimeout = time.Duration(dto.Stream.WaitTimeoutSeconds) * time.Second
+	}
+	if dto.Stream.ReadChunk > 0 {
+		cfg.Stream.ReadChunk = dto.Stream.ReadChunk
+	}
+	return cfg
+}
+
+func (h *Handler) getConfig(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, toDTO(h.config.Get()))
+}
+
+func (h *Handler) putConfig(w http.ResponseWriter, r *http.Request) {
+	var dto configDTO
+	if err := json.NewDecoder(r.Body).Decode(&dto); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	current := h.config.Get()
+	next := dto.apply(current)
+
+	if err := h.config.Update(next); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Hot-apply the qBittorrent client if its settings changed.
+	if next.QBittorrent != current.QBittorrent {
+		h.qb.Swap(qbit.New(next.QBittorrent.URL, next.QBittorrent.Username, next.QBittorrent.Password))
+		h.logger.Info("qbittorrent client reconfigured", "url", next.QBittorrent.URL)
+	}
+
+	resp := map[string]any{"config": toDTO(next)}
+	if next.Server.Listen != current.Server.Listen {
+		resp["restart_required"] = true
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) testQbit(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		URL      string `json:"url"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if body.Password == passwordMask {
+		body.Password = h.config.Get().QBittorrent.Password
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	version, err := qbit.New(body.URL, body.Username, body.Password).Version(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": version})
+}
+
+func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
+	cfg := h.config.Get()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	qbitStatus := map[string]any{"connected": false}
+	if version, err := h.qb.Version(ctx); err == nil {
+		qbitStatus = map[string]any{"connected": true, "version": version}
+	} else {
+		qbitStatus["error"] = err.Error()
+	}
+
+	counts := map[string]int{}
+	if stored, err := h.store.AllTorrents(ctx); err == nil {
+		live := map[string]qbit.TorrentInfo{}
+		if qbTorrents, err := h.qb.Torrents(ctx, cfg.QBittorrent.Category); err == nil {
+			for _, t := range qbTorrents {
+				live[strings.ToLower(t.Hash)] = t
+			}
+		}
+		for _, tor := range stored {
+			info, inQbit := live[tor.Hash]
+			status := torrents.DeriveStatus(tor.Phase, info.State, tor.Error != "" || !inQbit, info.TotalSize > 0, info.Progress)
+			counts[status]++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":      h.version,
+		"external_url": cfg.Server.ExternalURL,
+		"manifest_url": strings.TrimSuffix(cfg.Server.ExternalURL, "/") + "/stremio/manifest.json",
+		"qbittorrent":  qbitStatus,
+		"torrents":     counts,
+	})
+}
+
+// torrentItem is the UI torrent listing shape.
+type torrentItem struct {
+	ID       string     `json:"id"`
+	Name     string     `json:"name"`
+	Hash     string     `json:"hash"`
+	Status   string     `json:"status"`
+	Progress float64    `json:"progress"`
+	Speed    int64      `json:"speed"`
+	Seeders  int64      `json:"seeders"`
+	Size     int64      `json:"size"`
+	AddedAt  int64      `json:"added_at"`
+	Error    string     `json:"error,omitempty"`
+	Links    []linkItem `json:"links"`
+}
+
+type linkItem struct {
+	Path  string `json:"path"`
+	Bytes int64  `json:"bytes"`
+	URL   string `json:"url"`
+}
+
+func (h *Handler) torrents(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	cfg := h.config.Get()
+
+	stored, _, err := h.store.ListTorrents(ctx, 500, 0)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "list torrents")
+		return
+	}
+
+	live := map[string]qbit.TorrentInfo{}
+	if qbTorrents, err := h.qb.Torrents(ctx, cfg.QBittorrent.Category); err == nil {
+		for _, t := range qbTorrents {
+			live[strings.ToLower(t.Hash)] = t
+		}
+	}
+
+	base := strings.TrimSuffix(cfg.Server.ExternalURL, "/")
+	items := make([]torrentItem, 0, len(stored))
+	for _, tor := range stored {
+		info, inQbit := live[tor.Hash]
+		links, err := h.store.LinksByTorrent(ctx, tor.ID)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "load links")
+			return
+		}
+		linkItems := make([]linkItem, 0, len(links))
+		for _, l := range links {
+			linkItems = append(linkItems, linkItem{Path: l.Path, Bytes: l.Bytes, URL: base + "/dl/" + l.Token})
+		}
+		name := tor.Name
+		if info.Name != "" {
+			name = info.Name
+		}
+		items = append(items, torrentItem{
+			ID:       tor.ID,
+			Name:     name,
+			Hash:     tor.Hash,
+			Status:   torrents.DeriveStatus(tor.Phase, info.State, tor.Error != "" || !inQbit, info.TotalSize > 0, info.Progress),
+			Progress: info.Progress,
+			Speed:    info.DlSpeed,
+			Seeders:  info.NumSeeds,
+			Size:     info.Size,
+			AddedAt:  tor.AddedAt,
+			Error:    tor.Error,
+			Links:    linkItems,
+		})
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// testProwlarr probes a Prowlarr instance with a trivial search so the UI
+// can validate the URL + API key before saving.
+func (h *Handler) testProwlarr(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		URL    string `json:"url"`
+		APIKey string `json:"api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if body.APIKey == passwordMask || body.APIKey == "" {
+		body.APIKey = h.config.Get().Prowlarr.APIKey
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if _, err := prowlarr.New(body.URL, body.APIKey).Search(ctx, "test", nil); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}

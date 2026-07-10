@@ -1,0 +1,139 @@
+// Thin client for the seedstrem admin API. All mutating requests carry
+// the CSRF header; a 401 anywhere redirects to the login page.
+
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method,
+    headers: {
+      "X-Requested-With": "XMLHttpRequest",
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 401 && !path.endsWith("/session")) {
+    window.location.hash = "#/login";
+    throw new ApiError(401, "not authenticated");
+  }
+  if (!res.ok) {
+    let message = res.statusText;
+    try {
+      const data = await res.json();
+      if (data?.error) message = data.error;
+    } catch {
+      /* not JSON */
+    }
+    throw new ApiError(res.status, message);
+  }
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
+export interface Mapping {
+  qbit: string;
+  local: string;
+}
+
+export interface Config {
+  server: {
+    listen: string;
+    external_url: string;
+    admin_password: string;
+  };
+  qbittorrent: {
+    url: string;
+    username: string;
+    password: string;
+    category: string;
+  };
+  prowlarr: {
+    url: string;
+    api_key: string;
+    movie_categories: number[];
+    tv_categories: number[];
+    anime_categories: number[];
+  };
+  addon: {
+    enable_movies: boolean;
+    enable_series: boolean;
+    enable_anime: boolean;
+  };
+  filters: {
+    min_seeders: number;
+    min_size_mb: number;
+    max_size_mb: number;
+    qualities: string[];
+    max_results: number;
+  };
+  meta: {
+    cinemeta_url: string;
+    metadata_timeout_seconds: number;
+  };
+  paths: { mappings: Mapping[] };
+  storage: { delete_files_on_remove: boolean };
+  stream: { wait_timeout_seconds: number; read_chunk: number };
+}
+
+export interface Status {
+  version: string;
+  external_url: string;
+  manifest_url: string;
+  qbittorrent: { connected: boolean; version?: string; error?: string };
+  torrents: Record<string, number>;
+}
+
+export interface TorrentLink {
+  path: string;
+  bytes: number;
+  url: string;
+}
+
+export interface Torrent {
+  id: string;
+  name: string;
+  hash: string;
+  status: string;
+  progress: number;
+  speed: number;
+  seeders: number;
+  size: number;
+  added_at: number;
+  error?: string;
+  links: TorrentLink[];
+}
+
+export const api = {
+  login: (password: string) => request<void>("POST", "/api/session", { password }),
+  logout: () => request<void>("DELETE", "/api/session"),
+  sessionInfo: () => request<{ authenticated: boolean }>("GET", "/api/session"),
+  getConfig: () => request<Config>("GET", "/api/config"),
+  putConfig: (cfg: Config) =>
+    request<{ config: Config; restart_required?: boolean }>("PUT", "/api/config", cfg),
+  testQbit: (url: string, username: string, password: string) =>
+    request<{ ok: boolean; version?: string; error?: string }>("POST", "/api/config/test-qbit", {
+      url,
+      username,
+      password,
+    }),
+  testProwlarr: (url: string, apiKey: string) =>
+    request<{ ok: boolean; error?: string }>("POST", "/api/config/test-prowlarr", {
+      url,
+      api_key: apiKey,
+    }),
+  status: () => request<Status>("GET", "/api/status"),
+  torrents: () => request<Torrent[]>("GET", "/api/torrents"),
+};
+
+export function formatBytes(n: number): string {
+  if (n <= 0) return "0 B";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  const i = Math.min(Math.floor(Math.log2(n) / 10), units.length - 1);
+  return `${(n / 2 ** (10 * i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}

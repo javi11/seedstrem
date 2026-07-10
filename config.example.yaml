@@ -1,0 +1,70 @@
+# seedstrem configuration. Every key can be overridden with a
+# SEEDSTREM_* environment variable (e.g. SEEDSTREM_QBITTORRENT_URL).
+server:
+  listen: ":8080"
+  # Base URL used to build the Stremio manifest and stream links handed
+  # to players. Must be reachable from wherever you run Stremio.
+  external_url: "http://localhost:8080"
+  # Web UI login password. Generated and logged on first run if empty.
+  admin_password: ""
+
+qbittorrent:
+  url: "http://qbittorrent:8080"
+  username: "admin"
+  password: ""
+  # Torrents added by seedstrem get this category.
+  category: "seedstrem"
+
+prowlarr:
+  # Torrent search backend. Leave url empty to configure later in the
+  # web UI. Add indexers inside Prowlarr itself.
+  url: "http://prowlarr:9696"
+  api_key: ""
+  # Newznab category ids searched per content type.
+  movie_categories: [2000]
+  tv_categories: [5000]
+  anime_categories: [5070]
+
+addon:
+  # Which content types the Stremio addon serves.
+  enable_movies: true
+  enable_series: true
+  enable_anime: false
+
+filters:
+  # Drop/rank Prowlarr results before offering them as streams.
+  min_seeders: 1
+  min_size_mb: 0
+  max_size_mb: 0 # 0 = unbounded
+  qualities: [] # e.g. ["1080p", "720p"]; empty = all
+  max_results: 20
+
+meta:
+  # Cinemeta provides titles/years for IMDB ids.
+  cinemeta_url: "https://v3-cinemeta.strem.io"
+  # How long resolve-on-play waits for qBittorrent to fetch torrent
+  # metadata before answering 503 (players retry).
+  metadata_timeout: 60s
+
+paths:
+  # Translate qBittorrent's paths to paths seedstrem can read.
+  # With the bundled docker-compose both containers share one host
+  # directory: qBittorrent mounts it at /downloads, seedstrem at /data.
+  mappings:
+    - qbit: "/downloads"
+      local: "/data"
+
+storage:
+  database: "/config/seedstrem.db"
+  # Also delete the payload files when a torrent is removed via the API.
+  delete_files_on_remove: true
+
+stream:
+  # How long a stream request waits for missing pieces before answering
+  # 503 (players retry). Also the per-read wait budget mid-stream.
+  wait_timeout: 60s
+  # Max bytes waited-for/read per read cycle.
+  read_chunk: 4194304
+
+log:
+  level: "info" # debug | info | warn | error
