@@ -1,20 +1,25 @@
-# --- Frontend build ---
-FROM node:22-alpine AS web
+# --- Frontend build (output is platform-independent JS; build natively
+# on the host arch instead of emulating the target arch under QEMU) ---
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-# --- Go build ---
-FROM golang:1.26-alpine AS build
+# --- Go build (also run natively; Go cross-compiles without needing
+# QEMU to emulate the compiler itself) ---
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /src/web/dist ./web/dist
 ARG VERSION=docker
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /seedstrem ./cmd/seedstrem \
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /seedstrem ./cmd/seedstrem \
     && mkdir /empty
 
 # --- Runtime ---
