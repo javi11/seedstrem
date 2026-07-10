@@ -37,6 +37,8 @@ func (h *Handler) play(w http.ResponseWriter, r *http.Request) {
 		sel.Season, _ = strconv.Atoi(r.URL.Query().Get("s"))
 		sel.Episode, _ = strconv.Atoi(r.URL.Query().Get("e"))
 	}
+	h.logger.Debug("stremio: play resolve",
+		"infohash", infohash, "series", sel.IsSeries, "season", sel.Season, "episode", sel.Episode)
 
 	link, err := h.svc.Resolve(ctx, magnet, sel)
 	if err != nil {
@@ -54,5 +56,7 @@ func (h *Handler) play(w http.ResponseWriter, r *http.Request) {
 	}
 
 	target := strings.TrimSuffix(s.ExternalURL, "/") + "/dl/" + link.Token
+	h.logger.Debug("stremio: play resolved",
+		"infohash", infohash, "file", link.Path, "token", link.Token)
 	http.Redirect(w, r, target, http.StatusFound)
 }

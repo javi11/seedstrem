@@ -57,8 +57,12 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	settings := h.settings()
 
-	link, err := h.store.LinkByToken(ctx, chi.URLParam(r, "token"))
+	token := chi.URLParam(r, "token")
+	h.logger.Debug("stream: serve request", "token", token, "range", r.Header.Get("Range"))
+
+	link, err := h.store.LinkByToken(ctx, token)
 	if errors.Is(err, store.ErrNotFound) {
+		h.logger.Debug("stream: unknown token", "token", token)
 		http.NotFound(w, r)
 		return
 	}
@@ -111,6 +115,9 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", contentType)
 
+	h.logger.Debug("stream: serving file",
+		"hash", tor.Hash, "file", file.Name, "complete", complete, "progress", file.Progress)
+
 	if complete {
 		f, err := os.Open(localPath)
 		if err != nil {
@@ -144,6 +151,8 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	end := min(start+chunk-1, file.Size-1)
 	first, last := PiecesForRange(fileOffset, props.PieceSize, start, end)
+	h.logger.Debug("stream: waiting for pieces",
+		"hash", tor.Hash, "start", start, "firstPiece", first, "lastPiece", last)
 	if err := h.avail.WaitForRange(ctx, tor.Hash, first, last, settings.WaitTimeout); err != nil {
 		if errors.Is(err, ErrWaitTimeout) {
 			h.retryLater(w, "pieces not available in time", err)

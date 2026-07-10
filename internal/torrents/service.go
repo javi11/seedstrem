@@ -73,6 +73,7 @@ func (s *Service) EnsureAdded(ctx context.Context, magnet string) (store.Torrent
 	}
 
 	if existing, err := s.store.TorrentByHash(ctx, hash); err == nil {
+		s.logger.Debug("torrents: reusing existing torrent", "hash", hash, "id", existing.ID)
 		return existing, nil
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return store.Torrent{}, fmt.Errorf("lookup torrent by hash: %w", err)
@@ -84,6 +85,8 @@ func (s *Service) EnsureAdded(ctx context.Context, magnet string) (store.Torrent
 		SequentialDownload: true,
 		FirstLastPiecePrio: true,
 	}
+	s.logger.Debug("torrents: adding magnet to qbittorrent",
+		"hash", hash, "name", name, "category", opts.Category)
 	if err := s.qb.AddMagnet(ctx, magnet, opts); err != nil {
 		return store.Torrent{}, fmt.Errorf("add magnet to qbittorrent: %w", err)
 	}
@@ -124,9 +127,11 @@ func (s *Service) WaitForMetadata(ctx context.Context, hash string, timeout time
 			return nil, fmt.Errorf("qbit files: %w", err)
 		}
 		if len(files) > 0 {
+			s.logger.Debug("torrents: metadata ready", "hash", hash, "files", len(files))
 			return files, nil
 		}
 		if time.Now().After(deadline) {
+			s.logger.Debug("torrents: metadata wait timed out", "hash", hash, "timeout", timeout)
 			return nil, ErrMetadataTimeout
 		}
 		if err := s.sleep(ctx, metaPollInterval); err != nil {
@@ -202,6 +207,8 @@ func (s *Service) SelectAndLink(ctx context.Context, tor store.Torrent, fileInde
 			return store.Link{}, fmt.Errorf("set phase: %w", err)
 		}
 	}
+	s.logger.Debug("torrents: file selected and linked",
+		"hash", tor.Hash, "fileIndex", fileIndex, "path", picked.Name, "token", token)
 	return link, nil
 }
 

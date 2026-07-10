@@ -37,6 +37,8 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 
 	empty := streamResponse{Streams: []streamItem{}}
 
+	h.logger.Debug("stremio: stream discovery request", "type", typ, "id", id)
+
 	q, err := meta.ParseID(typ, id)
 	if err != nil {
 		h.logger.Debug("stremio: unparseable id", "type", typ, "id", id, "error", err)
@@ -44,6 +46,7 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.contentEnabled(s.Addon, q) {
+		h.logger.Debug("stremio: content type disabled", "id", id, "source", q.Source)
 		writeJSON(w, http.StatusOK, empty)
 		return
 	}
@@ -56,6 +59,8 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query, categories := buildSearch(q, title, year, s.Prowlarr)
+	h.logger.Debug("stremio: prowlarr search",
+		"query", query, "categories", categories, "indexers", len(s.Prowlarr.IndexerIDs))
 	results, err := h.prowlarr(s).Search(ctx, query, categories, s.Prowlarr.IndexerIDs)
 	if err != nil {
 		h.logger.Warn("stremio: prowlarr search failed", "query", query, "error", err)
@@ -63,10 +68,13 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	raw := len(results)
 	results = prowlarr.Sort(prowlarr.Filter(prowlarr.Dedup(results), s.Filters))
 	if s.MaxResults > 0 && len(results) > s.MaxResults {
 		results = results[:s.MaxResults]
 	}
+	h.logger.Debug("stremio: stream results",
+		"query", query, "raw", raw, "returned", len(results))
 
 	items := make([]streamItem, 0, len(results))
 	for _, res := range results {

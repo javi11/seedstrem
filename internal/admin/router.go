@@ -439,6 +439,7 @@ func (h *Handler) prowlarrIndexers(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	indexers, err := prowlarr.New(body.URL, body.APIKey).Indexers(ctx)
 	if err != nil {
+		h.logger.Debug("admin: prowlarr indexer list failed", "url", body.URL, "error", err)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
@@ -454,6 +455,7 @@ func (h *Handler) prowlarrIndexers(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, item{ID: ix.ID, Name: ix.Name})
 	}
+	h.logger.Debug("admin: prowlarr indexers listed", "total", len(indexers), "enabled", len(out))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "indexers": out})
 }
 
