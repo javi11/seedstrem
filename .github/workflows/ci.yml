@@ -14,20 +14,6 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26"
-      - name: Vet
-        run: go vet ./...
-      - name: Test
-        run: go test -race -coverprofile=coverage.out ./...
-      - name: Coverage summary
-        run: go tool cover -func=coverage.out | tail -1
-
   web:
     runs-on: ubuntu-latest
     steps:
@@ -42,6 +28,33 @@ jobs:
         run: |
           npm ci
           npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          retention-days: 1
+
+  # Go tests need the built web/dist tree: internal/server imports the
+  # web package, which go:embeds it — without it, `go vet`/`go test`
+  # fail with "pattern all:dist: no matching files found".
+  test:
+    runs-on: ubuntu-latest
+    needs: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -coverprofile=coverage.out ./...
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -1
 
   docker:
     runs-on: ubuntu-latest
