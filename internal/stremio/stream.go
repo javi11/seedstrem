@@ -56,7 +56,7 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query, categories := buildSearch(q, title, year, s.Prowlarr)
-	results, err := h.prowlarr(s).Search(ctx, query, categories)
+	results, err := h.prowlarr(s).Search(ctx, query, categories, s.Prowlarr.IndexerIDs)
 	if err != nil {
 		h.logger.Warn("stremio: prowlarr search failed", "query", query, "error", err)
 		writeJSON(w, http.StatusOK, empty)

@@ -12,11 +12,12 @@ const hexHash = "0123456789abcdef0123456789abcdef01234567"
 
 func TestSearch(t *testing.T) {
 	var gotKey, gotQuery string
-	var gotCategories []string
+	var gotCategories, gotIndexers []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotKey = r.Header.Get("X-Api-Key")
 		gotQuery = r.URL.Query().Get("query")
 		gotCategories = r.URL.Query()["categories"]
+		gotIndexers = r.URL.Query()["indexerIds"]
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`[
 			{"title":"Has Magnet 1080p","magnetUrl":"magnet:?xt=urn:btih:` + hexHash + `&dn=x","size":100,"seeders":10,"protocol":"torrent","indexer":"idx","categories":[2040]},
@@ -28,7 +29,7 @@ func TestSearch(t *testing.T) {
 	defer srv.Close()
 
 	c := NewWithClient(srv.URL, "my-key", srv.Client())
-	results, err := c.Search(context.Background(), "the matrix 1999", []int{2000, 5000})
+	results, err := c.Search(context.Background(), "the matrix 1999", []int{2000, 5000}, []int{3, 7})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -41,6 +42,9 @@ func TestSearch(t *testing.T) {
 	}
 	if len(gotCategories) != 2 {
 		t.Errorf("categories params = %v, want 2", gotCategories)
+	}
+	if len(gotIndexers) != 2 || gotIndexers[0] != "3" || gotIndexers[1] != "7" {
+		t.Errorf("indexerIds params = %v, want [3 7]", gotIndexers)
 	}
 
 	// Kept: magnet result + infohash-only (synthesized magnet). Dropped:
@@ -74,14 +78,69 @@ func TestSearchNon200(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewWithClient(srv.URL, "bad", srv.Client())
-	if _, err := c.Search(context.Background(), "q", nil); err == nil {
+	if _, err := c.Search(context.Background(), "q", nil, nil); err == nil {
 		t.Fatal("expected error on 401")
 	}
 }
 
 func TestSearchNoBaseURL(t *testing.T) {
 	c := New("", "key")
-	if _, err := c.Search(context.Background(), "q", nil); err == nil {
+	if _, err := c.Search(context.Background(), "q", nil, nil); err == nil {
+		t.Fatal("expected error when base URL unset")
+	}
+}
+
+func TestSearchOmitsIndexersWhenEmpty(t *testing.T) {
+	var hadIndexers bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, hadIndexers = r.URL.Query()["indexerIds"]
+		w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+	c := NewWithClient(srv.URL, "k", srv.Client())
+	if _, err := c.Search(context.Background(), "q", nil, nil); err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if hadIndexers {
+		t.Error("indexerIds should be absent when no ids given")
+	}
+}
+
+func TestIndexers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/indexer" {
+			t.Errorf("path = %q, want /api/v1/indexer", r.URL.Path)
+		}
+		if r.Header.Get("X-Api-Key") != "my-key" {
+			t.Errorf("X-Api-Key = %q", r.Header.Get("X-Api-Key"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[
+			{"id":1,"name":"Alpha","protocol":"torrent","enable":true},
+			{"id":2,"name":"Beta","protocol":"usenet","enable":false}
+		]`))
+	}))
+	defer srv.Close()
+
+	c := NewWithClient(srv.URL, "my-key", srv.Client())
+	got, err := c.Indexers(context.Background())
+	if err != nil {
+		t.Fatalf("indexers: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 indexers, got %d", len(got))
+	}
+	if got[0].ID != 1 || got[0].Name != "Alpha" || !got[0].Enable {
+		t.Errorf("indexer[0] = %+v", got[0])
+	}
+	if got[1].Enable {
+		t.Errorf("indexer[1] should be disabled: %+v", got[1])
+	}
+}
+
+func TestIndexersNoBaseURL(t *testing.T) {
+	c := New("", "key")
+	if _, err := c.Indexers(context.Background()); err == nil {
 		t.Fatal("expected error when base URL unset")
 	}
 }

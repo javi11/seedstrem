@@ -59,6 +59,7 @@ export interface Config {
     movie_categories: number[];
     tv_categories: number[];
     anime_categories: number[];
+    indexer_ids: number[];
   };
   addon: {
     enable_movies: boolean;
@@ -79,6 +80,11 @@ export interface Config {
   paths: { mappings: Mapping[] };
   storage: { delete_files_on_remove: boolean };
   stream: { wait_timeout_seconds: number; read_chunk: number };
+}
+
+export interface ProwlarrIndexer {
+  id: number;
+  name: string;
 }
 
 export interface Status {
@@ -127,6 +133,12 @@ export const api = {
       url,
       api_key: apiKey,
     }),
+  listProwlarrIndexers: (url: string, apiKey: string) =>
+    request<{ ok: boolean; error?: string; indexers?: ProwlarrIndexer[] }>(
+      "POST",
+      "/api/config/prowlarr-indexers",
+      { url, api_key: apiKey },
+    ),
   status: () => request<Status>("GET", "/api/status"),
   torrents: () => request<Torrent[]>("GET", "/api/torrents"),
 };

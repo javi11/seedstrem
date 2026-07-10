@@ -103,6 +103,7 @@ func run() error {
 				MovieCategories: c.Prowlarr.MovieCategories,
 				TVCategories:    c.Prowlarr.TVCategories,
 				AnimeCategories: c.Prowlarr.AnimeCategories,
+				IndexerIDs:      c.Prowlarr.IndexerIDs,
 			},
 			Addon: stremio.AddonSettings{
 				EnableMovies: c.Addon.EnableMovies,

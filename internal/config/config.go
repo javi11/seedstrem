@@ -51,6 +51,9 @@ type Prowlarr struct {
 	MovieCategories []int  `yaml:"movie_categories"`
 	TVCategories    []int  `yaml:"tv_categories"`
 	AnimeCategories []int  `yaml:"anime_categories"`
+	// IndexerIDs scopes searches to specific Prowlarr indexers. Empty
+	// means search every enabled indexer.
+	IndexerIDs []int `yaml:"indexer_ids"`
 }
 
 // Addon toggles which Stremio content types the addon serves.
@@ -229,6 +232,7 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 	setInts("PROWLARR_MOVIE_CATEGORIES", &cfg.Prowlarr.MovieCategories)
 	setInts("PROWLARR_TV_CATEGORIES", &cfg.Prowlarr.TVCategories)
 	setInts("PROWLARR_ANIME_CATEGORIES", &cfg.Prowlarr.AnimeCategories)
+	setInts("PROWLARR_INDEXER_IDS", &cfg.Prowlarr.IndexerIDs)
 	// SEEDSTREM_PATHS_MAPPINGS: comma-separated "qbit:local" pairs,
 	// e.g. "/downloads:/data,/media:/mnt/media".
 	if v := getenv("SEEDSTREM_PATHS_MAPPINGS"); v != "" {

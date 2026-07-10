@@ -34,6 +34,7 @@ func TestApplyEnvProwlarr(t *testing.T) {
 		"SEEDSTREM_PROWLARR_URL":              "http://prowlarr:9696",
 		"SEEDSTREM_PROWLARR_API_KEY":          "secret",
 		"SEEDSTREM_PROWLARR_MOVIE_CATEGORIES": "2000,2010",
+		"SEEDSTREM_PROWLARR_INDEXER_IDS":      "3,7",
 		"SEEDSTREM_ADDON_ENABLE_ANIME":        "true",
 		"SEEDSTREM_META_METADATA_TIMEOUT":     "30s",
 	}
@@ -44,6 +45,9 @@ func TestApplyEnvProwlarr(t *testing.T) {
 	}
 	if len(cfg.Prowlarr.MovieCategories) != 2 || cfg.Prowlarr.MovieCategories[1] != 2010 {
 		t.Errorf("movie categories env override failed: %v", cfg.Prowlarr.MovieCategories)
+	}
+	if len(cfg.Prowlarr.IndexerIDs) != 2 || cfg.Prowlarr.IndexerIDs[0] != 3 || cfg.Prowlarr.IndexerIDs[1] != 7 {
+		t.Errorf("indexer ids env override failed: %v", cfg.Prowlarr.IndexerIDs)
 	}
 	if !cfg.Addon.EnableAnime {
 		t.Error("anime enable env override failed")
@@ -81,6 +85,7 @@ func TestSaveRoundTripAddon(t *testing.T) {
 	cfg := Default()
 	cfg.Prowlarr.URL = "http://prowlarr:9696"
 	cfg.Prowlarr.APIKey = "abc"
+	cfg.Prowlarr.IndexerIDs = []int{4, 8}
 	cfg.Addon.EnableAnime = true
 	cfg.Filters.Qualities = []string{"1080p", "720p"}
 
@@ -96,6 +101,9 @@ func TestSaveRoundTripAddon(t *testing.T) {
 	}
 	if got.Prowlarr.URL != cfg.Prowlarr.URL || got.Prowlarr.APIKey != "abc" {
 		t.Errorf("prowlarr round-trip lost: %+v", got.Prowlarr)
+	}
+	if len(got.Prowlarr.IndexerIDs) != 2 || got.Prowlarr.IndexerIDs[0] != 4 || got.Prowlarr.IndexerIDs[1] != 8 {
+		t.Errorf("indexer ids round-trip lost: %v", got.Prowlarr.IndexerIDs)
 	}
 	if !got.Addon.EnableAnime {
 		t.Error("anime toggle round-trip lost")

@@ -65,7 +65,9 @@ type apiResult struct {
 }
 
 // Search queries Prowlarr for query across the given newznab categories.
-func (c *Client) Search(ctx context.Context, query string, categories []int) ([]Result, error) {
+// When indexerIDs is non-empty the search is scoped to those indexers;
+// empty means search every enabled indexer.
+func (c *Client) Search(ctx context.Context, query string, categories, indexerIDs []int) ([]Result, error) {
 	if c.baseURL == "" {
 		return nil, fmt.Errorf("prowlarr: base URL not configured")
 	}
@@ -79,6 +81,9 @@ func (c *Client) Search(ctx context.Context, query string, categories []int) ([]
 	q.Set("type", "search")
 	for _, cat := range categories {
 		q.Add("categories", strconv.Itoa(cat))
+	}
+	for _, id := range indexerIDs {
+		q.Add("indexerIds", strconv.Itoa(id))
 	}
 	u.RawQuery = q.Encode()
 
@@ -113,6 +118,44 @@ func (c *Client) Search(ctx context.Context, query string, categories []int) ([]
 			continue // no magnet and no infohash — cannot resolve-on-play
 		}
 		out = append(out, res)
+	}
+	return out, nil
+}
+
+// IndexerInfo is a Prowlarr indexer as reported by /api/v1/indexer.
+type IndexerInfo struct {
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Protocol string `json:"protocol"` // "torrent" | "usenet"
+	Enable   bool   `json:"enable"`
+}
+
+// Indexers lists the indexers configured in the Prowlarr instance so a
+// caller can let the operator scope searches to a subset.
+func (c *Client) Indexers(ctx context.Context) ([]IndexerInfo, error) {
+	if c.baseURL == "" {
+		return nil, fmt.Errorf("prowlarr: base URL not configured")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v1/indexer", nil)
+	if err != nil {
+		return nil, fmt.Errorf("prowlarr: build request: %w", err)
+	}
+	req.Header.Set("X-Api-Key", c.apiKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("prowlarr: request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("prowlarr: indexer list returned %d", resp.StatusCode)
+	}
+
+	var out []IndexerInfo
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("prowlarr: decode response: %w", err)
 	}
 	return out, nil
 }

@@ -221,6 +221,52 @@ func TestTestQbit(t *testing.T) {
 	}
 }
 
+func TestProwlarrIndexers(t *testing.T) {
+	e := newEnv(t)
+	e.login(t)
+
+	prow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/indexer" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		w.Write([]byte(`[
+			{"id":1,"name":"Alpha","protocol":"torrent","enable":true},
+			{"id":2,"name":"Beta","protocol":"torrent","enable":false},
+			{"id":3,"name":"Gamma","protocol":"torrent","enable":true}
+		]`))
+	}))
+	defer prow.Close()
+
+	w := e.do(t, http.MethodPost, "/config/prowlarr-indexers", `{"url":"`+prow.URL+`","api_key":"k"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var res struct {
+		OK       bool `json:"ok"`
+		Indexers []struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+		} `json:"indexers"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("expected ok, got %s", w.Body.String())
+	}
+	// Only the two enabled indexers should be returned.
+	if len(res.Indexers) != 2 || res.Indexers[0].ID != 1 || res.Indexers[1].ID != 3 {
+		t.Errorf("indexers = %+v, want enabled 1 and 3", res.Indexers)
+	}
+
+	// Dead instance yields ok:false rather than an error status.
+	w = e.do(t, http.MethodPost, "/config/prowlarr-indexers", `{"url":"http://127.0.0.1:1","api_key":"k"}`)
+	json.Unmarshal(w.Body.Bytes(), &res)
+	if res.OK {
+		t.Error("expected failure for dead prowlarr")
+	}
+}
+
 func TestStatus(t *testing.T) {
 	e := newEnv(t)
 	e.login(t)

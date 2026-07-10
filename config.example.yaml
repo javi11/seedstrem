@@ -24,6 +24,9 @@ prowlarr:
   movie_categories: [2000]
   tv_categories: [5000]
   anime_categories: [5070]
+  # Restrict searches to specific Prowlarr indexer ids. Empty = search
+  # every enabled indexer.
+  indexer_ids: []
 
 addon:
   # Which content types the Stremio addon serves.

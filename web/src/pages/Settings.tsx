@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { api, Config } from "../api";
+import { api, Config, ProwlarrIndexer } from "../api";
 
 export function Settings() {
   const [config, setConfig] = useState<Config | null>(null);
@@ -7,6 +7,8 @@ export function Settings() {
   const [message, setMessage] = useState<{ kind: "success" | "error" | "warning"; text: string } | null>(null);
   const [testResult, setTestResult] = useState<string>("");
   const [prowlarrTest, setProwlarrTest] = useState<string>("");
+  const [indexers, setIndexers] = useState<ProwlarrIndexer[] | null>(null);
+  const [indexersMsg, setIndexersMsg] = useState<string>("");
 
   useEffect(() => {
     api
@@ -79,6 +81,29 @@ export function Settings() {
       setProwlarrTest(`✗ ${(err as Error).message}`);
     }
   }
+
+  async function loadIndexers() {
+    setIndexersMsg("…");
+    try {
+      const res = await api.listProwlarrIndexers(config!.prowlarr.url, config!.prowlarr.api_key);
+      if (res.ok && res.indexers) {
+        setIndexers(res.indexers);
+        setIndexersMsg(res.indexers.length ? "" : "No indexers found");
+      } else {
+        setIndexersMsg(`✗ ${res.error ?? "failed"}`);
+      }
+    } catch (err) {
+      setIndexersMsg(`✗ ${(err as Error).message}`);
+    }
+  }
+
+  const toggleIndexer = (id: number, checked: boolean) =>
+    update((c) => {
+      const set = new Set(c.prowlarr.indexer_ids);
+      if (checked) set.add(id);
+      else set.delete(id);
+      c.prowlarr.indexer_ids = [...set].sort((a, b) => a - b);
+    });
 
   // Category lists are edited as comma-separated strings for convenience.
   const parseCategories = (s: string): number[] =>
@@ -196,6 +221,34 @@ export function Settings() {
                 }
               />
             </label>
+          </div>
+          <div className="form-control">
+            <span className="label-text">Search indexers</span>
+            <p className="text-sm opacity-70">
+              Restrict searches to specific indexers. Leave all unchecked to search every
+              indexer.
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button type="button" className="btn btn-outline btn-sm" onClick={loadIndexers}>
+                Load indexers
+              </button>
+              {indexersMsg && <span className="text-sm">{indexersMsg}</span>}
+            </div>
+            {indexers && indexers.length > 0 && (
+              <div className="mt-2 grid grid-cols-2 gap-1 sm:grid-cols-3">
+                {indexers.map((ix) => (
+                  <label key={ix.id} className="label cursor-pointer justify-start gap-2">
+                    <input
+                      type="checkbox"
+                      className="checkbox checkbox-sm"
+                      checked={config.prowlarr.indexer_ids.includes(ix.id)}
+                      onChange={(e) => toggleIndexer(ix.id, e.target.checked)}
+                    />
+                    <span className="label-text">{ix.name}</span>
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
           <div className="card-actions items-center">
             <button type="button" className="btn btn-outline" onClick={testProwlarr}>

@@ -57,6 +57,7 @@ func (h *Handler) Router() http.Handler {
 		r.Put("/config", h.putConfig)
 		r.Post("/config/test-qbit", h.testQbit)
 		r.Post("/config/test-prowlarr", h.testProwlarr)
+		r.Post("/config/prowlarr-indexers", h.prowlarrIndexers)
 		r.Get("/status", h.status)
 		r.Get("/torrents", h.torrents)
 	})
@@ -111,6 +112,7 @@ type configDTO struct {
 		MovieCategories []int  `json:"movie_categories"`
 		TVCategories    []int  `json:"tv_categories"`
 		AnimeCategories []int  `json:"anime_categories"`
+		IndexerIDs      []int  `json:"indexer_ids"`
 	} `json:"prowlarr"`
 	Addon struct {
 		EnableMovies bool `json:"enable_movies"`
@@ -158,6 +160,7 @@ func toDTO(cfg config.Config) configDTO {
 	dto.Prowlarr.MovieCategories = cfg.Prowlarr.MovieCategories
 	dto.Prowlarr.TVCategories = cfg.Prowlarr.TVCategories
 	dto.Prowlarr.AnimeCategories = cfg.Prowlarr.AnimeCategories
+	dto.Prowlarr.IndexerIDs = cfg.Prowlarr.IndexerIDs
 	dto.Addon.EnableMovies = cfg.Addon.EnableMovies
 	dto.Addon.EnableSeries = cfg.Addon.EnableSeries
 	dto.Addon.EnableAnime = cfg.Addon.EnableAnime
@@ -200,6 +203,7 @@ func (dto configDTO) apply(cfg config.Config) config.Config {
 	cfg.Prowlarr.MovieCategories = dto.Prowlarr.MovieCategories
 	cfg.Prowlarr.TVCategories = dto.Prowlarr.TVCategories
 	cfg.Prowlarr.AnimeCategories = dto.Prowlarr.AnimeCategories
+	cfg.Prowlarr.IndexerIDs = dto.Prowlarr.IndexerIDs
 	cfg.Addon.EnableMovies = dto.Addon.EnableMovies
 	cfg.Addon.EnableSeries = dto.Addon.EnableSeries
 	cfg.Addon.EnableAnime = dto.Addon.EnableAnime
@@ -404,11 +408,49 @@ func (h *Handler) testProwlarr(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	if _, err := prowlarr.New(body.URL, body.APIKey).Search(ctx, "test", nil); err != nil {
+	if _, err := prowlarr.New(body.URL, body.APIKey).Search(ctx, "test", nil, nil); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// prowlarrIndexers lists the enabled indexers of a Prowlarr instance so the
+// UI can offer them as search targets. Uses the posted URL/API key, falling
+// back to the stored key when masked/empty (same as testProwlarr).
+func (h *Handler) prowlarrIndexers(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		URL    string `json:"url"`
+		APIKey string `json:"api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if body.APIKey == passwordMask || body.APIKey == "" {
+		body.APIKey = h.config.Get().Prowlarr.APIKey
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	indexers, err := prowlarr.New(body.URL, body.APIKey).Indexers(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+
+	type item struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+	out := make([]item, 0, len(indexers))
+	for _, ix := range indexers {
+		if !ix.Enable {
+			continue
+		}
+		out = append(out, item{ID: ix.ID, Name: ix.Name})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "indexers": out})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

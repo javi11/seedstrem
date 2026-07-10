@@ -23,6 +23,7 @@ type ProwlarrSettings struct {
 	MovieCategories []int
 	TVCategories    []int
 	AnimeCategories []int
+	IndexerIDs      []int
 }
 
 // AddonSettings toggles which content types the addon serves.
