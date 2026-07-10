@@ -160,7 +160,11 @@ func toDTO(cfg config.Config) configDTO {
 	dto.Prowlarr.MovieCategories = cfg.Prowlarr.MovieCategories
 	dto.Prowlarr.TVCategories = cfg.Prowlarr.TVCategories
 	dto.Prowlarr.AnimeCategories = cfg.Prowlarr.AnimeCategories
+	// Emit [] rather than null so clients can treat it as an array.
 	dto.Prowlarr.IndexerIDs = cfg.Prowlarr.IndexerIDs
+	if dto.Prowlarr.IndexerIDs == nil {
+		dto.Prowlarr.IndexerIDs = []int{}
+	}
 	dto.Addon.EnableMovies = cfg.Addon.EnableMovies
 	dto.Addon.EnableSeries = cfg.Addon.EnableSeries
 	dto.Addon.EnableAnime = cfg.Addon.EnableAnime

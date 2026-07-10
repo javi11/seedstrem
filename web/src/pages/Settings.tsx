@@ -19,6 +19,9 @@ export function Settings() {
         c.qbittorrent.password = "";
         c.server.admin_password = "";
         c.prowlarr.api_key = "";
+        // A nil slice is serialized as JSON null; configs predating the
+        // indexer_ids field arrive without it, so normalize to an array.
+        c.prowlarr.indexer_ids = c.prowlarr.indexer_ids ?? [];
         setConfig(c);
       })
       .catch(() => {});
@@ -45,6 +48,7 @@ export function Settings() {
       res.config.qbittorrent.password = "";
       res.config.server.admin_password = "";
       res.config.prowlarr.api_key = "";
+      res.config.prowlarr.indexer_ids = res.config.prowlarr.indexer_ids ?? [];
       setConfig(res.config);
       setMessage(
         res.restart_required
@@ -241,7 +245,7 @@ export function Settings() {
                     <input
                       type="checkbox"
                       className="checkbox checkbox-sm"
-                      checked={config.prowlarr.indexer_ids.includes(ix.id)}
+                      checked={(config.prowlarr.indexer_ids ?? []).includes(ix.id)}
                       onChange={(e) => toggleIndexer(ix.id, e.target.checked)}
                     />
                     <span className="label-text">{ix.name}</span>
