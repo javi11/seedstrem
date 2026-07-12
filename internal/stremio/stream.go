@@ -108,16 +108,17 @@ func (h *Handler) contentEnabled(a AddonSettings, q meta.Query) bool {
 	return a.EnableMovies
 }
 
-// ttSearch searches Prowlarr for a tt-sourced (IMDb) query, splitting
-// across indexers by capability, most to least precise:
-//  1. ImdbId-capable indexers — searched by id token directly, no title
-//     lookup needed.
-//  2. TmdbId-capable (but not Imdb-capable) indexers — the IMDb id is
-//     resolved to a TMDb id (requires Meta.TMDbAPIKey) and searched by
-//     that token instead.
-//  3. Everything else — free text, which needs a resolved title, so
-//     Cinemeta is only queried when at least one such indexer is in
-//     scope (also the fallback for (2) when TMDb resolution fails).
+// ttSearch searches Prowlarr for a tt-sourced (IMDb) query. Indexers that
+// support id-based search (ImdbId and/or TmdbId) are searched in a
+// single combined request carrying both tokens when available — the
+// same approach Radarr/Sonarr use: Prowlarr routes each indexer to
+// whichever field its own definition understands, so there's no need to
+// search Imdb- and Tmdb-capable indexers separately. Indexers supporting
+// neither fall back to free text, which needs a resolved title, so
+// Cinemeta is only queried when at least one such indexer is in scope
+// (also the fallback for Tmdb-only indexers when TMDb resolution isn't
+// possible — they'd otherwise get a query with only a token they don't
+// understand, which Prowlarr strips to nothing).
 //
 // If the capability split itself can't be determined (Prowlarr
 // unreachable, or the configured indexer ids don't match any known
@@ -141,34 +142,22 @@ func (h *Handler) ttSearch(ctx context.Context, q meta.Query, s Settings) ([]pro
 		return pc.Search(ctx, idQuery, searchType, categories, s.Prowlarr.IndexerIDs)
 	}
 
-	var results []prowlarr.Result
+	tmdbQuery := ""
+	if len(tmdbCapable) > 0 {
+		tmdbQuery, _ = h.resolveTmdbQuery(ctx, q, searchType)
+	}
+	idBucket, combinedQuery, extraText := combineIDBuckets(imdbCapable, tmdbCapable, idQuery, tmdbQuery)
+	textOnly = append(textOnly, extraText...)
 
-	if len(imdbCapable) > 0 {
-		h.logger.Debug("stremio: prowlarr imdb id search",
-			"query", idQuery, "type", searchType, "indexers", len(imdbCapable))
-		r, err := pc.Search(ctx, idQuery, searchType, categories, imdbCapable)
+	var results []prowlarr.Result
+	if len(idBucket) > 0 {
+		h.logger.Debug("stremio: prowlarr id search",
+			"query", combinedQuery, "type", searchType, "indexers", len(idBucket))
+		r, err := pc.Search(ctx, combinedQuery, searchType, categories, idBucket)
 		if err != nil {
-			return nil, fmt.Errorf("imdb id search: %w", err)
+			return nil, fmt.Errorf("id search: %w", err)
 		}
 		results = append(results, r...)
-	}
-
-	if len(tmdbCapable) > 0 {
-		if tmdbQuery, ok := h.resolveTmdbQuery(ctx, q, searchType); ok {
-			h.logger.Debug("stremio: prowlarr tmdb id search",
-				"query", tmdbQuery, "type", searchType, "indexers", len(tmdbCapable))
-			r, err := pc.Search(ctx, tmdbQuery, searchType, categories, tmdbCapable)
-			if err != nil {
-				h.logger.Warn("stremio: prowlarr tmdb search failed", "query", tmdbQuery, "error", err)
-				textOnly = append(textOnly, tmdbCapable...)
-			} else {
-				results = append(results, r...)
-			}
-		} else {
-			// No API key, no match, or a lookup error — fall back to
-			// free text for these indexers rather than dropping them.
-			textOnly = append(textOnly, tmdbCapable...)
-		}
 	}
 
 	if len(textOnly) > 0 {
@@ -205,6 +194,26 @@ func (h *Handler) resolveTmdbQuery(ctx context.Context, q meta.Query, searchType
 		return "", false
 	}
 	return buildIDQuery("TmdbId", strconv.Itoa(tmdbID), q, searchType == "tvsearch"), true
+}
+
+// combineIDBuckets merges Imdb- and Tmdb-capable indexers into a single
+// search bucket carrying both id tokens, mirroring how Radarr/Sonarr
+// send one combined criteria object rather than searching per indexer
+// capability. tmdbQuery is the resolved "{TmdbId:...}" token, or "" if
+// resolution wasn't possible — in which case tmdbCapable indexers can't
+// use this search at all (their token is missing) and are returned as
+// extraText candidates for the free-text fallback instead.
+func combineIDBuckets(imdbCapable, tmdbCapable []int, idQuery, tmdbQuery string) (idBucket []int, combinedQuery string, extraText []int) {
+	if len(tmdbCapable) == 0 {
+		return imdbCapable, idQuery, nil
+	}
+	if tmdbQuery == "" {
+		return imdbCapable, idQuery, tmdbCapable
+	}
+	bucket := make([]int, 0, len(imdbCapable)+len(tmdbCapable))
+	bucket = append(bucket, imdbCapable...)
+	bucket = append(bucket, tmdbCapable...)
+	return bucket, idQuery + tmdbQuery, nil
 }
 
 // splitByIDCapability classifies enabled indexers within the configured

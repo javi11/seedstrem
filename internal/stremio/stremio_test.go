@@ -223,6 +223,40 @@ func TestSplitByIDCapability(t *testing.T) {
 	}
 }
 
+func TestCombineIDBuckets(t *testing.T) {
+	// No Tmdb-capable indexers at all: passthrough, Imdb-only query.
+	bucket, query, extraText := combineIDBuckets([]int{1}, nil, "{ImdbId:tt1}", "")
+	if len(bucket) != 1 || bucket[0] != 1 || query != "{ImdbId:tt1}" || len(extraText) != 0 {
+		t.Errorf("no-tmdb case = bucket %v query %q extraText %v", bucket, query, extraText)
+	}
+
+	// Tmdb-capable indexers present and resolution succeeded: merge into
+	// one bucket with both tokens present in the query.
+	bucket, query, extraText = combineIDBuckets([]int{1}, []int{4}, "{ImdbId:tt1}", "{TmdbId:603}")
+	if len(bucket) != 2 || bucket[0] != 1 || bucket[1] != 4 {
+		t.Errorf("merged bucket = %v, want [1 4]", bucket)
+	}
+	if query != "{ImdbId:tt1}{TmdbId:603}" {
+		t.Errorf("combined query = %q, want both tokens", query)
+	}
+	if len(extraText) != 0 {
+		t.Errorf("extraText = %v, want none when resolution succeeded", extraText)
+	}
+
+	// Tmdb-capable indexers present but resolution failed: they can't
+	// use this search at all (no usable token) and demote to text.
+	bucket, query, extraText = combineIDBuckets([]int{1}, []int{4}, "{ImdbId:tt1}", "")
+	if len(bucket) != 1 || bucket[0] != 1 {
+		t.Errorf("unresolved bucket = %v, want [1] (imdb only)", bucket)
+	}
+	if query != "{ImdbId:tt1}" {
+		t.Errorf("unresolved query = %q, want imdb-only", query)
+	}
+	if len(extraText) != 1 || extraText[0] != 4 {
+		t.Errorf("extraText = %v, want [4]", extraText)
+	}
+}
+
 // TestStreamSplitsSearchByCapability verifies the end-to-end split: an
 // ImdbId-capable indexer gets the id-token search, an incapable one gets
 // a free-text fallback (requiring a title lookup), and both result sets
