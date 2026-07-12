@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 const (
 	defaultCinemetaURL = "https://v3-cinemeta.strem.io"
 	defaultKitsuURL    = "https://kitsu.io/api/edge"
+	defaultTMDbURL     = "https://api.themoviedb.org/3"
 	metaCacheTTL       = 6 * time.Hour
 	httpTimeout        = 15 * time.Second
 )
@@ -25,17 +27,21 @@ type Info struct {
 	Year int
 }
 
-// Client resolves titles from Cinemeta (IMDB) and Kitsu (anime), with a
-// small TTL cache. Base URLs and the HTTP client are injectable for tests.
+// Client resolves titles from Cinemeta (IMDB) and Kitsu (anime), and
+// IMDb->TMDb ids, with a small TTL cache. Base URLs and the HTTP client
+// are injectable for tests.
 type Client struct {
 	http        *http.Client
 	cinemetaURL string
 	kitsuURL    string
+	tmdbURL     string
+	tmdbAPIKey  string
 
-	mu    sync.Mutex
-	cache map[string]cacheEntry
-	ttl   time.Duration
-	now   func() time.Time
+	mu        sync.Mutex
+	cache     map[string]cacheEntry
+	tmdbCache map[string]tmdbCacheEntry
+	ttl       time.Duration
+	now       func() time.Time
 }
 
 type cacheEntry struct {
@@ -43,8 +49,15 @@ type cacheEntry struct {
 	expiresAt time.Time
 }
 
+type tmdbCacheEntry struct {
+	id        int
+	expiresAt time.Time
+}
+
 // New builds a Client. An empty cinemetaURL falls back to the default.
-func New(cinemetaURL string) *Client {
+// tmdbAPIKey is optional; without it, ResolveTMDbID always errors (any
+// indexer needing a TMDb id falls back to free-text search instead).
+func New(cinemetaURL, tmdbAPIKey string) *Client {
 	if cinemetaURL == "" {
 		cinemetaURL = defaultCinemetaURL
 	}
@@ -52,7 +65,10 @@ func New(cinemetaURL string) *Client {
 		http:        &http.Client{Timeout: httpTimeout},
 		cinemetaURL: strings.TrimSuffix(cinemetaURL, "/"),
 		kitsuURL:    defaultKitsuURL,
+		tmdbURL:     defaultTMDbURL,
+		tmdbAPIKey:  tmdbAPIKey,
 		cache:       map[string]cacheEntry{},
+		tmdbCache:   map[string]tmdbCacheEntry{},
 		ttl:         metaCacheTTL,
 		now:         time.Now,
 	}
@@ -101,6 +117,70 @@ func (c *Client) Meta(ctx context.Context, typ, imdbID string) (Info, error) {
 	info := Info{Name: body.Meta.Name, Year: parseYear(body.Meta.Year, body.Meta.ReleaseInfo)}
 	c.cachePut(key, info)
 	return info, nil
+}
+
+// ResolveTMDbID looks up the TMDb id for an IMDb id via TMDb's "find by
+// external id" endpoint. typ is "movie" or "series". Requires an API key
+// (configured at construction); without one this always errors so
+// callers can fall back to free-text search.
+func (c *Client) ResolveTMDbID(ctx context.Context, typ, imdbID string) (int, error) {
+	if c.tmdbAPIKey == "" {
+		return 0, fmt.Errorf("meta: tmdb api key not configured")
+	}
+
+	key := "tmdb:" + imdbID
+	if id, ok := c.tmdbCacheGet(key); ok {
+		return id, nil
+	}
+
+	q := url.Values{}
+	q.Set("api_key", c.tmdbAPIKey)
+	q.Set("external_source", "imdb_id")
+	reqURL := fmt.Sprintf("%s/find/%s?%s", c.tmdbURL, imdbID, q.Encode())
+
+	var body struct {
+		MovieResults []struct {
+			ID int `json:"id"`
+		} `json:"movie_results"`
+		TvResults []struct {
+			ID int `json:"id"`
+		} `json:"tv_results"`
+	}
+	if err := c.getJSON(ctx, reqURL, &body); err != nil {
+		return 0, err
+	}
+
+	var id int
+	if typ == "series" {
+		if len(body.TvResults) == 0 {
+			return 0, fmt.Errorf("tmdb: no tv result for %s", imdbID)
+		}
+		id = body.TvResults[0].ID
+	} else {
+		if len(body.MovieResults) == 0 {
+			return 0, fmt.Errorf("tmdb: no movie result for %s", imdbID)
+		}
+		id = body.MovieResults[0].ID
+	}
+
+	c.tmdbCachePut(key, id)
+	return id, nil
+}
+
+func (c *Client) tmdbCacheGet(key string) (int, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.tmdbCache[key]
+	if !ok || c.now().After(e.expiresAt) {
+		return 0, false
+	}
+	return e.id, true
+}
+
+func (c *Client) tmdbCachePut(key string, id int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tmdbCache[key] = tmdbCacheEntry{id: id, expiresAt: c.now().Add(c.ttl)}
 }
 
 func parseYear(fields ...string) int {

@@ -77,6 +77,10 @@ type Filters struct {
 type Meta struct {
 	CinemetaURL     string        `yaml:"cinemeta_url"`
 	MetadataTimeout time.Duration `yaml:"metadata_timeout"`
+	// TMDbAPIKey enables resolving IMDb ids to TMDb ids, for indexers
+	// whose Prowlarr definition supports TmdbId search but not ImdbId.
+	// Optional: those indexers fall back to free-text search without it.
+	TMDbAPIKey string `yaml:"tmdb_api_key"`
 }
 
 // Mapping remaps a path prefix as seen by qBittorrent to a local path.
@@ -192,6 +196,7 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 	set("PROWLARR_URL", &cfg.Prowlarr.URL)
 	set("PROWLARR_API_KEY", &cfg.Prowlarr.APIKey)
 	set("META_CINEMETA_URL", &cfg.Meta.CinemetaURL)
+	set("META_TMDB_API_KEY", &cfg.Meta.TMDbAPIKey)
 	set("STORAGE_DATABASE", &cfg.Storage.Database)
 	set("LOG_LEVEL", &cfg.Log.Level)
 

@@ -20,7 +20,7 @@ func TestMetaAndCache(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL)
+	c := New(srv.URL, "")
 	c.http = srv.Client()
 
 	info, err := c.Meta(context.Background(), "movie", "tt1375666")
@@ -45,7 +45,7 @@ func TestMetaYearFromRange(t *testing.T) {
 		w.Write([]byte(`{"meta":{"name":"Breaking Bad","year":"2008–2013"}}`))
 	}))
 	defer srv.Close()
-	c := New(srv.URL)
+	c := New(srv.URL, "")
 	c.http = srv.Client()
 	info, err := c.Meta(context.Background(), "series", "tt0903747")
 	if err != nil {
@@ -66,7 +66,7 @@ func TestAnimeTitleKitsu(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New("")
+	c := New("", "")
 	c.http = srv.Client()
 	c.kitsuURL = srv.URL
 
@@ -76,6 +76,57 @@ func TestAnimeTitleKitsu(t *testing.T) {
 	}
 	if title != "Jujutsu Kaisen" {
 		t.Errorf("title = %q", title)
+	}
+}
+
+func TestResolveTMDbID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/find/tt1375666" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Query().Get("api_key") != "test-key" {
+			t.Errorf("api_key = %q, want test-key", r.URL.Query().Get("api_key"))
+		}
+		if r.URL.Query().Get("external_source") != "imdb_id" {
+			t.Errorf("external_source = %q, want imdb_id", r.URL.Query().Get("external_source"))
+		}
+		w.Write([]byte(`{"movie_results":[{"id":603}],"tv_results":[]}`))
+	}))
+	defer srv.Close()
+
+	c := New("", "test-key")
+	c.http = srv.Client()
+	c.tmdbURL = srv.URL
+
+	id, err := c.ResolveTMDbID(context.Background(), "movie", "tt1375666")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if id != 603 {
+		t.Errorf("id = %d, want 603", id)
+	}
+}
+
+func TestResolveTMDbIDNoAPIKey(t *testing.T) {
+	c := New("", "")
+	if _, err := c.ResolveTMDbID(context.Background(), "movie", "tt1375666"); err == nil {
+		t.Fatal("expected error without an api key")
+	}
+}
+
+func TestResolveTMDbIDNoMatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"movie_results":[],"tv_results":[]}`))
+	}))
+	defer srv.Close()
+
+	c := New("", "test-key")
+	c.http = srv.Client()
+	c.tmdbURL = srv.URL
+
+	if _, err := c.ResolveTMDbID(context.Background(), "movie", "tt1375666"); err == nil {
+		t.Fatal("expected error when tmdb has no match")
 	}
 }
 
@@ -89,7 +140,7 @@ func TestAnimeTitleMalMapping(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New("")
+	c := New("", "")
 	c.http = srv.Client()
 	c.kitsuURL = srv.URL
 

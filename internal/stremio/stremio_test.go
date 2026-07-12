@@ -74,7 +74,7 @@ func newHarness(t *testing.T) *harness {
 		return torrents.Settings{Category: "seedstrem", MetadataTimeout: 2 * time.Second}
 	}, nil)
 
-	metaClient := meta.New(cinemeta.URL)
+	metaClient := meta.New(cinemeta.URL, "")
 
 	h := &harness{prowlarr: prow, cinemeta: cinemeta, fakeQB: fakeQB}
 	h.handler = New(svc, metaClient, func() Settings {
@@ -178,43 +178,48 @@ func TestBuildAnimeSearch(t *testing.T) {
 	}
 }
 
-func TestSplitByImdbSupport(t *testing.T) {
+func TestSplitByIDCapability(t *testing.T) {
 	indexers := []prowlarr.IndexerInfo{
 		{ID: 1, Enable: true, Capabilities: prowlarr.Capabilities{MovieSearchParams: []string{"Q", "ImdbId"}, TvSearchParams: []string{"Q"}}},
 		{ID: 2, Enable: true, Capabilities: prowlarr.Capabilities{MovieSearchParams: []string{"Q"}, TvSearchParams: []string{"Q", "ImdbId"}}},
 		{ID: 3, Enable: false, Capabilities: prowlarr.Capabilities{MovieSearchParams: []string{"Q", "ImdbId"}}},
+		{ID: 4, Enable: true, Capabilities: prowlarr.Capabilities{MovieSearchParams: []string{"Q", "TmdbId"}, TvSearchParams: []string{"Q"}}},
 	}
 
-	// Empty configured scope = every enabled indexer, split by capability.
-	capable, incapable := splitByImdbSupport(indexers, nil, false)
-	if len(capable) != 1 || capable[0] != 1 {
-		t.Errorf("movie capable = %v, want [1]", capable)
+	// Empty configured scope = every enabled indexer, split by capability,
+	// Imdb preferred over Tmdb over plain text.
+	imdb, tmdb, text := splitByIDCapability(indexers, nil, false)
+	if len(imdb) != 1 || imdb[0] != 1 {
+		t.Errorf("movie imdb-capable = %v, want [1]", imdb)
 	}
-	if len(incapable) != 1 || incapable[0] != 2 {
-		t.Errorf("movie incapable = %v, want [2]", incapable)
+	if len(tmdb) != 1 || tmdb[0] != 4 {
+		t.Errorf("movie tmdb-capable = %v, want [4]", tmdb)
+	}
+	if len(text) != 1 || text[0] != 2 {
+		t.Errorf("movie text-only = %v, want [2]", text)
 	}
 
-	capable, incapable = splitByImdbSupport(indexers, nil, true)
-	if len(capable) != 1 || capable[0] != 2 {
-		t.Errorf("tv capable = %v, want [2]", capable)
+	imdb, tmdb, text = splitByIDCapability(indexers, nil, true)
+	if len(imdb) != 1 || imdb[0] != 2 {
+		t.Errorf("tv imdb-capable = %v, want [2]", imdb)
 	}
-	if len(incapable) != 1 || incapable[0] != 1 {
-		t.Errorf("tv incapable = %v, want [1]", incapable)
+	if len(tmdb) != 0 {
+		t.Errorf("tv tmdb-capable = %v, want none", tmdb)
+	}
+	if len(text) != 2 {
+		t.Errorf("tv text-only = %v, want 2 (indexers 1 and 4)", text)
 	}
 
 	// A configured (disabled) indexer is still honored explicitly.
-	capable, incapable = splitByImdbSupport(indexers, []int{3}, false)
-	if len(capable) != 1 || capable[0] != 3 {
-		t.Errorf("explicit scope capable = %v, want [3]", capable)
-	}
-	if len(incapable) != 0 {
-		t.Errorf("explicit scope incapable = %v, want none", incapable)
+	imdb, _, _ = splitByIDCapability(indexers, []int{3}, false)
+	if len(imdb) != 1 || imdb[0] != 3 {
+		t.Errorf("explicit scope imdb-capable = %v, want [3]", imdb)
 	}
 
-	// Configured ids that match nothing known yield empty/empty.
-	capable, incapable = splitByImdbSupport(indexers, []int{99}, false)
-	if len(capable) != 0 || len(incapable) != 0 {
-		t.Errorf("unknown scope = capable %v incapable %v, want both empty", capable, incapable)
+	// Configured ids that match nothing known yield all-empty.
+	imdb, tmdb, text = splitByIDCapability(indexers, []int{99}, false)
+	if len(imdb) != 0 || len(tmdb) != 0 || len(text) != 0 {
+		t.Errorf("unknown scope = imdb %v tmdb %v text %v, want all empty", imdb, tmdb, text)
 	}
 }
 
@@ -260,7 +265,7 @@ func TestStreamSplitsSearchByCapability(t *testing.T) {
 	}))
 	defer prow.Close()
 
-	metaClient := meta.New(cinemeta.URL)
+	metaClient := meta.New(cinemeta.URL, "")
 	h := New(nil, metaClient, func() Settings {
 		return Settings{
 			Prowlarr:   ProwlarrSettings{URL: prow.URL, APIKey: "k", MovieCategories: []int{2000}},
@@ -298,6 +303,71 @@ func TestStreamSplitsSearchByCapability(t *testing.T) {
 	}
 	if !sawID || !sawText {
 		t.Errorf("expected both id-search and text-fallback results, got: %+v", sr.Streams)
+	}
+}
+
+// TestStreamTmdbOnlyFallsBackToText verifies that a TmdbId-only indexer,
+// when TMDb resolution isn't possible (no API key configured here),
+// falls back to the free-text search rather than being dropped.
+func TestStreamTmdbOnlyFallsBackToText(t *testing.T) {
+	cinemeta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/meta/movie/tt1375666") {
+			w.Write([]byte(`{"meta":{"name":"The Matrix","releaseInfo":"1999"}}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer cinemeta.Close()
+
+	prow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/indexer":
+			w.Write([]byte(`[
+				{"id":1,"name":"TmdbOnly","protocol":"torrent","enable":true,
+				 "capabilities":{"movieSearchParams":["Q","TmdbId"]}}
+			]`))
+		case "/api/v1/search":
+			q := r.URL.Query()
+			if q.Get("type") == "search" && q["indexerIds"][0] == "1" {
+				w.Write([]byte(`[{"title":"Text Fallback Hit","magnetUrl":"` + testMagnet() + `","size":100,"seeders":10,"protocol":"torrent","indexer":"TmdbOnly"}]`))
+				return
+			}
+			w.Write([]byte(`[]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer prow.Close()
+
+	// No TMDb API key configured: resolution errors, so the TmdbId-only
+	// indexer should fall back to the text-search bucket, not be dropped.
+	metaClient := meta.New(cinemeta.URL, "")
+	h := New(nil, metaClient, func() Settings {
+		return Settings{
+			Prowlarr:   ProwlarrSettings{URL: prow.URL, APIKey: "k", MovieCategories: []int{2000}},
+			Addon:      AddonSettings{EnableMovies: true},
+			MaxResults: 20,
+		}
+	}, "test", nil)
+
+	root := chi.NewRouter()
+	root.Mount("/stremio", h.Router())
+	server := httptest.NewServer(root)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/stremio/stream/movie/tt1375666.json")
+	if err != nil {
+		t.Fatalf("get stream: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var sr streamResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(sr.Streams) != 1 || !strings.Contains(sr.Streams[0].Title, "Text Fallback Hit") {
+		t.Fatalf("want text-fallback result for tmdb-only indexer, got: %+v", sr.Streams)
 	}
 }
 

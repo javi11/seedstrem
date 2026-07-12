@@ -129,6 +129,7 @@ type configDTO struct {
 	Meta struct {
 		CinemetaURL            string `json:"cinemeta_url"`
 		MetadataTimeoutSeconds int    `json:"metadata_timeout_seconds"`
+		TMDbAPIKey             string `json:"tmdb_api_key"`
 	} `json:"meta"`
 	Paths struct {
 		Mappings []config.Mapping `json:"mappings"`
@@ -175,6 +176,9 @@ func toDTO(cfg config.Config) configDTO {
 	dto.Filters.MaxResults = cfg.Filters.MaxResults
 	dto.Meta.CinemetaURL = cfg.Meta.CinemetaURL
 	dto.Meta.MetadataTimeoutSeconds = int(cfg.Meta.MetadataTimeout / time.Second)
+	if cfg.Meta.TMDbAPIKey != "" {
+		dto.Meta.TMDbAPIKey = passwordMask
+	}
 	dto.Paths.Mappings = cfg.Paths.Mappings
 	dto.Storage.DeleteFilesOnRemove = cfg.Storage.DeleteFilesOnRemove
 	dto.Stream.WaitTimeoutSeconds = int(cfg.Stream.WaitTimeout / time.Second)
@@ -219,6 +223,10 @@ func (dto configDTO) apply(cfg config.Config) config.Config {
 	cfg.Meta.CinemetaURL = dto.Meta.CinemetaURL
 	if dto.Meta.MetadataTimeoutSeconds > 0 {
 		cfg.Meta.MetadataTimeout = time.Duration(dto.Meta.MetadataTimeoutSeconds) * time.Second
+	}
+	// Empty or masked = keep the stored key.
+	if k := dto.Meta.TMDbAPIKey; k != "" && k != passwordMask {
+		cfg.Meta.TMDbAPIKey = k
 	}
 	cfg.Paths.Mappings = dto.Paths.Mappings
 	cfg.Storage.DeleteFilesOnRemove = dto.Storage.DeleteFilesOnRemove

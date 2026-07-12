@@ -76,6 +76,7 @@ export interface Config {
   meta: {
     cinemeta_url: string;
     metadata_timeout_seconds: number;
+    tmdb_api_key: string;
   };
   paths: { mappings: Mapping[] };
   storage: { delete_files_on_remove: boolean };

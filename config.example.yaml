@@ -48,6 +48,11 @@ meta:
   # How long resolve-on-play waits for qBittorrent to fetch torrent
   # metadata before answering 503 (players retry).
   metadata_timeout: 60s
+  # Optional. Get a free key at https://www.themoviedb.org/settings/api.
+  # Lets seedstrem resolve IMDb ids to TMDb ids for indexers that support
+  # TmdbId search but not ImdbId; without it, those indexers fall back to
+  # free-text search.
+  tmdb_api_key: ""
 
 paths:
   # Translate qBittorrent's paths to paths seedstrem can read.

@@ -92,7 +92,7 @@ func run() error {
 		}
 	}, logger)
 
-	metaClient := meta.New(cfg.Meta.CinemetaURL)
+	metaClient := meta.New(cfg.Meta.CinemetaURL, cfg.Meta.TMDbAPIKey)
 	stremioHandler := stremio.New(torrentSvc, metaClient, func() stremio.Settings {
 		c := cm.Get()
 		return stremio.Settings{

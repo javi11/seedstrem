@@ -160,6 +160,18 @@ func (ix IndexerInfo) SupportsTvImdb() bool {
 	return hasParam(ix.Capabilities.TvSearchParams, "imdbid")
 }
 
+// SupportsMovieTmdb reports whether this indexer accepts a TmdbId movie
+// search parameter (Prowlarr's "{TmdbId:...}" query token).
+func (ix IndexerInfo) SupportsMovieTmdb() bool {
+	return hasParam(ix.Capabilities.MovieSearchParams, "tmdbid")
+}
+
+// SupportsTvTmdb reports whether this indexer accepts a TmdbId TV
+// search parameter (Prowlarr's "{TmdbId:...}" query token).
+func (ix IndexerInfo) SupportsTvTmdb() bool {
+	return hasParam(ix.Capabilities.TvSearchParams, "tmdbid")
+}
+
 func hasParam(params []string, want string) bool {
 	for _, p := range params {
 		if strings.EqualFold(p, want) {

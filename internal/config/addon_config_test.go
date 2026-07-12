@@ -37,6 +37,7 @@ func TestApplyEnvProwlarr(t *testing.T) {
 		"SEEDSTREM_PROWLARR_INDEXER_IDS":      "3,7",
 		"SEEDSTREM_ADDON_ENABLE_ANIME":        "true",
 		"SEEDSTREM_META_METADATA_TIMEOUT":     "30s",
+		"SEEDSTREM_META_TMDB_API_KEY":         "tmdb-secret",
 	}
 	applyEnv(&cfg, func(k string) string { return env[k] })
 
@@ -54,6 +55,9 @@ func TestApplyEnvProwlarr(t *testing.T) {
 	}
 	if cfg.Meta.MetadataTimeout != 30*time.Second {
 		t.Errorf("metadata timeout env override failed: %v", cfg.Meta.MetadataTimeout)
+	}
+	if cfg.Meta.TMDbAPIKey != "tmdb-secret" {
+		t.Errorf("tmdb api key env override failed: %q", cfg.Meta.TMDbAPIKey)
 	}
 }
 
@@ -86,6 +90,7 @@ func TestSaveRoundTripAddon(t *testing.T) {
 	cfg.Prowlarr.URL = "http://prowlarr:9696"
 	cfg.Prowlarr.APIKey = "abc"
 	cfg.Prowlarr.IndexerIDs = []int{4, 8}
+	cfg.Meta.TMDbAPIKey = "tmdb-secret"
 	cfg.Addon.EnableAnime = true
 	cfg.Filters.Qualities = []string{"1080p", "720p"}
 
@@ -104,6 +109,9 @@ func TestSaveRoundTripAddon(t *testing.T) {
 	}
 	if len(got.Prowlarr.IndexerIDs) != 2 || got.Prowlarr.IndexerIDs[0] != 4 || got.Prowlarr.IndexerIDs[1] != 8 {
 		t.Errorf("indexer ids round-trip lost: %v", got.Prowlarr.IndexerIDs)
+	}
+	if got.Meta.TMDbAPIKey != "tmdb-secret" {
+		t.Errorf("tmdb api key round-trip lost: %q", got.Meta.TMDbAPIKey)
 	}
 	if !got.Addon.EnableAnime {
 		t.Error("anime toggle round-trip lost")

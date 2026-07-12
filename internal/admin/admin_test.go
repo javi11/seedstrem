@@ -184,6 +184,42 @@ func TestPutConfigKeepsMaskedPassword(t *testing.T) {
 	}
 }
 
+func TestPutConfigKeepsMaskedTMDbAPIKey(t *testing.T) {
+	e := newEnv(t)
+	cfg := e.config.Get()
+	cfg.Meta.TMDbAPIKey = "tmdb-secret"
+	if err := e.config.Update(cfg); err != nil {
+		t.Fatal(err)
+	}
+	e.login(t)
+
+	w := e.do(t, http.MethodGet, "/config", "")
+	var dto configDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &dto); err != nil {
+		t.Fatal(err)
+	}
+	if dto.Meta.TMDbAPIKey != passwordMask {
+		t.Fatalf("expected masked tmdb key, got %q", dto.Meta.TMDbAPIKey)
+	}
+
+	payload, _ := json.Marshal(dto)
+	if w = e.do(t, http.MethodPut, "/config", string(payload)); w.Code != http.StatusOK {
+		t.Fatalf("put status = %d body=%s", w.Code, w.Body.String())
+	}
+	if got := e.config.Get().Meta.TMDbAPIKey; got != "tmdb-secret" {
+		t.Errorf("masked tmdb key overwrote stored value: %q", got)
+	}
+
+	dto.Meta.TMDbAPIKey = "new-tmdb-secret"
+	payload, _ = json.Marshal(dto)
+	if w = e.do(t, http.MethodPut, "/config", string(payload)); w.Code != http.StatusOK {
+		t.Fatalf("put status = %d", w.Code)
+	}
+	if got := e.config.Get().Meta.TMDbAPIKey; got != "new-tmdb-secret" {
+		t.Errorf("tmdb key not updated: %q", got)
+	}
+}
+
 func TestPutConfigValidates(t *testing.T) {
 	e := newEnv(t)
 	e.login(t)
