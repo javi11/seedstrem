@@ -1,7 +1,6 @@
 package stremio
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -51,17 +50,25 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	title, year, err := h.resolveTitle(ctx, q)
-	if err != nil {
-		h.logger.Warn("stremio: title resolution failed", "id", id, "error", err)
-		writeJSON(w, http.StatusOK, empty)
-		return
+	// tt-sourced (IMDb) queries search Prowlarr by id token — precise
+	// enough that no title lookup is needed, and it skips a Cinemeta
+	// round trip. Anime ids have no Prowlarr-recognized id token, so
+	// those still resolve a title and search by free text.
+	var title string
+	if q.IsAnime() {
+		var err error
+		title, err = h.meta.AnimeTitle(ctx, q.Source, q.ID)
+		if err != nil {
+			h.logger.Warn("stremio: title resolution failed", "id", id, "error", err)
+			writeJSON(w, http.StatusOK, empty)
+			return
+		}
 	}
 
-	query, categories := buildSearch(q, title, year, s.Prowlarr)
+	query, searchType, categories := buildSearch(q, title, s.Prowlarr)
 	h.logger.Debug("stremio: prowlarr search",
-		"query", query, "categories", categories, "indexers", len(s.Prowlarr.IndexerIDs))
-	results, err := h.prowlarr(s).Search(ctx, query, categories, s.Prowlarr.IndexerIDs)
+		"query", query, "type", searchType, "categories", categories, "indexers", len(s.Prowlarr.IndexerIDs))
+	results, err := h.prowlarr(s).Search(ctx, query, searchType, categories, s.Prowlarr.IndexerIDs)
 	if err != nil {
 		h.logger.Warn("stremio: prowlarr search failed", "query", query, "error", err)
 		writeJSON(w, http.StatusOK, empty)
@@ -94,48 +101,31 @@ func (h *Handler) contentEnabled(a AddonSettings, q meta.Query) bool {
 	return a.EnableMovies
 }
 
-// resolveTitle returns the human title and (for movies) the release year.
-func (h *Handler) resolveTitle(ctx context.Context, q meta.Query) (string, int, error) {
-	if q.Source == "tt" {
-		typ := "movie"
-		if q.IsSeries() {
-			typ = "series"
-		}
-		info, err := h.meta.Meta(ctx, typ, q.ID)
-		if err != nil {
-			return "", 0, err
-		}
-		return info.Name, info.Year, nil
-	}
-	title, err := h.meta.AnimeTitle(ctx, q.Source, q.ID)
-	if err != nil {
-		return "", 0, err
-	}
-	return title, 0, nil
-}
-
-// buildSearch produces the Prowlarr query string and category list.
-func buildSearch(q meta.Query, title string, year int, p ProwlarrSettings) (string, []int) {
+// buildSearch produces the Prowlarr query string, search type, and
+// category list. tt-sourced (IMDb) queries use Prowlarr's id-token
+// syntax against "movie"/"tvsearch" — the same mechanism Radarr/Sonarr
+// rely on — so ID-capable indexers match precisely; title is unused in
+// that case. Anime ids have no such token, so those fall back to a
+// free-text "search" query built from the resolved title.
+func buildSearch(q meta.Query, title string, p ProwlarrSettings) (query, searchType string, categories []int) {
 	switch {
 	case q.IsAnime():
 		query := title
 		if q.Episode > 0 {
 			query = fmt.Sprintf("%s %02d", title, q.Episode)
 		}
-		return query, p.AnimeCategories
+		return query, "search", p.AnimeCategories
 	case q.IsSeries():
+		query := fmt.Sprintf("{ImdbId:%s}", q.ID)
 		if q.Season > 0 {
-			return fmt.Sprintf("%s S%02dE%02d", title, q.Season, q.Episode), p.TVCategories
+			query += fmt.Sprintf("{Season:%02d}", q.Season)
 		}
 		if q.Episode > 0 {
-			return fmt.Sprintf("%s %02d", title, q.Episode), p.TVCategories
+			query += fmt.Sprintf("{Episode:%02d}", q.Episode)
 		}
-		return title, p.TVCategories
+		return query, "tvsearch", p.TVCategories
 	default: // movie
-		if year > 0 {
-			return fmt.Sprintf("%s %d", title, year), p.MovieCategories
-		}
-		return title, p.MovieCategories
+		return fmt.Sprintf("{ImdbId:%s}", q.ID), "movie", p.MovieCategories
 	}
 }
 

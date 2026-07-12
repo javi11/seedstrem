@@ -11,11 +11,12 @@ import (
 const hexHash = "0123456789abcdef0123456789abcdef01234567"
 
 func TestSearch(t *testing.T) {
-	var gotKey, gotQuery string
+	var gotKey, gotQuery, gotType string
 	var gotCategories, gotIndexers []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotKey = r.Header.Get("X-Api-Key")
 		gotQuery = r.URL.Query().Get("query")
+		gotType = r.URL.Query().Get("type")
 		gotCategories = r.URL.Query()["categories"]
 		gotIndexers = r.URL.Query()["indexerIds"]
 		w.Header().Set("Content-Type", "application/json")
@@ -29,7 +30,7 @@ func TestSearch(t *testing.T) {
 	defer srv.Close()
 
 	c := NewWithClient(srv.URL, "my-key", srv.Client())
-	results, err := c.Search(context.Background(), "the matrix 1999", []int{2000, 5000}, []int{3, 7})
+	results, err := c.Search(context.Background(), "the matrix 1999", "", []int{2000, 5000}, []int{3, 7})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -39,6 +40,9 @@ func TestSearch(t *testing.T) {
 	}
 	if gotQuery != "the matrix 1999" {
 		t.Errorf("query = %q", gotQuery)
+	}
+	if gotType != "search" {
+		t.Errorf("type = %q, want default \"search\"", gotType)
 	}
 	if len(gotCategories) != 2 {
 		t.Errorf("categories params = %v, want 2", gotCategories)
@@ -78,15 +82,31 @@ func TestSearchNon200(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewWithClient(srv.URL, "bad", srv.Client())
-	if _, err := c.Search(context.Background(), "q", nil, nil); err == nil {
+	if _, err := c.Search(context.Background(), "q", "", nil, nil); err == nil {
 		t.Fatal("expected error on 401")
 	}
 }
 
 func TestSearchNoBaseURL(t *testing.T) {
 	c := New("", "key")
-	if _, err := c.Search(context.Background(), "q", nil, nil); err == nil {
+	if _, err := c.Search(context.Background(), "q", "", nil, nil); err == nil {
 		t.Fatal("expected error when base URL unset")
+	}
+}
+
+func TestSearchCustomType(t *testing.T) {
+	var gotType string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotType = r.URL.Query().Get("type")
+		w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+	c := NewWithClient(srv.URL, "k", srv.Client())
+	if _, err := c.Search(context.Background(), "{ImdbId:tt1375666}", "movie", nil, nil); err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if gotType != "movie" {
+		t.Errorf("type = %q, want movie", gotType)
 	}
 }
 
@@ -98,7 +118,7 @@ func TestSearchOmitsIndexersWhenEmpty(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewWithClient(srv.URL, "k", srv.Client())
-	if _, err := c.Search(context.Background(), "q", nil, nil); err != nil {
+	if _, err := c.Search(context.Background(), "q", "", nil, nil); err != nil {
 		t.Fatalf("search: %v", err)
 	}
 	if hadIndexers {

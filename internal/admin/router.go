@@ -412,7 +412,7 @@ func (h *Handler) testProwlarr(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	if _, err := prowlarr.New(body.URL, body.APIKey).Search(ctx, "test", nil, nil); err != nil {
+	if _, err := prowlarr.New(body.URL, body.APIKey).Search(ctx, "test", "", nil, nil); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}

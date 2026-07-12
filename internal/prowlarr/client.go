@@ -66,10 +66,18 @@ type apiResult struct {
 
 // Search queries Prowlarr for query across the given newznab categories.
 // When indexerIDs is non-empty the search is scoped to those indexers;
-// empty means search every enabled indexer.
-func (c *Client) Search(ctx context.Context, query string, categories, indexerIDs []int) ([]Result, error) {
+// empty means search every enabled indexer. searchType selects Prowlarr's
+// search mode ("search", "movie", or "tvsearch"); empty defaults to
+// "search". For "movie"/"tvsearch", query is expected to carry Prowlarr's
+// id tokens (e.g. "{ImdbId:tt1234567}{Season:01}{Episode:05}") so
+// ID-capable indexers can match precisely instead of by free text — this
+// mirrors how Radarr/Sonarr query Prowlarr.
+func (c *Client) Search(ctx context.Context, query, searchType string, categories, indexerIDs []int) ([]Result, error) {
 	if c.baseURL == "" {
 		return nil, fmt.Errorf("prowlarr: base URL not configured")
+	}
+	if searchType == "" {
+		searchType = "search"
 	}
 
 	u, err := url.Parse(c.baseURL + "/api/v1/search")
@@ -78,7 +86,7 @@ func (c *Client) Search(ctx context.Context, query string, categories, indexerID
 	}
 	q := u.Query()
 	q.Set("query", query)
-	q.Set("type", "search")
+	q.Set("type", searchType)
 	for _, cat := range categories {
 		q.Add("categories", strconv.Itoa(cat))
 	}

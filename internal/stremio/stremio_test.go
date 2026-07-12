@@ -117,6 +117,60 @@ func TestManifest(t *testing.T) {
 	}
 }
 
+func TestBuildSearch(t *testing.T) {
+	p := ProwlarrSettings{
+		MovieCategories: []int{2000},
+		TVCategories:    []int{5000},
+		AnimeCategories: []int{5070},
+	}
+
+	movie := meta.Query{Source: "tt", ID: "tt1375666", Kind: meta.KindMovie}
+	query, typ, cats := buildSearch(movie, "", p)
+	if query != "{ImdbId:tt1375666}" {
+		t.Errorf("movie query = %q, want id token", query)
+	}
+	if typ != "movie" {
+		t.Errorf("movie type = %q, want movie", typ)
+	}
+	if len(cats) != 1 || cats[0] != 2000 {
+		t.Errorf("movie categories = %v, want [2000]", cats)
+	}
+
+	series := meta.Query{Source: "tt", ID: "tt0944947", Kind: meta.KindSeries, Season: 1, Episode: 5}
+	query, typ, cats = buildSearch(series, "", p)
+	if query != "{ImdbId:tt0944947}{Season:01}{Episode:05}" {
+		t.Errorf("series query = %q, want id+season+episode tokens", query)
+	}
+	if typ != "tvsearch" {
+		t.Errorf("series type = %q, want tvsearch", typ)
+	}
+	if len(cats) != 1 || cats[0] != 5000 {
+		t.Errorf("series categories = %v, want [5000]", cats)
+	}
+
+	seriesNoSE := meta.Query{Source: "tt", ID: "tt0944947", Kind: meta.KindSeries}
+	if query, _, _ := buildSearch(seriesNoSE, "", p); query != "{ImdbId:tt0944947}" {
+		t.Errorf("series without season/episode query = %q, want bare id token", query)
+	}
+
+	anime := meta.Query{Source: "kitsu", ID: "12", Kind: meta.KindMovie}
+	query, typ, cats = buildSearch(anime, "Anime Movie", p)
+	if query != "Anime Movie" {
+		t.Errorf("anime query = %q, want free-text title", query)
+	}
+	if typ != "search" {
+		t.Errorf("anime type = %q, want search", typ)
+	}
+	if len(cats) != 1 || cats[0] != 5070 {
+		t.Errorf("anime categories = %v, want [5070]", cats)
+	}
+
+	animeEp := meta.Query{Source: "kitsu", ID: "44081", Kind: meta.KindSeries, Episode: 5}
+	if query, _, _ := buildSearch(animeEp, "Anime Series", p); query != "Anime Series 05" {
+		t.Errorf("anime series query = %q, want title + episode", query)
+	}
+}
+
 func TestManifestVersion(t *testing.T) {
 	tests := map[string]string{
 		"1.2.3":          "1.2.3",
