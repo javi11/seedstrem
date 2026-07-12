@@ -135,7 +135,7 @@ func (h *Handler) ttSearch(ctx context.Context, q meta.Query, s Settings) ([]pro
 		return pc.Search(ctx, idQuery, searchType, categories, s.Prowlarr.IndexerIDs)
 	}
 
-	imdbCapable, tmdbCapable, textOnly := splitByIDCapability(indexers, s.Prowlarr.IndexerIDs, q.IsSeries())
+	imdbCapable, tmdbCapable, textOnly, needsTmdb := splitByIDCapability(indexers, s.Prowlarr.IndexerIDs, q.IsSeries())
 	if len(imdbCapable) == 0 && len(tmdbCapable) == 0 && len(textOnly) == 0 {
 		// Configured ids matched nothing we know about (e.g. stale
 		// config) — same fallback as an unclassifiable capability lookup.
@@ -143,7 +143,7 @@ func (h *Handler) ttSearch(ctx context.Context, q meta.Query, s Settings) ([]pro
 	}
 
 	tmdbQuery := ""
-	if len(tmdbCapable) > 0 {
+	if needsTmdb {
 		tmdbQuery, _ = h.resolveTmdbQuery(ctx, q, searchType)
 	}
 	idBucket, combinedQuery, extraText := combineIDBuckets(imdbCapable, tmdbCapable, idQuery, tmdbQuery)
@@ -196,31 +196,42 @@ func (h *Handler) resolveTmdbQuery(ctx context.Context, q meta.Query, searchType
 	return buildIDQuery("TmdbId", strconv.Itoa(tmdbID), q, searchType == "tvsearch"), true
 }
 
-// combineIDBuckets merges Imdb- and Tmdb-capable indexers into a single
-// search bucket carrying both id tokens, mirroring how Radarr/Sonarr
-// send one combined criteria object rather than searching per indexer
-// capability. tmdbQuery is the resolved "{TmdbId:...}" token, or "" if
-// resolution wasn't possible — in which case tmdbCapable indexers can't
-// use this search at all (their token is missing) and are returned as
-// extraText candidates for the free-text fallback instead.
+// combineIDBuckets builds the id-token search: imdbCapable indexers
+// always search by the Imdb token; when tmdbQuery resolved (the
+// "{TmdbId:...}" token, "" if resolution wasn't possible), it's appended
+// too — so an indexer supporting both fields gets both tokens in the
+// same request, mirroring Radarr/Sonarr sending one combined criteria
+// object rather than searching per indexer capability. tmdbCapable
+// indexers that don't also support Imdb can only use this search when
+// tmdbQuery resolved; otherwise they have no usable token here and are
+// returned as extraText candidates for the free-text fallback instead.
 func combineIDBuckets(imdbCapable, tmdbCapable []int, idQuery, tmdbQuery string) (idBucket []int, combinedQuery string, extraText []int) {
+	combinedQuery = idQuery
+	if tmdbQuery != "" {
+		combinedQuery += tmdbQuery
+	}
 	if len(tmdbCapable) == 0 {
-		return imdbCapable, idQuery, nil
+		return imdbCapable, combinedQuery, nil
 	}
 	if tmdbQuery == "" {
-		return imdbCapable, idQuery, tmdbCapable
+		return imdbCapable, combinedQuery, tmdbCapable
 	}
 	bucket := make([]int, 0, len(imdbCapable)+len(tmdbCapable))
 	bucket = append(bucket, imdbCapable...)
 	bucket = append(bucket, tmdbCapable...)
-	return bucket, idQuery + tmdbQuery, nil
+	return bucket, combinedQuery, nil
 }
 
 // splitByIDCapability classifies enabled indexers within the configured
 // scope (or every enabled indexer, when configured is empty) by which id
 // parameter — if any — their Prowlarr definition supports for this
-// content type, most to least precise.
-func splitByIDCapability(indexers []prowlarr.IndexerInfo, configured []int, isSeries bool) (imdbCapable, tmdbCapable, textOnly []int) {
+// content type. tmdbCapable holds indexers that support TmdbId but not
+// ImdbId (these can't search at all without a resolved TMDb id); needsTmdb
+// additionally reports whether ANY in-scope indexer supports TmdbId,
+// including ones that also support ImdbId — Radarr/Sonarr send both
+// tokens together whenever an indexer understands either, not only when
+// TmdbId is the sole option.
+func splitByIDCapability(indexers []prowlarr.IndexerInfo, configured []int, isSeries bool) (imdbCapable, tmdbCapable, textOnly []int, needsTmdb bool) {
 	inScope := func(id int) bool {
 		return len(configured) == 0 || slices.Contains(configured, id)
 	}
@@ -238,13 +249,17 @@ func splitByIDCapability(indexers []prowlarr.IndexerInfo, configured []int, isSe
 		switch {
 		case supportsImdb:
 			imdbCapable = append(imdbCapable, ix.ID)
+			if supportsTmdb {
+				needsTmdb = true
+			}
 		case supportsTmdb:
 			tmdbCapable = append(tmdbCapable, ix.ID)
+			needsTmdb = true
 		default:
 			textOnly = append(textOnly, ix.ID)
 		}
 	}
-	return imdbCapable, tmdbCapable, textOnly
+	return imdbCapable, tmdbCapable, textOnly, needsTmdb
 }
 
 // resolveTitle returns the human title and (for movies) the release

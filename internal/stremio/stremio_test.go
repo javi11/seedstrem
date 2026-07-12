@@ -184,13 +184,15 @@ func TestSplitByIDCapability(t *testing.T) {
 		{ID: 2, Enable: true, Capabilities: prowlarr.Capabilities{MovieSearchParams: []string{"Q"}, TvSearchParams: []string{"Q", "ImdbId"}}},
 		{ID: 3, Enable: false, Capabilities: prowlarr.Capabilities{MovieSearchParams: []string{"Q", "ImdbId"}}},
 		{ID: 4, Enable: true, Capabilities: prowlarr.Capabilities{MovieSearchParams: []string{"Q", "TmdbId"}, TvSearchParams: []string{"Q"}}},
+		{ID: 5, Enable: true, Capabilities: prowlarr.Capabilities{MovieSearchParams: []string{"Q", "ImdbId", "TmdbId"}, TvSearchParams: []string{"Q"}}},
 	}
 
 	// Empty configured scope = every enabled indexer, split by capability,
-	// Imdb preferred over Tmdb over plain text.
-	imdb, tmdb, text := splitByIDCapability(indexers, nil, false)
-	if len(imdb) != 1 || imdb[0] != 1 {
-		t.Errorf("movie imdb-capable = %v, want [1]", imdb)
+	// Imdb preferred over Tmdb over plain text. Indexer 5 supports both,
+	// so it lands in imdbCapable but still flips needsTmdb.
+	imdb, tmdb, text, needsTmdb := splitByIDCapability(indexers, nil, false)
+	if len(imdb) != 2 || imdb[0] != 1 || imdb[1] != 5 {
+		t.Errorf("movie imdb-capable = %v, want [1 5]", imdb)
 	}
 	if len(tmdb) != 1 || tmdb[0] != 4 {
 		t.Errorf("movie tmdb-capable = %v, want [4]", tmdb)
@@ -198,28 +200,34 @@ func TestSplitByIDCapability(t *testing.T) {
 	if len(text) != 1 || text[0] != 2 {
 		t.Errorf("movie text-only = %v, want [2]", text)
 	}
+	if !needsTmdb {
+		t.Error("needsTmdb = false, want true (indexer 4 and dual-capable indexer 5)")
+	}
 
-	imdb, tmdb, text = splitByIDCapability(indexers, nil, true)
+	imdb, tmdb, text, needsTmdb = splitByIDCapability(indexers, nil, true)
 	if len(imdb) != 1 || imdb[0] != 2 {
 		t.Errorf("tv imdb-capable = %v, want [2]", imdb)
 	}
 	if len(tmdb) != 0 {
 		t.Errorf("tv tmdb-capable = %v, want none", tmdb)
 	}
-	if len(text) != 2 {
-		t.Errorf("tv text-only = %v, want 2 (indexers 1 and 4)", text)
+	if len(text) != 3 {
+		t.Errorf("tv text-only = %v, want 3 (indexers 1, 4, and 5 lack tv ImdbId/TmdbId)", text)
+	}
+	if needsTmdb {
+		t.Error("needsTmdb = true, want false (no tv indexer supports TmdbId)")
 	}
 
 	// A configured (disabled) indexer is still honored explicitly.
-	imdb, _, _ = splitByIDCapability(indexers, []int{3}, false)
+	imdb, _, _, _ = splitByIDCapability(indexers, []int{3}, false)
 	if len(imdb) != 1 || imdb[0] != 3 {
 		t.Errorf("explicit scope imdb-capable = %v, want [3]", imdb)
 	}
 
 	// Configured ids that match nothing known yield all-empty.
-	imdb, tmdb, text = splitByIDCapability(indexers, []int{99}, false)
-	if len(imdb) != 0 || len(tmdb) != 0 || len(text) != 0 {
-		t.Errorf("unknown scope = imdb %v tmdb %v text %v, want all empty", imdb, tmdb, text)
+	imdb, tmdb, text, needsTmdb = splitByIDCapability(indexers, []int{99}, false)
+	if len(imdb) != 0 || len(tmdb) != 0 || len(text) != 0 || needsTmdb {
+		t.Errorf("unknown scope = imdb %v tmdb %v text %v needsTmdb %v, want all empty/false", imdb, tmdb, text, needsTmdb)
 	}
 }
 
@@ -254,6 +262,20 @@ func TestCombineIDBuckets(t *testing.T) {
 	}
 	if len(extraText) != 1 || extraText[0] != 4 {
 		t.Errorf("extraText = %v, want [4]", extraText)
+	}
+
+	// No Tmdb-only indexers at all, but resolution succeeded anyway (a
+	// dual-capable indexer triggered it): still append the Tmdb token to
+	// the same bucket, matching Radarr sending both tokens together.
+	bucket, query, extraText = combineIDBuckets([]int{5}, nil, "{ImdbId:tt1}", "{TmdbId:603}")
+	if len(bucket) != 1 || bucket[0] != 5 {
+		t.Errorf("dual-capable bucket = %v, want [5]", bucket)
+	}
+	if query != "{ImdbId:tt1}{TmdbId:603}" {
+		t.Errorf("dual-capable query = %q, want both tokens", query)
+	}
+	if len(extraText) != 0 {
+		t.Errorf("dual-capable extraText = %v, want none", extraText)
 	}
 }
 
