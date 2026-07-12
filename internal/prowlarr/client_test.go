@@ -136,8 +136,10 @@ func TestIndexers(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`[
-			{"id":1,"name":"Alpha","protocol":"torrent","enable":true},
-			{"id":2,"name":"Beta","protocol":"usenet","enable":false}
+			{"id":1,"name":"Alpha","protocol":"torrent","enable":true,
+			 "capabilities":{"movieSearchParams":["Q","ImdbId"],"tvSearchParams":["Q"]}},
+			{"id":2,"name":"Beta","protocol":"usenet","enable":false,
+			 "capabilities":{"movieSearchParams":["Q"],"tvSearchParams":["Q","ImdbId","Season","Episode"]}}
 		]`))
 	}))
 	defer srv.Close()
@@ -155,6 +157,18 @@ func TestIndexers(t *testing.T) {
 	}
 	if got[1].Enable {
 		t.Errorf("indexer[1] should be disabled: %+v", got[1])
+	}
+	if !got[0].SupportsMovieImdb() {
+		t.Errorf("indexer[0] should support movie imdb search: %+v", got[0].Capabilities)
+	}
+	if got[0].SupportsTvImdb() {
+		t.Errorf("indexer[0] should not support tv imdb search: %+v", got[0].Capabilities)
+	}
+	if got[1].SupportsMovieImdb() {
+		t.Errorf("indexer[1] should not support movie imdb search: %+v", got[1].Capabilities)
+	}
+	if !got[1].SupportsTvImdb() {
+		t.Errorf("indexer[1] should support tv imdb search: %+v", got[1].Capabilities)
 	}
 }
 

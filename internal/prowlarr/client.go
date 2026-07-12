@@ -132,10 +132,41 @@ func (c *Client) Search(ctx context.Context, query, searchType string, categorie
 
 // IndexerInfo is a Prowlarr indexer as reported by /api/v1/indexer.
 type IndexerInfo struct {
-	ID       int    `json:"id"`
-	Name     string `json:"name"`
-	Protocol string `json:"protocol"` // "torrent" | "usenet"
-	Enable   bool   `json:"enable"`
+	ID           int          `json:"id"`
+	Name         string       `json:"name"`
+	Protocol     string       `json:"protocol"` // "torrent" | "usenet"
+	Enable       bool         `json:"enable"`
+	Capabilities Capabilities `json:"capabilities"`
+}
+
+// Capabilities lists the search parameters an indexer's definition
+// declares support for, per content type. Values are Prowlarr's
+// capability-enum names (e.g. "ImdbId", "Season", "Episode");
+// comparisons should be case-insensitive, matching Prowlarr's own parser.
+type Capabilities struct {
+	MovieSearchParams []string `json:"movieSearchParams"`
+	TvSearchParams    []string `json:"tvSearchParams"`
+}
+
+// SupportsMovieImdb reports whether this indexer accepts an ImdbId movie
+// search parameter (Prowlarr's "{ImdbId:...}" query token).
+func (ix IndexerInfo) SupportsMovieImdb() bool {
+	return hasParam(ix.Capabilities.MovieSearchParams, "imdbid")
+}
+
+// SupportsTvImdb reports whether this indexer accepts an ImdbId TV
+// search parameter (Prowlarr's "{ImdbId:...}" query token).
+func (ix IndexerInfo) SupportsTvImdb() bool {
+	return hasParam(ix.Capabilities.TvSearchParams, "imdbid")
+}
+
+func hasParam(params []string, want string) bool {
+	for _, p := range params {
+		if strings.EqualFold(p, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // Indexers lists the indexers configured in the Prowlarr instance so a

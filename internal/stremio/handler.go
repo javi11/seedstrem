@@ -5,9 +5,12 @@
 package stremio
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -15,6 +18,11 @@ import (
 	"github.com/javib/seedstrem/internal/prowlarr"
 	"github.com/javib/seedstrem/internal/torrents"
 )
+
+// indexerCacheTTL bounds how often the (id-search) capability split
+// re-fetches Prowlarr's indexer list. A stream request otherwise pays
+// an extra Prowlarr round trip on every single lookup.
+const indexerCacheTTL = 5 * time.Minute
 
 // ProwlarrSettings is the live Prowlarr configuration.
 type ProwlarrSettings struct {
@@ -50,6 +58,10 @@ type Handler struct {
 	settings func() Settings
 	version  string
 	logger   *slog.Logger
+
+	indexerCacheMu sync.Mutex
+	indexerCache   []prowlarr.IndexerInfo
+	indexerCacheAt time.Time
 }
 
 // New creates the addon handler. meta is shared (its cache persists);
@@ -97,4 +109,30 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func (h *Handler) prowlarr(s Settings) *prowlarr.Client {
 	return prowlarr.New(s.Prowlarr.URL, s.Prowlarr.APIKey)
+}
+
+// cachedIndexers returns the Prowlarr indexer list (with capabilities),
+// refreshing at most once per indexerCacheTTL. Best-effort: a config
+// change to the Prowlarr URL/key is picked up within the TTL window
+// rather than instantly, which is an acceptable tradeoff against hitting
+// Prowlarr on every stream request.
+func (h *Handler) cachedIndexers(ctx context.Context, pc *prowlarr.Client) ([]prowlarr.IndexerInfo, error) {
+	h.indexerCacheMu.Lock()
+	if h.indexerCache != nil && time.Since(h.indexerCacheAt) < indexerCacheTTL {
+		cached := h.indexerCache
+		h.indexerCacheMu.Unlock()
+		return cached, nil
+	}
+	h.indexerCacheMu.Unlock()
+
+	indexers, err := pc.Indexers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	h.indexerCacheMu.Lock()
+	h.indexerCache = indexers
+	h.indexerCacheAt = time.Now()
+	h.indexerCacheMu.Unlock()
+	return indexers, nil
 }

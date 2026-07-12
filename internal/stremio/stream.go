@@ -1,9 +1,11 @@
 package stremio
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -50,29 +52,35 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// tt-sourced (IMDb) queries search Prowlarr by id token — precise
-	// enough that no title lookup is needed, and it skips a Cinemeta
-	// round trip. Anime ids have no Prowlarr-recognized id token, so
-	// those still resolve a title and search by free text.
-	var title string
+	// tt-sourced (IMDb) queries search Prowlarr by id token, split across
+	// indexers by capability (see ttSearch). Anime ids have no
+	// Prowlarr-recognized id token, so those resolve a title and search
+	// by free text across whatever indexers are configured.
+	var results []prowlarr.Result
 	if q.IsAnime() {
-		var err error
-		title, err = h.meta.AnimeTitle(ctx, q.Source, q.ID)
+		title, err := h.meta.AnimeTitle(ctx, q.Source, q.ID)
 		if err != nil {
 			h.logger.Warn("stremio: title resolution failed", "id", id, "error", err)
 			writeJSON(w, http.StatusOK, empty)
 			return
 		}
-	}
-
-	query, searchType, categories := buildSearch(q, title, s.Prowlarr)
-	h.logger.Debug("stremio: prowlarr search",
-		"query", query, "type", searchType, "categories", categories, "indexers", len(s.Prowlarr.IndexerIDs))
-	results, err := h.prowlarr(s).Search(ctx, query, searchType, categories, s.Prowlarr.IndexerIDs)
-	if err != nil {
-		h.logger.Warn("stremio: prowlarr search failed", "query", query, "error", err)
-		writeJSON(w, http.StatusOK, empty)
-		return
+		query, categories := buildAnimeSearch(q, title, s.Prowlarr)
+		h.logger.Debug("stremio: prowlarr search",
+			"query", query, "type", "search", "categories", categories, "indexers", len(s.Prowlarr.IndexerIDs))
+		results, err = h.prowlarr(s).Search(ctx, query, "search", categories, s.Prowlarr.IndexerIDs)
+		if err != nil {
+			h.logger.Warn("stremio: prowlarr search failed", "query", query, "error", err)
+			writeJSON(w, http.StatusOK, empty)
+			return
+		}
+	} else {
+		var err error
+		results, err = h.ttSearch(ctx, q, s)
+		if err != nil {
+			h.logger.Warn("stremio: prowlarr search failed", "id", id, "error", err)
+			writeJSON(w, http.StatusOK, empty)
+			return
+		}
 	}
 
 	raw := len(results)
@@ -80,8 +88,7 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 	if s.MaxResults > 0 && len(results) > s.MaxResults {
 		results = results[:s.MaxResults]
 	}
-	h.logger.Debug("stremio: stream results",
-		"query", query, "raw", raw, "returned", len(results))
+	h.logger.Debug("stremio: stream results", "id", id, "raw", raw, "returned", len(results))
 
 	items := make([]streamItem, 0, len(results))
 	for _, res := range results {
@@ -101,22 +108,120 @@ func (h *Handler) contentEnabled(a AddonSettings, q meta.Query) bool {
 	return a.EnableMovies
 }
 
-// buildSearch produces the Prowlarr query string, search type, and
-// category list. tt-sourced (IMDb) queries use Prowlarr's id-token
-// syntax against "movie"/"tvsearch" — the same mechanism Radarr/Sonarr
-// rely on — so ID-capable indexers match precisely; title is unused in
-// that case. Anime ids have no such token, so those fall back to a
-// free-text "search" query built from the resolved title.
-func buildSearch(q meta.Query, title string, p ProwlarrSettings) (query, searchType string, categories []int) {
-	switch {
-	case q.IsAnime():
-		query := title
-		if q.Episode > 0 {
-			query = fmt.Sprintf("%s %02d", title, q.Episode)
+// ttSearch searches Prowlarr for a tt-sourced (IMDb) query, splitting
+// across indexers by capability: indexers whose Prowlarr definition
+// declares ImdbId search support are searched by id token — precise, no
+// title lookup needed. Indexers that don't are searched by free text as
+// a fallback, which does need a resolved title, so Cinemeta is only
+// queried when at least one such indexer is actually in scope. If the
+// capability split itself can't be determined (Prowlarr unreachable, or
+// the configured indexer ids don't match any known indexer), this falls
+// back to a single id-token search scoped to whatever was configured —
+// the pre-split behavior — rather than failing the whole request.
+func (h *Handler) ttSearch(ctx context.Context, q meta.Query, s Settings) ([]prowlarr.Result, error) {
+	pc := h.prowlarr(s)
+	idQuery, searchType, categories := buildIDSearch(q, s.Prowlarr)
+
+	indexers, err := h.cachedIndexers(ctx, pc)
+	if err != nil {
+		h.logger.Debug("stremio: indexer capability lookup failed, searching by id only", "error", err)
+		return pc.Search(ctx, idQuery, searchType, categories, s.Prowlarr.IndexerIDs)
+	}
+
+	capable, incapable := splitByImdbSupport(indexers, s.Prowlarr.IndexerIDs, q.IsSeries())
+	if len(capable) == 0 && len(incapable) == 0 {
+		// Configured ids matched nothing we know about (e.g. stale
+		// config) — same fallback as an unclassifiable capability lookup.
+		return pc.Search(ctx, idQuery, searchType, categories, s.Prowlarr.IndexerIDs)
+	}
+
+	var results []prowlarr.Result
+	if len(capable) > 0 {
+		h.logger.Debug("stremio: prowlarr id search",
+			"query", idQuery, "type", searchType, "indexers", len(capable))
+		r, err := pc.Search(ctx, idQuery, searchType, categories, capable)
+		if err != nil {
+			return nil, fmt.Errorf("id search: %w", err)
 		}
-		return query, "search", p.AnimeCategories
-	case q.IsSeries():
-		query := fmt.Sprintf("{ImdbId:%s}", q.ID)
+		results = append(results, r...)
+	}
+
+	if len(incapable) > 0 {
+		title, year, err := h.resolveTitle(ctx, q)
+		if err != nil {
+			h.logger.Warn("stremio: fallback title resolution failed", "error", err)
+			return results, nil
+		}
+		textQuery, textCategories := buildTextSearch(q, title, year, s.Prowlarr)
+		h.logger.Debug("stremio: prowlarr text-fallback search",
+			"query", textQuery, "indexers", len(incapable))
+		r, err := pc.Search(ctx, textQuery, "search", textCategories, incapable)
+		if err != nil {
+			h.logger.Warn("stremio: prowlarr text-fallback search failed", "query", textQuery, "error", err)
+			return results, nil
+		}
+		results = append(results, r...)
+	}
+	return results, nil
+}
+
+// splitByImdbSupport classifies enabled indexers within the configured
+// scope (or every enabled indexer, when configured is empty) by whether
+// their Prowlarr definition supports ImdbId search for this content type.
+func splitByImdbSupport(indexers []prowlarr.IndexerInfo, configured []int, isSeries bool) (capable, incapable []int) {
+	inScope := func(id int) bool {
+		return len(configured) == 0 || slices.Contains(configured, id)
+	}
+	for _, ix := range indexers {
+		if len(configured) == 0 && !ix.Enable {
+			continue
+		}
+		if !inScope(ix.ID) {
+			continue
+		}
+		supportsImdb := ix.SupportsMovieImdb()
+		if isSeries {
+			supportsImdb = ix.SupportsTvImdb()
+		}
+		if supportsImdb {
+			capable = append(capable, ix.ID)
+		} else {
+			incapable = append(incapable, ix.ID)
+		}
+	}
+	return capable, incapable
+}
+
+// resolveTitle returns the human title and (for movies) the release
+// year, via Cinemeta. Only needed for the tt free-text fallback path.
+func (h *Handler) resolveTitle(ctx context.Context, q meta.Query) (string, int, error) {
+	typ := "movie"
+	if q.IsSeries() {
+		typ = "series"
+	}
+	info, err := h.meta.Meta(ctx, typ, q.ID)
+	if err != nil {
+		return "", 0, err
+	}
+	return info.Name, info.Year, nil
+}
+
+// buildAnimeSearch produces a free-text query for anime ids, which have
+// no Prowlarr-recognized id token.
+func buildAnimeSearch(q meta.Query, title string, p ProwlarrSettings) (query string, categories []int) {
+	query = title
+	if q.Episode > 0 {
+		query = fmt.Sprintf("%s %02d", title, q.Episode)
+	}
+	return query, p.AnimeCategories
+}
+
+// buildIDSearch produces Prowlarr's id-token query syntax for a
+// tt-sourced (IMDb) query — the same mechanism Radarr/Sonarr rely on —
+// against "movie"/"tvsearch" search types.
+func buildIDSearch(q meta.Query, p ProwlarrSettings) (query, searchType string, categories []int) {
+	if q.IsSeries() {
+		query = fmt.Sprintf("{ImdbId:%s}", q.ID)
 		if q.Season > 0 {
 			query += fmt.Sprintf("{Season:%02d}", q.Season)
 		}
@@ -124,9 +229,27 @@ func buildSearch(q meta.Query, title string, p ProwlarrSettings) (query, searchT
 			query += fmt.Sprintf("{Episode:%02d}", q.Episode)
 		}
 		return query, "tvsearch", p.TVCategories
-	default: // movie
-		return fmt.Sprintf("{ImdbId:%s}", q.ID), "movie", p.MovieCategories
 	}
+	return fmt.Sprintf("{ImdbId:%s}", q.ID), "movie", p.MovieCategories
+}
+
+// buildTextSearch produces a free-text fallback query (title/year/S-E)
+// for tt-sourced queries scoped to indexers that don't support Prowlarr's
+// ImdbId search parameter.
+func buildTextSearch(q meta.Query, title string, year int, p ProwlarrSettings) (query string, categories []int) {
+	if q.IsSeries() {
+		if q.Season > 0 {
+			return fmt.Sprintf("%s S%02dE%02d", title, q.Season, q.Episode), p.TVCategories
+		}
+		if q.Episode > 0 {
+			return fmt.Sprintf("%s %02d", title, q.Episode), p.TVCategories
+		}
+		return title, p.TVCategories
+	}
+	if year > 0 {
+		return fmt.Sprintf("%s %d", title, year), p.MovieCategories
+	}
+	return title, p.MovieCategories
 }
 
 // toStreamItem builds a Stremio stream pointing at the resolve-on-play

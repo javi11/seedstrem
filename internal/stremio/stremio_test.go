@@ -117,15 +117,11 @@ func TestManifest(t *testing.T) {
 	}
 }
 
-func TestBuildSearch(t *testing.T) {
-	p := ProwlarrSettings{
-		MovieCategories: []int{2000},
-		TVCategories:    []int{5000},
-		AnimeCategories: []int{5070},
-	}
+func TestBuildIDSearch(t *testing.T) {
+	p := ProwlarrSettings{MovieCategories: []int{2000}, TVCategories: []int{5000}}
 
 	movie := meta.Query{Source: "tt", ID: "tt1375666", Kind: meta.KindMovie}
-	query, typ, cats := buildSearch(movie, "", p)
+	query, typ, cats := buildIDSearch(movie, p)
 	if query != "{ImdbId:tt1375666}" {
 		t.Errorf("movie query = %q, want id token", query)
 	}
@@ -137,7 +133,7 @@ func TestBuildSearch(t *testing.T) {
 	}
 
 	series := meta.Query{Source: "tt", ID: "tt0944947", Kind: meta.KindSeries, Season: 1, Episode: 5}
-	query, typ, cats = buildSearch(series, "", p)
+	query, typ, cats = buildIDSearch(series, p)
 	if query != "{ImdbId:tt0944947}{Season:01}{Episode:05}" {
 		t.Errorf("series query = %q, want id+season+episode tokens", query)
 	}
@@ -149,25 +145,159 @@ func TestBuildSearch(t *testing.T) {
 	}
 
 	seriesNoSE := meta.Query{Source: "tt", ID: "tt0944947", Kind: meta.KindSeries}
-	if query, _, _ := buildSearch(seriesNoSE, "", p); query != "{ImdbId:tt0944947}" {
+	if query, _, _ := buildIDSearch(seriesNoSE, p); query != "{ImdbId:tt0944947}" {
 		t.Errorf("series without season/episode query = %q, want bare id token", query)
 	}
+}
+
+func TestBuildTextSearch(t *testing.T) {
+	p := ProwlarrSettings{MovieCategories: []int{2000}, TVCategories: []int{5000}}
+
+	movie := meta.Query{Source: "tt", ID: "tt1375666", Kind: meta.KindMovie}
+	if query, cats := buildTextSearch(movie, "The Matrix", 1999, p); query != "The Matrix 1999" || cats[0] != 2000 {
+		t.Errorf("movie text search = %q, %v", query, cats)
+	}
+
+	series := meta.Query{Source: "tt", ID: "tt0944947", Kind: meta.KindSeries, Season: 1, Episode: 5}
+	if query, cats := buildTextSearch(series, "Chernobyl", 0, p); query != "Chernobyl S01E05" || cats[0] != 5000 {
+		t.Errorf("series text search = %q, %v", query, cats)
+	}
+}
+
+func TestBuildAnimeSearch(t *testing.T) {
+	p := ProwlarrSettings{AnimeCategories: []int{5070}}
 
 	anime := meta.Query{Source: "kitsu", ID: "12", Kind: meta.KindMovie}
-	query, typ, cats = buildSearch(anime, "Anime Movie", p)
-	if query != "Anime Movie" {
-		t.Errorf("anime query = %q, want free-text title", query)
-	}
-	if typ != "search" {
-		t.Errorf("anime type = %q, want search", typ)
-	}
-	if len(cats) != 1 || cats[0] != 5070 {
-		t.Errorf("anime categories = %v, want [5070]", cats)
+	if query, cats := buildAnimeSearch(anime, "Anime Movie", p); query != "Anime Movie" || cats[0] != 5070 {
+		t.Errorf("anime search = %q, %v", query, cats)
 	}
 
 	animeEp := meta.Query{Source: "kitsu", ID: "44081", Kind: meta.KindSeries, Episode: 5}
-	if query, _, _ := buildSearch(animeEp, "Anime Series", p); query != "Anime Series 05" {
+	if query, _ := buildAnimeSearch(animeEp, "Anime Series", p); query != "Anime Series 05" {
 		t.Errorf("anime series query = %q, want title + episode", query)
+	}
+}
+
+func TestSplitByImdbSupport(t *testing.T) {
+	indexers := []prowlarr.IndexerInfo{
+		{ID: 1, Enable: true, Capabilities: prowlarr.Capabilities{MovieSearchParams: []string{"Q", "ImdbId"}, TvSearchParams: []string{"Q"}}},
+		{ID: 2, Enable: true, Capabilities: prowlarr.Capabilities{MovieSearchParams: []string{"Q"}, TvSearchParams: []string{"Q", "ImdbId"}}},
+		{ID: 3, Enable: false, Capabilities: prowlarr.Capabilities{MovieSearchParams: []string{"Q", "ImdbId"}}},
+	}
+
+	// Empty configured scope = every enabled indexer, split by capability.
+	capable, incapable := splitByImdbSupport(indexers, nil, false)
+	if len(capable) != 1 || capable[0] != 1 {
+		t.Errorf("movie capable = %v, want [1]", capable)
+	}
+	if len(incapable) != 1 || incapable[0] != 2 {
+		t.Errorf("movie incapable = %v, want [2]", incapable)
+	}
+
+	capable, incapable = splitByImdbSupport(indexers, nil, true)
+	if len(capable) != 1 || capable[0] != 2 {
+		t.Errorf("tv capable = %v, want [2]", capable)
+	}
+	if len(incapable) != 1 || incapable[0] != 1 {
+		t.Errorf("tv incapable = %v, want [1]", incapable)
+	}
+
+	// A configured (disabled) indexer is still honored explicitly.
+	capable, incapable = splitByImdbSupport(indexers, []int{3}, false)
+	if len(capable) != 1 || capable[0] != 3 {
+		t.Errorf("explicit scope capable = %v, want [3]", capable)
+	}
+	if len(incapable) != 0 {
+		t.Errorf("explicit scope incapable = %v, want none", incapable)
+	}
+
+	// Configured ids that match nothing known yield empty/empty.
+	capable, incapable = splitByImdbSupport(indexers, []int{99}, false)
+	if len(capable) != 0 || len(incapable) != 0 {
+		t.Errorf("unknown scope = capable %v incapable %v, want both empty", capable, incapable)
+	}
+}
+
+// TestStreamSplitsSearchByCapability verifies the end-to-end split: an
+// ImdbId-capable indexer gets the id-token search, an incapable one gets
+// a free-text fallback (requiring a title lookup), and both result sets
+// are merged into the response.
+func TestStreamSplitsSearchByCapability(t *testing.T) {
+	const secondHash = "fedcba9876543210fedcba9876543210fedcba98"
+
+	cinemeta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/meta/movie/tt1375666") {
+			w.Write([]byte(`{"meta":{"name":"The Matrix","releaseInfo":"1999"}}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer cinemeta.Close()
+
+	prow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/indexer":
+			w.Write([]byte(`[
+				{"id":1,"name":"Capable","protocol":"torrent","enable":true,
+				 "capabilities":{"movieSearchParams":["Q","ImdbId"]}},
+				{"id":2,"name":"Incapable","protocol":"torrent","enable":true,
+				 "capabilities":{"movieSearchParams":["Q"]}}
+			]`))
+		case "/api/v1/search":
+			q := r.URL.Query()
+			switch {
+			case q.Get("type") == "movie" && q["indexerIds"][0] == "1":
+				w.Write([]byte(`[{"title":"ID Search Hit","magnetUrl":"` + testMagnet() + `","size":100,"seeders":10,"protocol":"torrent","indexer":"Capable"}]`))
+			case q.Get("type") == "search" && q["indexerIds"][0] == "2":
+				w.Write([]byte(`[{"title":"Text Search Hit","infoHash":"` + secondHash + `","size":200,"seeders":20,"protocol":"torrent","indexer":"Incapable"}]`))
+			default:
+				w.Write([]byte(`[]`))
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer prow.Close()
+
+	metaClient := meta.New(cinemeta.URL)
+	h := New(nil, metaClient, func() Settings {
+		return Settings{
+			Prowlarr:   ProwlarrSettings{URL: prow.URL, APIKey: "k", MovieCategories: []int{2000}},
+			Addon:      AddonSettings{EnableMovies: true},
+			MaxResults: 20,
+		}
+	}, "test", nil)
+
+	root := chi.NewRouter()
+	root.Mount("/stremio", h.Router())
+	server := httptest.NewServer(root)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/stremio/stream/movie/tt1375666.json")
+	if err != nil {
+		t.Fatalf("get stream: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var sr streamResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(sr.Streams) != 2 {
+		t.Fatalf("want 2 streams (id search + text fallback merged), got %d: %+v", len(sr.Streams), sr.Streams)
+	}
+	var sawID, sawText bool
+	for _, s := range sr.Streams {
+		if strings.Contains(s.Title, "ID Search Hit") {
+			sawID = true
+		}
+		if strings.Contains(s.Title, "Text Search Hit") {
+			sawText = true
+		}
+	}
+	if !sawID || !sawText {
+		t.Errorf("expected both id-search and text-fallback results, got: %+v", sr.Streams)
 	}
 }
 
