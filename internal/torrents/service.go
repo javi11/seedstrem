@@ -62,9 +62,15 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// EnsureAdded adds a magnet to qBittorrent (stopped, sequential,
+// EnsureAdded adds a magnet to qBittorrent (running, sequential,
 // first/last-piece priority) and persists the id↔hash mapping. It is
 // idempotent on the infohash: a re-add returns the existing torrent.
+//
+// The torrent is added running (not stopped): qBittorrent does not fetch
+// a magnet's metadata while stopped, so WaitForMetadata would never see a
+// file list. The metadata (metaDL) phase downloads no file content, and
+// SelectAndLink deselects the unwanted files the instant metadata
+// resolves, so nothing unwanted is fetched.
 func (s *Service) EnsureAdded(ctx context.Context, magnet string) (store.Torrent, error) {
 	hash, name, err := metainfo.FromMagnet(magnet)
 	if err != nil {
@@ -79,7 +85,7 @@ func (s *Service) EnsureAdded(ctx context.Context, magnet string) (store.Torrent
 	}
 
 	opts := qbit.AddOptions{
-		Stopped:            true,
+		Stopped:            false,
 		SequentialDownload: true,
 		FirstLastPiecePrio: true,
 	}

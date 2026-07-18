@@ -68,12 +68,13 @@ func TestResolveIdempotent(t *testing.T) {
 		t.Errorf("resolve not idempotent: tokens %q vs %q", link1.Token, link2.Token)
 	}
 
-	// Torrent added exactly once, stopped, sequential + first/last prio.
+	// Torrent added exactly once, running (so qBittorrent fetches
+	// metadata), sequential + first/last prio.
 	var addCalls int
 	for _, c := range fakeDC.Calls() {
 		if strings.HasPrefix(c, "add magnet=") {
 			addCalls++
-			for _, want := range []string{"stopped=true", "seq=true", "flp=true"} {
+			for _, want := range []string{"stopped=false", "seq=true", "flp=true"} {
 				if !strings.Contains(c, want) {
 					t.Errorf("add call %q missing %q", c, want)
 				}
