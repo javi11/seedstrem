@@ -12,6 +12,7 @@ RUN npm run build
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY third_party/ ./third_party/
 RUN go mod download
 COPY . .
 COPY --from=web /src/web/dist ./web/dist
