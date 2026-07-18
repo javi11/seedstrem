@@ -70,7 +70,7 @@ func TestFromTorrent(t *testing.T) {
 
 	wantHash := sha1.Sum([]byte(infoDict))
 
-	hash, name, err := FromTorrent([]byte(torrent))
+	hash, name, trackers, err := FromTorrent([]byte(torrent))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -80,6 +80,31 @@ func TestFromTorrent(t *testing.T) {
 	if name != "test.mkv" {
 		t.Errorf("name = %q; want test.mkv", name)
 	}
+	if len(trackers) != 1 || trackers[0] != "http://tracker/ann" {
+		t.Errorf("trackers = %v; want [http://tracker/ann]", trackers)
+	}
+}
+
+func TestFromTorrentTrackers(t *testing.T) {
+	// announce-list tiers plus a duplicate announce; order preserved,
+	// duplicates dropped.
+	infoDict := "d6:lengthi1e4:name1:x12:piece lengthi1e6:pieces20:aaaaaaaaaaaaaaaaaaaae"
+	announceList := "ll19:http://primary/ann1el18:http://backup/ann1ee"
+	torrent := "d8:announce19:http://primary/ann113:announce-list" + announceList + "4:info" + infoDict + "e"
+
+	_, _, trackers, err := FromTorrent([]byte(torrent))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"http://primary/ann1", "http://backup/ann1"}
+	if len(trackers) != len(want) {
+		t.Fatalf("trackers = %v; want %v", trackers, want)
+	}
+	for i := range want {
+		if trackers[i] != want[i] {
+			t.Errorf("trackers[%d] = %q; want %q", i, trackers[i], want[i])
+		}
+	}
 }
 
 func TestFromTorrentMultiFile(t *testing.T) {
@@ -87,7 +112,7 @@ func TestFromTorrentMultiFile(t *testing.T) {
 	torrent := "d4:info" + infoDict + "e"
 
 	wantHash := sha1.Sum([]byte(infoDict))
-	hash, name, err := FromTorrent([]byte(torrent))
+	hash, name, _, err := FromTorrent([]byte(torrent))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -114,7 +139,7 @@ func TestFromTorrentInvalid(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, err := FromTorrent([]byte(tt.data))
+			_, _, _, err := FromTorrent([]byte(tt.data))
 			if !errors.Is(err, ErrInvalid) {
 				t.Errorf("want ErrInvalid, got %v", err)
 			}
@@ -129,7 +154,7 @@ func FuzzFromTorrent(f *testing.F) {
 	f.Add([]byte(""))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Must never panic; errors are fine.
-		hash, _, err := FromTorrent(data)
+		hash, _, _, err := FromTorrent(data)
 		if err == nil && len(hash) != 40 {
 			t.Errorf("valid parse returned bad hash length: %q", hash)
 		}

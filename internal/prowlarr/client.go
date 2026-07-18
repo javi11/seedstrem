@@ -129,12 +129,12 @@ func (c *Client) Search(ctx context.Context, query, searchType string, categorie
 			// infoHash and only publish a .torrent download link. Fetch it
 			// and derive the hash ourselves rather than dropping the
 			// release outright.
-			if hash, name, err := c.fetchTorrentHash(ctx, r.DownloadURL); err == nil {
+			if hash, name, trackers, err := c.fetchTorrentHash(ctx, r.DownloadURL); err == nil {
 				res.InfoHash = hash
 				if res.Title == "" {
 					res.Title = name
 				}
-				res.MagnetURL = synthesizeMagnet(hash, res.Title)
+				res.MagnetURL = synthesizeMagnet(hash, res.Title, trackers)
 			}
 		}
 		if res.MagnetURL == "" {
@@ -150,39 +150,46 @@ func (c *Client) Search(ctx context.Context, query, searchType string, categorie
 const maxTorrentFileBytes = 2 << 20 // 2 MiB
 
 // fetchTorrentHash downloads a .torrent file from a Prowlarr-provided
-// download link and extracts its v1 infohash and display name.
-func (c *Client) fetchTorrentHash(ctx context.Context, downloadURL string) (hash, name string, err error) {
+// download link and extracts its v1 infohash, display name, and announce
+// trackers (needed so the synthesized magnet can find peers on private
+// trackers).
+func (c *Client) fetchTorrentHash(ctx context.Context, downloadURL string) (hash, name string, trackers []string, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
-		return "", "", fmt.Errorf("prowlarr: build torrent request: %w", err)
+		return "", "", nil, fmt.Errorf("prowlarr: build torrent request: %w", err)
 	}
 	req.Header.Set("X-Api-Key", c.apiKey)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("prowlarr: fetch torrent: %w", err)
+		return "", "", nil, fmt.Errorf("prowlarr: fetch torrent: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("prowlarr: fetch torrent returned %d", resp.StatusCode)
+		return "", "", nil, fmt.Errorf("prowlarr: fetch torrent returned %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTorrentFileBytes))
 	if err != nil {
-		return "", "", fmt.Errorf("prowlarr: read torrent body: %w", err)
+		return "", "", nil, fmt.Errorf("prowlarr: read torrent body: %w", err)
 	}
 	return metainfo.FromTorrent(body)
 }
 
-// synthesizeMagnet builds a minimal magnet URI from an infohash, matching
-// the fallback already used for infoHash-only results.
-func synthesizeMagnet(hash, title string) string {
+// synthesizeMagnet builds a magnet URI from an infohash, optional display
+// name, and optional tracker announce URLs. Trackers matter for private
+// torrents: without a tr= entry qBittorrent has no announce URL and (with
+// DHT/PEX ineffective) finds no peers, so the download stalls at 0%.
+func synthesizeMagnet(hash, title string, trackers []string) string {
 	if hash == "" {
 		return ""
 	}
 	v := url.Values{}
 	if title != "" {
 		v.Set("dn", title)
+	}
+	for _, tr := range trackers {
+		v.Add("tr", tr)
 	}
 	return "magnet:?xt=urn:btih:" + hash + "&" + v.Encode()
 }
@@ -289,7 +296,8 @@ func normalize(r apiResult) Result {
 		}
 	}
 	if res.MagnetURL == "" && res.InfoHash != "" {
-		res.MagnetURL = synthesizeMagnet(res.InfoHash, r.Title)
+		// infoHash-only result: no .torrent to read trackers from.
+		res.MagnetURL = synthesizeMagnet(res.InfoHash, r.Title, nil)
 	}
 	return res
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -77,8 +78,11 @@ func TestSearch(t *testing.T) {
 }
 
 func TestSearchTorrentFileFallback(t *testing.T) {
-	// Minimal valid bencoded .torrent: d4:infod4:name4:testee
-	torrentBytes := []byte("d4:infod4:name4:testee")
+	// Minimal valid bencoded .torrent with an announce tracker. The
+	// tracker must survive into the synthesized magnet — without it a
+	// private-tracker torrent has no peers.
+	const tracker = "http://tr.example/announce"
+	torrentBytes := []byte("d8:announce26:" + tracker + "4:infod4:name4:testee")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/search", func(w http.ResponseWriter, r *http.Request) {
@@ -108,6 +112,13 @@ func TestSearchTorrentFileFallback(t *testing.T) {
 	}
 	if !strings.HasPrefix(r.MagnetURL, "magnet:?xt=urn:btih:"+r.InfoHash) {
 		t.Errorf("expected synthesized magnet, got %q", r.MagnetURL)
+	}
+	mu, err := url.Parse(r.MagnetURL)
+	if err != nil {
+		t.Fatalf("parse synthesized magnet: %v", err)
+	}
+	if got := mu.Query()["tr"]; len(got) != 1 || got[0] != tracker {
+		t.Errorf("synthesized magnet trackers = %v; want [%s]", got, tracker)
 	}
 }
 

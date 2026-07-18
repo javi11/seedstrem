@@ -48,32 +48,62 @@ func FromMagnet(magnet string) (hash, name string, err error) {
 	return "", "", fmt.Errorf("%w: no btih hash in magnet", ErrInvalid)
 }
 
-// FromTorrent extracts the v1 infohash (lowercase hex) and name from a
-// raw .torrent file.
-func FromTorrent(raw []byte) (hash, name string, err error) {
+// FromTorrent extracts the v1 infohash (lowercase hex), name, and
+// announce trackers from a raw .torrent file. Trackers come from the
+// top-level "announce" and "announce-list" keys, deduplicated in order;
+// they are essential for private torrents, whose peers are only
+// discoverable via the tracker (DHT/PEX are typically disabled).
+func FromTorrent(raw []byte) (hash, name string, trackers []string, err error) {
 	d := &decoder{data: raw}
 	value, err := d.decode()
 	if err != nil {
-		return "", "", fmt.Errorf("%w: %v", ErrInvalid, err)
+		return "", "", nil, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	root, ok := value.(dict)
 	if !ok {
-		return "", "", fmt.Errorf("%w: root is not a dict", ErrInvalid)
+		return "", "", nil, fmt.Errorf("%w: root is not a dict", ErrInvalid)
 	}
 	info, ok := root.values["info"]
 	if !ok {
-		return "", "", fmt.Errorf("%w: missing info dict", ErrInvalid)
+		return "", "", nil, fmt.Errorf("%w: missing info dict", ErrInvalid)
 	}
 	infoDict, ok := info.(dict)
 	if !ok {
-		return "", "", fmt.Errorf("%w: info is not a dict", ErrInvalid)
+		return "", "", nil, fmt.Errorf("%w: info is not a dict", ErrInvalid)
 	}
 
 	sum := sha1.Sum(raw[infoDict.start:infoDict.end])
 	if n, ok := infoDict.values["name"].(string); ok {
 		name = n
 	}
-	return hex.EncodeToString(sum[:]), name, nil
+	return hex.EncodeToString(sum[:]), name, announceTrackers(root), nil
+}
+
+// announceTrackers collects tracker URLs from the "announce" and
+// "announce-list" keys, preserving order and dropping duplicates/blanks.
+func announceTrackers(root dict) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(v any) {
+		s, ok := v.(string)
+		if !ok || s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	// announce-list is a list of tiers, each a list of tracker strings.
+	if tiers, ok := root.values["announce-list"].([]any); ok {
+		for _, tier := range tiers {
+			if urls, ok := tier.([]any); ok {
+				for _, u := range urls {
+					add(u)
+				}
+			}
+		}
+	}
+	add(root.values["announce"])
+	return out
 }
 
 // dict is a decoded bencode dictionary plus the byte range it occupies.
