@@ -52,7 +52,7 @@ func TestResolveIdempotent(t *testing.T) {
 	})
 
 	sel := Selector{IsSeries: true, Season: 1, Episode: 5}
-	link1, err := svc.Resolve(ctx, testMagnet("Show.S01"), sel)
+	link1, err := svc.Resolve(ctx, testMagnet("Show.S01"), nil, sel)
 	if err != nil {
 		t.Fatalf("first resolve: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestResolveIdempotent(t *testing.T) {
 		t.Errorf("picked file index = %d, want 1", link1.FileIndex)
 	}
 
-	link2, err := svc.Resolve(ctx, testMagnet("Show.S01"), sel)
+	link2, err := svc.Resolve(ctx, testMagnet("Show.S01"), nil, sel)
 	if err != nil {
 		t.Fatalf("second resolve: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestRemove(t *testing.T) {
 	ctx := context.Background()
 
 	fakeDC.Put(&fake.Torrent{Hash: testHash, State: qbit.StateSeeding})
-	tor, err := svc.EnsureAdded(ctx, testMagnet("Show"))
+	tor, err := svc.EnsureAdded(ctx, testMagnet("Show"), nil)
 	if err != nil {
 		t.Fatalf("ensure added: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestRemoveMissingFromqBittorrentIsNotAnError(t *testing.T) {
 	ctx := context.Background()
 
 	fakeDC.Put(&fake.Torrent{Hash: testHash, State: qbit.StateSeeding})
-	tor, err := svc.EnsureAdded(ctx, testMagnet("Show"))
+	tor, err := svc.EnsureAdded(ctx, testMagnet("Show"), nil)
 	if err != nil {
 		t.Fatalf("ensure added: %v", err)
 	}
@@ -136,6 +136,38 @@ func TestRemoveMissingFromqBittorrentIsNotAnError(t *testing.T) {
 	}
 	if _, err := db.TorrentByID(ctx, tor.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("torrent by id error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestEnsureAddedUsesTorrentFileWhenPresent(t *testing.T) {
+	svc, fakeDC, _ := newService(t)
+	ctx := context.Background()
+
+	// A minimal valid .torrent whose infohash matches testMagnet's hash
+	// is not required here: EnsureAdded keys the store record off the
+	// magnet's hash, while the fake keys off the .torrent's own hash. We
+	// only assert which client method was used, so any valid .torrent
+	// works.
+	torrentFile := []byte("d4:infod6:lengthi1e4:name4:test12:piece lengthi1e6:pieces20:aaaaaaaaaaaaaaaaaaaaee")
+
+	if _, err := svc.EnsureAdded(ctx, testMagnet("Show"), torrentFile); err != nil {
+		t.Fatalf("ensure added: %v", err)
+	}
+
+	var fileAdds, magnetAdds int
+	for _, c := range fakeDC.Calls() {
+		if strings.HasPrefix(c, "add torrentfile=") {
+			fileAdds++
+			if !strings.Contains(c, "stopped=false") {
+				t.Errorf("torrent-file add should be running: %q", c)
+			}
+		}
+		if strings.HasPrefix(c, "add magnet=") {
+			magnetAdds++
+		}
+	}
+	if fileAdds != 1 || magnetAdds != 0 {
+		t.Errorf("want 1 torrent-file add and 0 magnet adds, got file=%d magnet=%d", fileAdds, magnetAdds)
 	}
 }
 

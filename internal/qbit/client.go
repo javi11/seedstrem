@@ -17,6 +17,7 @@ import (
 // Client is the qBittorrent surface used by seedstrem.
 type Client interface {
 	AddMagnet(ctx context.Context, magnet string, opts AddOptions) error
+	AddTorrentFile(ctx context.Context, raw []byte, opts AddOptions) error
 	Torrents(ctx context.Context, hashes []string) ([]TorrentInfo, error)
 	Torrent(ctx context.Context, hash string) (TorrentInfo, error)
 	Files(ctx context.Context, hash string) ([]FileInfo, error)
@@ -78,6 +79,17 @@ func (c *client) addOptionsMap(opts AddOptions) map[string]string {
 func (c *client) AddMagnet(ctx context.Context, magnet string, opts AddOptions) error {
 	if _, err := c.qb.AddTorrentFromUrlCtx(ctx, magnet, c.addOptionsMap(opts)); err != nil {
 		return fmt.Errorf("qbit add magnet: %w", err)
+	}
+	return nil
+}
+
+// AddTorrentFile adds a torrent from raw .torrent bytes. Unlike a magnet,
+// the metadata is already present, so qBittorrent skips the metadata
+// (metaDL) fetch entirely — essential for private trackers whose peers
+// won't reliably serve metadata over the wire.
+func (c *client) AddTorrentFile(ctx context.Context, raw []byte, opts AddOptions) error {
+	if _, err := c.qb.AddTorrentFromMemoryCtx(ctx, raw, c.addOptionsMap(opts)); err != nil {
+		return fmt.Errorf("qbit add torrent file: %w", err)
 	}
 	return nil
 }

@@ -92,6 +92,12 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]streamItem, 0, len(results))
 	for _, res := range results {
+		// Stash any raw .torrent we already fetched (magnet-less
+		// releases) so the play handler can add it directly instead of a
+		// metadata-less magnet.
+		if len(res.TorrentFile) > 0 {
+			h.torrentFiles.put(res.InfoHash, res.TorrentFile)
+		}
 		items = append(items, h.toStreamItem(s.ExternalURL, q, res))
 	}
 	writeJSON(w, http.StatusOK, streamResponse{Streams: items})

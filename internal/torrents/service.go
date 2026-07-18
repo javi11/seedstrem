@@ -71,7 +71,13 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 // file list. The metadata (metaDL) phase downloads no file content, and
 // SelectAndLink deselects the unwanted files the instant metadata
 // resolves, so nothing unwanted is fetched.
-func (s *Service) EnsureAdded(ctx context.Context, magnet string) (store.Torrent, error) {
+//
+// When torrentFile is non-empty (a .torrent seedstrem fetched from a
+// magnet-less indexer), it is added directly instead of the magnet: the
+// metadata is already embedded, so qBittorrent skips the metaDL fetch
+// entirely — which is unreliable for private-tracker peers and otherwise
+// leaves the torrent stuck in metaDL.
+func (s *Service) EnsureAdded(ctx context.Context, magnet string, torrentFile []byte) (store.Torrent, error) {
 	hash, name, err := metainfo.FromMagnet(magnet)
 	if err != nil {
 		return store.Torrent{}, fmt.Errorf("parse magnet: %w", err)
@@ -89,9 +95,16 @@ func (s *Service) EnsureAdded(ctx context.Context, magnet string) (store.Torrent
 		SequentialDownload: true,
 		FirstLastPiecePrio: true,
 	}
-	s.logger.Debug("torrents: adding magnet to qbittorrent", "hash", hash, "name", name)
-	if err := s.dc.AddMagnet(ctx, magnet, opts); err != nil {
-		return store.Torrent{}, fmt.Errorf("add magnet to qbittorrent: %w", err)
+	if len(torrentFile) > 0 {
+		s.logger.Debug("torrents: adding .torrent file to qbittorrent", "hash", hash, "name", name)
+		if err := s.dc.AddTorrentFile(ctx, torrentFile, opts); err != nil {
+			return store.Torrent{}, fmt.Errorf("add torrent file to qbittorrent: %w", err)
+		}
+	} else {
+		s.logger.Debug("torrents: adding magnet to qbittorrent", "hash", hash, "name", name)
+		if err := s.dc.AddMagnet(ctx, magnet, opts); err != nil {
+			return store.Torrent{}, fmt.Errorf("add magnet to qbittorrent: %w", err)
+		}
 	}
 
 	id, err := NewID()
@@ -244,10 +257,11 @@ func (s *Service) Remove(ctx context.Context, tor store.Torrent) error {
 	return nil
 }
 
-// Resolve is the end-to-end resolve-on-play flow: add the magnet, wait
-// for metadata, pick the file matching sel, and mint a streaming link.
-func (s *Service) Resolve(ctx context.Context, magnet string, sel Selector) (store.Link, error) {
-	tor, err := s.EnsureAdded(ctx, magnet)
+// Resolve is the end-to-end resolve-on-play flow: add the torrent (via
+// the raw .torrent file when available, else the magnet), wait for
+// metadata, pick the file matching sel, and mint a streaming link.
+func (s *Service) Resolve(ctx context.Context, magnet string, torrentFile []byte, sel Selector) (store.Link, error) {
+	tor, err := s.EnsureAdded(ctx, magnet, torrentFile)
 	if err != nil {
 		return store.Link{}, err
 	}

@@ -29,6 +29,10 @@ func (s *Swappable) AddMagnet(ctx context.Context, magnet string, opts AddOption
 	return s.get().AddMagnet(ctx, magnet, opts)
 }
 
+func (s *Swappable) AddTorrentFile(ctx context.Context, raw []byte, opts AddOptions) error {
+	return s.get().AddTorrentFile(ctx, raw, opts)
+}
+
 func (s *Swappable) Torrents(ctx context.Context, hashes []string) ([]TorrentInfo, error) {
 	return s.get().Torrents(ctx, hashes)
 }

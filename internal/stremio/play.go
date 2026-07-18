@@ -40,7 +40,11 @@ func (h *Handler) play(w http.ResponseWriter, r *http.Request) {
 	h.logger.Debug("stremio: play resolve",
 		"infohash", infohash, "series", sel.IsSeries, "season", sel.Season, "episode", sel.Episode)
 
-	link, err := h.svc.Resolve(ctx, magnet, sel)
+	// If we cached the raw .torrent for this infohash while building the
+	// stream list, add it directly (skips qBittorrent's metadata fetch);
+	// otherwise fall back to the magnet.
+	torrentFile := h.torrentFiles.get(infohash)
+	link, err := h.svc.Resolve(ctx, magnet, torrentFile, sel)
 	if err != nil {
 		switch {
 		case errors.Is(err, torrents.ErrMetadataTimeout):

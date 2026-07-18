@@ -135,6 +135,34 @@ func (s *Server) AddMagnet(_ context.Context, magnet string, opts qbit.AddOption
 	return nil
 }
 
+func (s *Server) AddTorrentFile(_ context.Context, raw []byte, opts qbit.AddOptions) error {
+	hash, name, _, err := metainfo.FromTorrent(raw)
+	if err != nil {
+		return fmt.Errorf("fake: invalid torrent file: %w", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.record("add torrentfile=%s category=%s stopped=%v seq=%v flp=%v",
+		hash, opts.Category, opts.Stopped, opts.SequentialDownload, opts.FirstLastPiecePrio)
+	if _, exists := s.torrents[hash]; !exists {
+		state := qbit.StateDownloading
+		if opts.Stopped {
+			state = qbit.StatePaused
+		}
+		s.torrents[hash] = &Torrent{
+			Hash:               hash,
+			Name:               name,
+			State:              state,
+			Category:           opts.Category,
+			Stopped:            opts.Stopped,
+			SequentialDownload: opts.SequentialDownload,
+			FirstLastPiecePrio: opts.FirstLastPiecePrio,
+		}
+	}
+	return nil
+}
+
 func (s *Server) Torrents(_ context.Context, hashes []string) ([]qbit.TorrentInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

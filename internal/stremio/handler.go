@@ -62,6 +62,8 @@ type Handler struct {
 	indexerCacheMu sync.Mutex
 	indexerCache   []prowlarr.IndexerInfo
 	indexerCacheAt time.Time
+
+	torrentFiles *torrentFileCache
 }
 
 // New creates the addon handler. meta is shared (its cache persists);
@@ -70,7 +72,7 @@ func New(svc *torrents.Service, m *meta.Client, settings func() Settings, versio
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{svc: svc, meta: m, settings: settings, version: version, logger: logger}
+	return &Handler{svc: svc, meta: m, settings: settings, version: version, logger: logger, torrentFiles: newTorrentFileCache()}
 }
 
 // Router returns the chi router for mounting at /stremio.

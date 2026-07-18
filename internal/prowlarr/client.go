@@ -22,13 +22,19 @@ const defaultTimeout = 30 * time.Second
 // by Search has both a non-empty InfoHash and a usable MagnetURL (a bare
 // infohash is expanded into a magnet); releases with neither are dropped.
 type Result struct {
-	Title      string
-	InfoHash   string // lowercase hex
-	MagnetURL  string
-	Size       int64
-	Seeders    int
-	Categories []int
-	Indexer    string
+	Title     string
+	InfoHash  string // lowercase hex
+	MagnetURL string
+	// TorrentFile holds the raw .torrent bytes when the release was
+	// resolved by downloading a .torrent (magnet-less indexers, typical of
+	// private trackers). Adding these directly skips qBittorrent's
+	// metadata fetch, which is unreliable for private-tracker peers. Nil
+	// when the release already had a magnet/infohash.
+	TorrentFile []byte
+	Size        int64
+	Seeders     int
+	Categories  []int
+	Indexer     string
 }
 
 // Client talks to a Prowlarr instance.
@@ -129,12 +135,16 @@ func (c *Client) Search(ctx context.Context, query, searchType string, categorie
 			// infoHash and only publish a .torrent download link. Fetch it
 			// and derive the hash ourselves rather than dropping the
 			// release outright.
-			if hash, name, trackers, err := c.fetchTorrentHash(ctx, r.DownloadURL); err == nil {
+			if hash, name, trackers, raw, err := c.fetchTorrentHash(ctx, r.DownloadURL); err == nil {
 				res.InfoHash = hash
 				if res.Title == "" {
 					res.Title = name
 				}
 				res.MagnetURL = synthesizeMagnet(hash, res.Title, trackers)
+				// Keep the raw .torrent so the play flow can add it
+				// directly (skipping qBittorrent's unreliable metadata
+				// fetch); the magnet above is the fallback.
+				res.TorrentFile = raw
 			}
 		}
 		if res.MagnetURL == "" {
@@ -153,27 +163,31 @@ const maxTorrentFileBytes = 2 << 20 // 2 MiB
 // download link and extracts its v1 infohash, display name, and announce
 // trackers (needed so the synthesized magnet can find peers on private
 // trackers).
-func (c *Client) fetchTorrentHash(ctx context.Context, downloadURL string) (hash, name string, trackers []string, err error) {
+func (c *Client) fetchTorrentHash(ctx context.Context, downloadURL string) (hash, name string, trackers []string, raw []byte, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("prowlarr: build torrent request: %w", err)
+		return "", "", nil, nil, fmt.Errorf("prowlarr: build torrent request: %w", err)
 	}
 	req.Header.Set("X-Api-Key", c.apiKey)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("prowlarr: fetch torrent: %w", err)
+		return "", "", nil, nil, fmt.Errorf("prowlarr: fetch torrent: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", "", nil, fmt.Errorf("prowlarr: fetch torrent returned %d", resp.StatusCode)
+		return "", "", nil, nil, fmt.Errorf("prowlarr: fetch torrent returned %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTorrentFileBytes))
 	if err != nil {
-		return "", "", nil, fmt.Errorf("prowlarr: read torrent body: %w", err)
+		return "", "", nil, nil, fmt.Errorf("prowlarr: read torrent body: %w", err)
 	}
-	return metainfo.FromTorrent(body)
+	hash, name, trackers, err = metainfo.FromTorrent(body)
+	if err != nil {
+		return "", "", nil, nil, err
+	}
+	return hash, name, trackers, body, nil
 }
 
 // synthesizeMagnet builds a magnet URI from an infohash, optional display
