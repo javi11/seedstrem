@@ -32,8 +32,8 @@ func TestHaveRange(t *testing.T) {
 		{0, 1, true, false},
 		{0, 2, false, false},
 		{3, 3, false, false},
-		{0, 10, false, true}, // out of bounds
-		{-1, 0, false, true},
+		{0, 10, false, false}, // past known states → not ready yet (buffer), not an error
+		{-1, 0, false, true},  // negative index is a real error
 	}
 	for _, tt := range tests {
 		// Fresh availability per case to defeat the 1s cache when the

@@ -90,6 +90,15 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 	}
 	h.logger.Debug("stremio: stream results", "id", id, "raw", raw, "returned", len(results))
 
+	// Best-effort: annotate results the user has already started with
+	// their live download progress. One batched call; failures/misses
+	// just mean no annotation.
+	hashes := make([]string, 0, len(results))
+	for _, res := range results {
+		hashes = append(hashes, res.InfoHash)
+	}
+	progress := h.svc.LiveProgress(ctx, hashes)
+
 	items := make([]streamItem, 0, len(results))
 	for _, res := range results {
 		// Stash any raw .torrent we already fetched (magnet-less
@@ -98,7 +107,7 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 		if len(res.TorrentFile) > 0 {
 			h.torrentFiles.put(res.InfoHash, res.TorrentFile)
 		}
-		items = append(items, h.toStreamItem(s.ExternalURL, q, res))
+		items = append(items, h.toStreamItem(s.ExternalURL, q, res, progress[res.InfoHash]))
 	}
 	writeJSON(w, http.StatusOK, streamResponse{Streams: items})
 }
@@ -340,7 +349,9 @@ func buildTextSearch(q meta.Query, title string, year int, p ProwlarrSettings) (
 
 // toStreamItem builds a Stremio stream pointing at the resolve-on-play
 // endpoint. The magnet and selector are encoded statelessly in the URL.
-func (h *Handler) toStreamItem(externalURL string, q meta.Query, res prowlarr.Result) streamItem {
+// progress is the live download fraction (0..1) of an already-started
+// torrent, or 0 when not applicable.
+func (h *Handler) toStreamItem(externalURL string, q meta.Query, res prowlarr.Result, progress float64) streamItem {
 	base := strings.TrimSuffix(externalURL, "/")
 	v := url.Values{}
 	v.Set("magnet", res.MagnetURL)
@@ -354,6 +365,13 @@ func (h *Handler) toStreamItem(externalURL string, q meta.Query, res prowlarr.Re
 	title := fmt.Sprintf("%s\n👤 %d  💾 %s", res.Title, res.Seeders, humanSize(res.Size))
 	if res.Indexer != "" {
 		title += "  ⚙ " + res.Indexer
+	}
+	// Show live progress for a torrent the user already started so they
+	// can tell it is downloading (and how far along) before pressing play.
+	if progress > 0 && progress < 1 {
+		title += fmt.Sprintf("  ⬇ %d%%", int(progress*100))
+	} else if progress >= 1 {
+		title += "  ✅ ready"
 	}
 	hints := map[string]any{}
 	if q.IsSeries() || q.IsAnime() {

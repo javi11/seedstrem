@@ -103,13 +103,23 @@ func (a *Availability) states(ctx context.Context, hash string) ([]qbit.PieceSta
 }
 
 // HaveRange reports whether pieces [first, last] are all downloaded.
+//
+// A range extending past the currently known piece states is reported as
+// "not available yet" (false, nil) rather than an error: right after a
+// torrent is added qBittorrent has not computed the full piece bitfield,
+// so a stream/seek request arriving in that window should buffer (keep
+// polling) instead of failing hard. This is what makes the first play
+// wait gracefully rather than erroring until a manual retry.
 func (a *Availability) HaveRange(ctx context.Context, hash string, first, last int) (bool, error) {
 	states, err := a.states(ctx, hash)
 	if err != nil {
 		return false, err
 	}
-	if first < 0 || last >= len(states) {
-		return false, fmt.Errorf("piece range [%d,%d] out of bounds (%d pieces)", first, last, len(states))
+	if first < 0 {
+		return false, fmt.Errorf("negative piece index %d", first)
+	}
+	if last >= len(states) {
+		return false, nil
 	}
 	for i := first; i <= last; i++ {
 		if states[i] != qbit.PieceHave {

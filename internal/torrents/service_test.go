@@ -171,6 +171,29 @@ func TestEnsureAddedUsesTorrentFileWhenPresent(t *testing.T) {
 	}
 }
 
+func TestLiveProgress(t *testing.T) {
+	svc, fakeDC, _ := newService(t)
+	ctx := context.Background()
+	fakeDC.Put(&fake.Torrent{Hash: testHash, State: qbit.StateDownloading, Progress: 0.5})
+
+	got := svc.LiveProgress(ctx, []string{testHash, "ffffffffffffffffffffffffffffffffffffffff"})
+	if got[testHash] != 0.5 {
+		t.Errorf("progress[%s] = %v, want 0.5", testHash, got[testHash])
+	}
+	if _, ok := got["ffffffffffffffffffffffffffffffffffffffff"]; ok {
+		t.Error("unknown hash should be absent from progress map")
+	}
+
+	// Empty input and nil receiver are safe no-ops.
+	if len(svc.LiveProgress(ctx, nil)) != 0 {
+		t.Error("empty hashes should yield empty map")
+	}
+	var nilSvc *Service
+	if len(nilSvc.LiveProgress(ctx, []string{testHash})) != 0 {
+		t.Error("nil service should yield empty map, not panic")
+	}
+}
+
 func TestWaitForMetadataTimeout(t *testing.T) {
 	svc, fakeDC, _ := newService(t)
 	// Torrent exists but never resolves files.

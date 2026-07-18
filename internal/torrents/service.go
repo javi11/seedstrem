@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/javib/seedstrem/internal/metainfo"
@@ -241,6 +242,27 @@ func (s *Service) linkFor(ctx context.Context, torrentID string, fileIndex int) 
 		}
 	}
 	return store.Link{}, store.ErrNotFound
+}
+
+// LiveProgress returns the download fraction (0..1) for each of the
+// given infohashes that qBittorrent currently knows about. Best-effort:
+// hashes it isn't tracking are simply absent from the result, and any
+// backend error yields an empty map rather than failing the caller. Used
+// to annotate the Stremio stream list with the progress of torrents the
+// user has already started.
+func (s *Service) LiveProgress(ctx context.Context, hashes []string) map[string]float64 {
+	out := map[string]float64{}
+	if s == nil || s.dc == nil || len(hashes) == 0 {
+		return out
+	}
+	infos, err := s.dc.Torrents(ctx, hashes)
+	if err != nil {
+		return out
+	}
+	for _, t := range infos {
+		out[strings.ToLower(t.Hash)] = t.Progress
+	}
+	return out
 }
 
 // Remove deletes a torrent from qBittorrent and the local store. A torrent
