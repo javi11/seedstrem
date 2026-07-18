@@ -8,7 +8,7 @@ import (
 	"os"
 )
 
-// partialReader is an io.ReadSeeker over a file that Deluge may
+// partialReader is an io.ReadSeeker over a file that qBittorrent may
 // still be writing. Each Read first waits for the pieces backing the
 // requested byte range, in chunks of at most chunkSize so a large
 // http.ServeContent copy only ever waits for the next few pieces.
@@ -50,7 +50,7 @@ func (pr *partialReader) Read(p []byte) (int, error) {
 
 	read, err := pr.file.ReadAt(p[:n], pr.offset)
 	if err != nil && shouldReopen(err) && pr.reopen != nil {
-		// Deluge may rename/move the file when it completes (
+		// qBittorrent may rename/move the file when it completes (
 		// strip or temp-dir move). Reopen at the new location and retry.
 		if f, openErr := pr.reopen(); openErr == nil {
 			pr.file.Close()

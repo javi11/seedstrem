@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/javib/seedstrem/internal/config"
-	"github.com/javib/seedstrem/internal/deluge"
-	"github.com/javib/seedstrem/internal/deluge/fake"
+	"github.com/javib/seedstrem/internal/qbit"
+	"github.com/javib/seedstrem/internal/qbit/fake"
 )
 
 func TestRemap(t *testing.T) {
@@ -53,8 +53,8 @@ func TestFilePathMultiFileTorrent(t *testing.T) {
 
 	r, _ := newResolverEnv(t, []config.Mapping{{Remote: "/downloads", Local: local}})
 
-	info := deluge.TorrentInfo{Hash: testHash, SavePath: "/downloads"}
-	file := deluge.FileInfo{Index: 0, Name: "Movie/movie.mkv", Size: 1}
+	info := qbit.TorrentInfo{Hash: testHash, SavePath: "/downloads"}
+	file := qbit.FileInfo{Index: 0, Name: "Movie/movie.mkv", Size: 1}
 
 	got, err := r.FilePath(context.Background(), info, file)
 	if err != nil {
@@ -75,8 +75,8 @@ func TestFilePathRejectsTraversal(t *testing.T) {
 	t.Cleanup(func() { os.Remove(outside) })
 
 	r, _ := newResolverEnv(t, []config.Mapping{{Remote: "/downloads", Local: local}})
-	info := deluge.TorrentInfo{Hash: testHash, SavePath: "/downloads"}
-	file := deluge.FileInfo{Index: 0, Name: "../secret.txt", Size: 6}
+	info := qbit.TorrentInfo{Hash: testHash, SavePath: "/downloads"}
+	file := qbit.FileInfo{Index: 0, Name: "../secret.txt", Size: 6}
 
 	_, err := r.FilePath(context.Background(), info, file)
 	if !errors.Is(err, ErrUnsafePath) {
@@ -91,8 +91,8 @@ func TestFilePathRejectsEscapeOutsideRoot(t *testing.T) {
 	r, _ := newResolverEnv(t, []config.Mapping{{Remote: "/downloads", Local: local}})
 	// SavePath points somewhere unmapped; the remap leaves it as-is, so
 	// it lands outside local and must be rejected.
-	info := deluge.TorrentInfo{Hash: testHash, SavePath: "/elsewhere"}
-	file := deluge.FileInfo{Index: 0, Name: "movie.mkv", Size: 1}
+	info := qbit.TorrentInfo{Hash: testHash, SavePath: "/elsewhere"}
+	file := qbit.FileInfo{Index: 0, Name: "movie.mkv", Size: 1}
 
 	_, err := r.FilePath(context.Background(), info, file)
 	if !errors.Is(err, ErrUnsafePath) {
@@ -123,8 +123,8 @@ func TestWithinAnyRoot(t *testing.T) {
 
 func TestFilePathNotFound(t *testing.T) {
 	r, _ := newResolverEnv(t, []config.Mapping{{Remote: "/downloads", Local: t.TempDir()}})
-	info := deluge.TorrentInfo{Hash: testHash, SavePath: "/downloads"}
-	file := deluge.FileInfo{Index: 0, Name: "missing.mkv", Size: 1}
+	info := qbit.TorrentInfo{Hash: testHash, SavePath: "/downloads"}
+	file := qbit.FileInfo{Index: 0, Name: "missing.mkv", Size: 1}
 
 	_, err := r.FilePath(context.Background(), info, file)
 	if !errors.Is(err, os.ErrNotExist) {

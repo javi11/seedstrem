@@ -1,5 +1,5 @@
 # seedstrem configuration. Every key can be overridden with a
-# SEEDSTREM_* environment variable (e.g. SEEDSTREM_DELUGE_HOST).
+# SEEDSTREM_* environment variable (e.g. SEEDSTREM_QBITTORRENT_URL).
 server:
   listen: ":8080"
   # Base URL used to build the Stremio manifest and stream links handed
@@ -8,17 +8,18 @@ server:
   # Web UI login password. Generated and logged on first run if empty.
   admin_password: ""
 
-deluge:
-  # seedstrem speaks Deluge's native daemon RPC directly (not the Web
-  # UI) — the daemon must have "Allow Remote Connections" enabled
-  # (Preferences → Daemon in Deluge's Web UI).
-  host: "deluge"
-  port: 58846
-  # Deluge auto-creates a "localclient" account with a random password
-  # stored in Deluge's own config dir (the "auth" file); or add your own
-  # account under Preferences → Other/Accounts.
-  username: "localclient"
+qbittorrent:
+  # seedstrem talks to qBittorrent's WebUI API — the WebUI must be
+  # enabled and reachable at this URL.
+  url: "http://qbittorrent:8080"
+  username: "admin"
+  # The linuxserver image logs a temporary random password on first
+  # start; set a permanent one in the qBittorrent WebUI (Tools → Options
+  # → Web UI) and put it here.
   password: ""
+  # Category applied to the torrents seedstrem adds, so they are
+  # distinguishable from other torrents on a shared qBittorrent instance.
+  category: "seedstrem"
 
 prowlarr:
   # Torrent search backend. Leave url empty to configure later in the
@@ -49,8 +50,8 @@ filters:
 meta:
   # Cinemeta provides titles/years for IMDB ids.
   cinemeta_url: "https://v3-cinemeta.strem.io"
-  # How long resolve-on-play waits for Deluge to fetch torrent metadata
-  # before answering 503 (players retry).
+  # How long resolve-on-play waits for qBittorrent to fetch torrent
+  # metadata before answering 503 (players retry).
   metadata_timeout: 60s
   # Optional. Get a free key at https://www.themoviedb.org/settings/api.
   # Lets seedstrem resolve IMDb ids to TMDb ids for indexers that support
@@ -59,9 +60,9 @@ meta:
   tmdb_api_key: ""
 
 paths:
-  # Translate Deluge's paths to paths seedstrem can read.
+  # Translate qBittorrent's paths to paths seedstrem can read.
   # With the bundled docker-compose both containers share one host
-  # directory: Deluge mounts it at /downloads, seedstrem at /data.
+  # directory: qBittorrent mounts it at /downloads, seedstrem at /data.
   mappings:
     - remote: "/downloads"
       local: "/data"

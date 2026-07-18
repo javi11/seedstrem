@@ -1,5 +1,5 @@
 // Command seedstrem runs a Stremio addon that searches Prowlarr indexers
-// and streams torrents through Deluge while they download.
+// and streams torrents through qBittorrent while they download.
 package main
 
 import (
@@ -17,10 +17,10 @@ import (
 	"github.com/javib/seedstrem/internal/admin"
 	"github.com/javib/seedstrem/internal/cleanup"
 	"github.com/javib/seedstrem/internal/config"
-	"github.com/javib/seedstrem/internal/deluge"
 	"github.com/javib/seedstrem/internal/meta"
 	"github.com/javib/seedstrem/internal/playsession"
 	"github.com/javib/seedstrem/internal/prowlarr"
+	"github.com/javib/seedstrem/internal/qbit"
 	"github.com/javib/seedstrem/internal/server"
 	"github.com/javib/seedstrem/internal/store"
 	"github.com/javib/seedstrem/internal/stream"
@@ -83,7 +83,7 @@ func run() error {
 	defer db.Close()
 
 	cm := config.NewManager(cfg, *configPath)
-	dc := deluge.NewSwappable(deluge.New(cfg.Deluge.Host, cfg.Deluge.Port, cfg.Deluge.Username, cfg.Deluge.Password))
+	dc := qbit.NewSwappable(qbit.New(cfg.QBittorrent.URL, cfg.QBittorrent.Username, cfg.QBittorrent.Password, cfg.QBittorrent.Category))
 
 	torrentSvc := torrents.New(db, dc, func() torrents.Settings {
 		c := cm.Get()

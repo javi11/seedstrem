@@ -13,7 +13,7 @@ import (
 )
 
 // play handles GET|HEAD /play/{infohash} — the resolve half. It adds the
-// magnet to Deluge, waits for metadata, selects the matching file,
+// magnet to qBittorrent, waits for metadata, selects the matching file,
 // and 302-redirects to the /dl streaming endpoint.
 func (h *Handler) play(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

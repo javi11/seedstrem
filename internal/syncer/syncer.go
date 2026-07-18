@@ -1,5 +1,5 @@
-// Package syncer reconciles the local store with Deluge in the
-// background: torrents deleted out-of-band in Deluge get a sticky
+// Package syncer reconciles the local store with qBittorrent in the
+// background: torrents deleted out-of-band in qBittorrent get a sticky
 // error, and display names are backfilled once metadata resolves.
 package syncer
 
@@ -9,20 +9,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/javib/seedstrem/internal/deluge"
+	"github.com/javib/seedstrem/internal/qbit"
 	"github.com/javib/seedstrem/internal/store"
 )
 
-// Syncer periodically reconciles store state against Deluge.
+// Syncer periodically reconciles store state against qBittorrent.
 type Syncer struct {
 	store    *store.Store
-	dc       deluge.Client
+	dc       qbit.Client
 	logger   *slog.Logger
 	interval time.Duration
 }
 
 // New creates a Syncer.
-func New(st *store.Store, dc deluge.Client, logger *slog.Logger, interval time.Duration) *Syncer {
+func New(st *store.Store, dc qbit.Client, logger *slog.Logger, interval time.Duration) *Syncer {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -48,9 +48,9 @@ func (s *Syncer) Run(ctx context.Context) {
 	}
 }
 
-// Reconcile performs one reconciliation pass. Deluge has no
+// Reconcile performs one reconciliation pass. qBittorrent has no
 // category/label concept comparable to qBittorrent's, so rather than
-// listing "torrents in our category" this queries Deluge directly for
+// listing "torrents in our category" this queries qBittorrent directly for
 // the hashes we already know about from the store.
 func (s *Syncer) Reconcile(ctx context.Context) error {
 	stored, err := s.store.AllTorrents(ctx)
@@ -69,7 +69,7 @@ func (s *Syncer) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	live := make(map[string]deluge.TorrentInfo, len(dcTorrents))
+	live := make(map[string]qbit.TorrentInfo, len(dcTorrents))
 	for _, t := range dcTorrents {
 		live[strings.ToLower(t.Hash)] = t
 	}
@@ -78,8 +78,8 @@ func (s *Syncer) Reconcile(ctx context.Context) error {
 		info, ok := live[tor.Hash]
 		if !ok {
 			if tor.Error == "" {
-				s.logger.Info("torrent vanished from deluge", "id", tor.ID, "hash", tor.Hash)
-				if err := s.store.SetTorrentError(ctx, tor.ID, "removed from Deluge"); err != nil {
+				s.logger.Info("torrent vanished from qbittorrent", "id", tor.ID, "hash", tor.Hash)
+				if err := s.store.SetTorrentError(ctx, tor.ID, "removed from qBittorrent"); err != nil {
 					s.logger.Warn("mark vanished torrent", "id", tor.ID, "error", err)
 				}
 			}

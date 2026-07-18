@@ -1,28 +1,27 @@
-# Example deployment: seedstrem + Prowlarr + Deluge. Deluge writes to
-# /downloads; seedstrem reads the same host directory mounted at /data
-# (the default path mapping). Prowlarr provides torrent search.
+# Example deployment: seedstrem + Prowlarr + qBittorrent. qBittorrent
+# writes to /downloads; seedstrem reads the same host directory mounted at
+# /data (the default path mapping). Prowlarr provides torrent search.
 #
-# seedstrem speaks Deluge's native daemon RPC directly (not the Web UI),
-# which is disabled to remote hosts by default. After first start, open
-# Deluge's Web UI (8112), go to Preferences → Daemon, and enable "Allow
-# Remote Connections" (and add a non-default account under Preferences →
-# Other/Accounts if you don't want to use the default "localclient" one) —
-# otherwise seedstrem's connection will be rejected.
+# seedstrem talks to qBittorrent's WebUI API. The linuxserver image starts
+# with WebUI user "admin"; on first start it logs a temporary random
+# password (`docker logs qbittorrent`) — set a permanent one under the
+# qBittorrent WebUI → Tools → Options → Web UI, then put it in
+# SEEDSTREM_QBITTORRENT_PASSWORD below (or in the seedstrem web UI).
 services:
-  deluge:
-    image: lscr.io/linuxserver/deluge:latest
-    container_name: deluge
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
     environment:
       - PUID=1000
       - PGID=1000
       - TZ=Etc/UTC
+      - WEBUI_PORT=8080
     volumes:
-      - ./deluge-config:/config
+      - ./qbittorrent-config:/config
       - ./downloads:/downloads
     ports:
-      - "8112:8112"          # WebUI
-      - "58846:58846"        # Daemon RPC (seedstrem connects here)
-      - "6881:6881"          # BitTorrent
+      - "8080:8080"            # WebUI / API (seedstrem connects here)
+      - "6881:6881"            # BitTorrent
       - "6881:6881/udp"
     restart: unless-stopped
 
@@ -45,26 +44,28 @@ services:
     # image: seedstrem:latest
     container_name: seedstrem
     environment:
-      - SEEDSTREM_DELUGE_HOST=deluge
-      - SEEDSTREM_DELUGE_PORT=58846
-      # Deluge auto-creates a "localclient" account with a random password
-      # in deluge-config/auth — read that file for the password, or add
-      # your own account under Preferences → Other/Accounts and use it
-      # here instead.
-      - SEEDSTREM_DELUGE_USERNAME=localclient
-      - SEEDSTREM_DELUGE_PASSWORD=
+      - SEEDSTREM_QBITTORRENT_URL=http://qbittorrent:8080
+      - SEEDSTREM_QBITTORRENT_USERNAME=admin
+      # See the note above on obtaining/setting the qBittorrent WebUI
+      # password. Leave empty to configure it later in the seedstrem web UI.
+      - SEEDSTREM_QBITTORRENT_PASSWORD=
+      # Category applied to torrents seedstrem adds, so they are
+      # distinguishable from other torrents on a shared qBittorrent.
+      - SEEDSTREM_QBITTORRENT_CATEGORY=seedstrem
       - SEEDSTREM_PROWLARR_URL=http://prowlarr:9696
       # Get the key from Prowlarr → Settings → General, then set it here
       # or in the seedstrem web UI (Settings → Prowlarr).
       - SEEDSTREM_PROWLARR_API_KEY=
       # The address Stremio will reach seedstrem at:
-      - SEEDSTREM_SERVER_EXTERNAL_URL=http://192.168.1.10:8080
+      - SEEDSTREM_SERVER_EXTERNAL_URL=http://192.168.1.10:8081
     volumes:
       - ./seedstrem-config:/config
-      - ./downloads:/data     # SAME host dir as Deluge's /downloads
+      - ./downloads:/data     # SAME host dir as qBittorrent's /downloads
     ports:
-      - "8080:8080"
+      # qBittorrent already publishes 8080 on the host, so map seedstrem to
+      # 8081 externally (it still listens on 8080 inside the container).
+      - "8081:8080"
     depends_on:
-      - deluge
+      - qbittorrent
       - prowlarr
     restart: unless-stopped

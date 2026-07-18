@@ -33,11 +33,11 @@ func TestLoadFile(t *testing.T) {
 server:
   listen: ":9090"
   external_url: "https://media.example.com"
-deluge:
-  host: "deluge-host"
-  port: 58846
+qbittorrent:
+  url: "http://qbittorrent-host:8080"
   username: "u"
   password: "p"
+  category: "seedstrem"
 stream:
   wait_timeout: 30s
 paths:
@@ -58,8 +58,8 @@ paths:
 	if cfg.Stream.WaitTimeout != 30*time.Second {
 		t.Errorf("got wait_timeout %v; want 30s", cfg.Stream.WaitTimeout)
 	}
-	if cfg.Deluge.Host != "deluge-host" || cfg.Deluge.Port != 58846 {
-		t.Errorf("deluge connection not parsed: %+v", cfg.Deluge)
+	if cfg.QBittorrent.URL != "http://qbittorrent-host:8080" || cfg.QBittorrent.Category != "seedstrem" {
+		t.Errorf("qbittorrent connection not parsed: %+v", cfg.QBittorrent)
 	}
 	if len(cfg.Paths.Mappings) != 1 || cfg.Paths.Mappings[0].Local != "/mnt/dl" {
 		t.Errorf("mappings not parsed: %+v", cfg.Paths.Mappings)
@@ -69,8 +69,8 @@ paths:
 func TestApplyEnv(t *testing.T) {
 	cfg := Default()
 	env := map[string]string{
-		"SEEDSTREM_DELUGE_HOST":                     "other-host",
-		"SEEDSTREM_DELUGE_PORT":                     "12345",
+		"SEEDSTREM_QBITTORRENT_URL":                 "http://other-host:9091",
+		"SEEDSTREM_QBITTORRENT_CATEGORY":            "other-cat",
 		"SEEDSTREM_STREAM_WAIT_TIMEOUT":             "90s",
 		"SEEDSTREM_PATHS_MAPPINGS":                  "/a:/b,/c:/d",
 		"SEEDSTREM_CLEANUP_SEED_TIME":               "48h",
@@ -78,8 +78,8 @@ func TestApplyEnv(t *testing.T) {
 	}
 	applyEnv(&cfg, func(k string) string { return env[k] })
 
-	if cfg.Deluge.Host != "other-host" || cfg.Deluge.Port != 12345 {
-		t.Errorf("deluge override failed: %+v", cfg.Deluge)
+	if cfg.QBittorrent.URL != "http://other-host:9091" || cfg.QBittorrent.Category != "other-cat" {
+		t.Errorf("qbittorrent override failed: %+v", cfg.QBittorrent)
 	}
 	if cfg.Stream.WaitTimeout != 90*time.Second {
 		t.Errorf("wait timeout override failed: %v", cfg.Stream.WaitTimeout)
@@ -102,7 +102,7 @@ func TestValidateCollectsAllErrors(t *testing.T) {
 		t.Fatal("expected validation errors")
 	}
 	msg := err.Error()
-	for _, want := range []string{"server.listen", "server.external_url", "deluge.host", "stream.wait_timeout"} {
+	for _, want := range []string{"server.listen", "server.external_url", "qbittorrent.url", "stream.wait_timeout"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("expected error mentioning %q, got: %s", want, msg)
 		}

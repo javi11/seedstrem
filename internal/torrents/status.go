@@ -1,7 +1,7 @@
 package torrents
 
 import (
-	"github.com/javib/seedstrem/internal/deluge"
+	"github.com/javib/seedstrem/internal/qbit"
 	"github.com/javib/seedstrem/internal/store"
 )
 
@@ -16,18 +16,18 @@ const (
 	StatusError            = "error"
 )
 
-// DeriveStatus maps our lifecycle phase plus live Deluge state to a
+// DeriveStatus maps our lifecycle phase plus live qBittorrent state to a
 // coarse status string.
 //
-//   - stickyError: a persisted local error (e.g. torrent vanished from Deluge)
-//   - filesKnown: Deluge has resolved metadata (file list non-empty)
+//   - stickyError: a persisted local error (e.g. torrent vanished from qBittorrent)
+//   - filesKnown: qBittorrent has resolved metadata (file list non-empty)
 //   - progress: torrent progress, 0..1
-func DeriveStatus(phase, delugeState string, stickyError bool, filesKnown bool, progress float64) string {
+func DeriveStatus(phase, qbittorrentState string, stickyError bool, filesKnown bool, progress float64) string {
 	if stickyError {
 		return StatusError
 	}
 
-	if delugeState == deluge.StateError {
+	if qbittorrentState == qbit.StateError {
 		return StatusError
 	}
 
@@ -43,12 +43,12 @@ func DeriveStatus(phase, delugeState string, stickyError bool, filesKnown bool, 
 		return StatusDownloaded
 	}
 
-	switch delugeState {
-	case deluge.StateQueued, deluge.StateChecking, deluge.StateAllocating, deluge.StatePaused:
+	switch qbittorrentState {
+	case qbit.StateQueued, qbit.StateChecking, qbit.StateAllocating, qbit.StatePaused:
 		return StatusQueued
-	case deluge.StateDownloading:
+	case qbit.StateDownloading:
 		return StatusDownloading
-	case deluge.StateSeeding, deluge.StateMoving, deluge.StateActive:
+	case qbit.StateSeeding, qbit.StateMoving, qbit.StateActive:
 		// Upload-side state but selected files not at 100%: the wanted
 		// files finished (progress is over the whole torrent, but
 		// unselected files don't count toward it) — treat as downloaded.

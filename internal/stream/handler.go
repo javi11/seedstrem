@@ -14,8 +14,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/javib/seedstrem/internal/deluge"
 	"github.com/javib/seedstrem/internal/playsession"
+	"github.com/javib/seedstrem/internal/qbit"
 	"github.com/javib/seedstrem/internal/store"
 	"github.com/javib/seedstrem/internal/torrents"
 )
@@ -31,10 +31,10 @@ type Settings struct {
 }
 
 // Handler serves /dl/{token}/{filename} with Range support over files
-// Deluge may still be downloading.
+// qBittorrent may still be downloading.
 type Handler struct {
 	store    *store.Store
-	dc       deluge.Client
+	dc       qbit.Client
 	svc      *torrents.Service
 	resolver *Resolver
 	avail    *Availability
@@ -44,7 +44,7 @@ type Handler struct {
 }
 
 // NewHandler creates the streaming handler.
-func NewHandler(st *store.Store, dc deluge.Client, svc *torrents.Service, resolver *Resolver, avail *Availability, sessions *playsession.Sessions, settings func() Settings, logger *slog.Logger) *Handler {
+func NewHandler(st *store.Store, dc qbit.Client, svc *torrents.Service, resolver *Resolver, avail *Availability, sessions *playsession.Sessions, settings func() Settings, logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -99,10 +99,10 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	files, err := h.dc.Files(ctx, tor.Hash)
 	if err != nil {
-		h.internalError(w, "deluge files", err)
+		h.internalError(w, "qbittorrent files", err)
 		return
 	}
-	var file deluge.FileInfo
+	var file qbit.FileInfo
 	found := false
 	for _, f := range files {
 		if f.Index == link.FileIndex {
@@ -119,7 +119,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 
 	localPath, err := h.resolver.FilePath(ctx, info, file)
 	if err != nil {
-		// Selected but Deluge has not created the file yet.
+		// Selected but qBittorrent has not created the file yet.
 		h.retryLater(w, "file not on disk yet", err)
 		return
 	}

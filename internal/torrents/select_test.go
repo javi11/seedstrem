@@ -3,7 +3,7 @@ package torrents
 import (
 	"testing"
 
-	"github.com/javib/seedstrem/internal/deluge"
+	"github.com/javib/seedstrem/internal/qbit"
 )
 
 func TestMatchEpisode(t *testing.T) {
@@ -38,52 +38,52 @@ func TestMatchEpisode(t *testing.T) {
 	}
 }
 
-func f(index int, name string, size int64) deluge.FileInfo {
-	return deluge.FileInfo{Index: index, Name: name, Size: size}
+func f(index int, name string, size int64) qbit.FileInfo {
+	return qbit.FileInfo{Index: index, Name: name, Size: size}
 }
 
 func TestPickFile(t *testing.T) {
 	mb := int64(1 << 20)
 	tests := []struct {
 		name    string
-		files   []deluge.FileInfo
+		files   []qbit.FileInfo
 		sel     Selector
 		want    int
 		wantErr bool
 	}{
 		{
 			name:  "movie largest video",
-			files: []deluge.FileInfo{f(0, "readme.txt", 1), f(1, "Movie.mkv", 700*mb), f(2, "extras.mp4", 30*mb)},
+			files: []qbit.FileInfo{f(0, "readme.txt", 1), f(1, "Movie.mkv", 700*mb), f(2, "extras.mp4", 30*mb)},
 			sel:   Selector{IsSeries: false},
 			want:  1,
 		},
 		{
 			name:  "movie skips sample",
-			files: []deluge.FileInfo{f(0, "Movie.Sample.mkv", 900*mb), f(1, "Movie.mkv", 700*mb)},
+			files: []qbit.FileInfo{f(0, "Movie.Sample.mkv", 900*mb), f(1, "Movie.mkv", 700*mb)},
 			sel:   Selector{IsSeries: false},
 			want:  1,
 		},
 		{
 			name:  "series matches episode",
-			files: []deluge.FileInfo{f(0, "Show.S01E04.mkv", 500*mb), f(1, "Show.S01E05.mkv", 480*mb)},
+			files: []qbit.FileInfo{f(0, "Show.S01E04.mkv", 500*mb), f(1, "Show.S01E05.mkv", 480*mb)},
 			sel:   Selector{IsSeries: true, Season: 1, Episode: 5},
 			want:  1,
 		},
 		{
 			name:    "series no match errors",
-			files:   []deluge.FileInfo{f(0, "Show.S01E04.mkv", 500*mb)},
+			files:   []qbit.FileInfo{f(0, "Show.S01E04.mkv", 500*mb)},
 			sel:     Selector{IsSeries: true, Season: 1, Episode: 9},
 			wantErr: true,
 		},
 		{
 			name:    "no video files errors",
-			files:   []deluge.FileInfo{f(0, "notes.txt", 10), f(1, "cover.jpg", 20)},
+			files:   []qbit.FileInfo{f(0, "notes.txt", 10), f(1, "cover.jpg", 20)},
 			sel:     Selector{IsSeries: false},
 			wantErr: true,
 		},
 		{
 			name:  "season pack picks right episode largest",
-			files: []deluge.FileInfo{f(0, "S01E05.mkv", 400*mb), f(1, "S01E05.PROPER.mkv", 450*mb), f(2, "S01E06.mkv", 800*mb)},
+			files: []qbit.FileInfo{f(0, "S01E05.mkv", 400*mb), f(1, "S01E05.PROPER.mkv", 450*mb), f(2, "S01E06.mkv", 800*mb)},
 			sel:   Selector{IsSeries: true, Season: 1, Episode: 5},
 			want:  1,
 		},

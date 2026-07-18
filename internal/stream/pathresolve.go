@@ -9,23 +9,23 @@ import (
 	"strings"
 
 	"github.com/javib/seedstrem/internal/config"
-	"github.com/javib/seedstrem/internal/deluge"
+	"github.com/javib/seedstrem/internal/qbit"
 )
 
 // Resolver locates a torrent file on the local filesystem, translating
-// Deluge's view of paths through the configured mappings.
+// qBittorrent's view of paths through the configured mappings.
 type Resolver struct {
-	dc       deluge.Client
+	dc       qbit.Client
 	mappings func() []config.Mapping
 }
 
 // NewResolver creates a Resolver. mappings is fetched per call so
 // config changes apply live.
-func NewResolver(dc deluge.Client, mappings func() []config.Mapping) *Resolver {
+func NewResolver(dc qbit.Client, mappings func() []config.Mapping) *Resolver {
 	return &Resolver{dc: dc, mappings: mappings}
 }
 
-// Remap translates a Deluge-side path to a local path using the longest
+// Remap translates a qBittorrent-side path to a local path using the longest
 // matching prefix mapping. Paths already valid locally pass through when
 // no mapping matches.
 func Remap(mappings []config.Mapping, remotePath string) string {
@@ -52,7 +52,7 @@ var ErrUnsafePath = errors.New("resolved path escapes configured mapping root")
 // FilePath returns the local path of the given file of a torrent. The
 // returned path exists at the time of return and is contained within a
 // configured local mapping root.
-func (r *Resolver) FilePath(ctx context.Context, info deluge.TorrentInfo, file deluge.FileInfo) (string, error) {
+func (r *Resolver) FilePath(ctx context.Context, info qbit.TorrentInfo, file qbit.FileInfo) (string, error) {
 	mappings := r.mappings()
 
 	// Reject traversal in the torrent-supplied file name outright; a

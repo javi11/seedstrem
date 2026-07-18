@@ -62,7 +62,7 @@ func BuildManifest(version string, addon AddonSettings) Manifest {
 		ID:          manifestID,
 		Version:     manifestVersion(version),
 		Name:        "seedstrem",
-		Description: "Self-hosted Stremio addon: searches Prowlarr indexers and streams torrents through Deluge while they download.",
+		Description: "Self-hosted Stremio addon: searches Prowlarr indexers and streams torrents through qBittorrent while they download.",
 		Resources:   []string{"stream"},
 		Types:       types,
 		Catalogs:    []any{},

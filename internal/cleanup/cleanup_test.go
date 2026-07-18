@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/javib/seedstrem/internal/deluge"
-	"github.com/javib/seedstrem/internal/deluge/fake"
 	"github.com/javib/seedstrem/internal/playsession"
+	"github.com/javib/seedstrem/internal/qbit"
+	"github.com/javib/seedstrem/internal/qbit/fake"
 	"github.com/javib/seedstrem/internal/store"
 	"github.com/javib/seedstrem/internal/torrents"
 )
@@ -44,7 +44,7 @@ func TestSweepRemovesTorrentPastSeedTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeDC.Put(&fake.Torrent{
-		Hash: testHash, State: deluge.StateSeeding,
+		Hash: testHash, State: qbit.StateSeeding,
 		Progress: 1, SeedingTime: 48 * time.Hour,
 	})
 
@@ -52,7 +52,7 @@ func TestSweepRemovesTorrentPastSeedTime(t *testing.T) {
 		t.Fatalf("sweep: %v", err)
 	}
 	if fakeDC.Get(testHash) != nil {
-		t.Error("expected torrent removed from deluge")
+		t.Error("expected torrent removed from qbittorrent")
 	}
 	if _, err := db.TorrentByID(ctx, "T1"); err == nil {
 		t.Error("expected torrent removed from store")
@@ -67,7 +67,7 @@ func TestSweepKeepsTorrentUnderSeedTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeDC.Put(&fake.Torrent{
-		Hash: testHash, State: deluge.StateSeeding,
+		Hash: testHash, State: qbit.StateSeeding,
 		Progress: 1, SeedingTime: 1 * time.Hour,
 	})
 
@@ -75,7 +75,7 @@ func TestSweepKeepsTorrentUnderSeedTime(t *testing.T) {
 		t.Fatalf("sweep: %v", err)
 	}
 	if fakeDC.Get(testHash) == nil {
-		t.Error("expected torrent to remain in deluge")
+		t.Error("expected torrent to remain in qbittorrent")
 	}
 	if _, err := db.TorrentByID(ctx, "T1"); err != nil {
 		t.Errorf("expected torrent to remain in store, got %v", err)
@@ -93,7 +93,7 @@ func TestSweepKeepsIncompleteTorrent(t *testing.T) {
 	// should never happen in practice, but progress < 1 must still block
 	// removal.
 	fakeDC.Put(&fake.Torrent{
-		Hash: testHash, State: deluge.StateDownloading,
+		Hash: testHash, State: qbit.StateDownloading,
 		Progress: 0.5, SeedingTime: 48 * time.Hour,
 	})
 
@@ -113,7 +113,7 @@ func TestSweepSkipsTorrentBeingWatched(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeDC.Put(&fake.Torrent{
-		Hash: testHash, State: deluge.StateSeeding,
+		Hash: testHash, State: qbit.StateSeeding,
 		Progress: 1, SeedingTime: 48 * time.Hour,
 	})
 
@@ -139,7 +139,7 @@ func TestSweepDisabledWhenSeedTimeZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeDC.Put(&fake.Torrent{
-		Hash: testHash, State: deluge.StateSeeding,
+		Hash: testHash, State: qbit.StateSeeding,
 		Progress: 1, SeedingTime: 1000 * time.Hour,
 	})
 

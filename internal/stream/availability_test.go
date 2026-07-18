@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/javib/seedstrem/internal/deluge/fake"
+	"github.com/javib/seedstrem/internal/qbit/fake"
 )
 
 const testHash = "0123456789abcdef0123456789abcdef01234567"

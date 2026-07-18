@@ -11,9 +11,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/javib/seedstrem/internal/deluge/fake"
 	"github.com/javib/seedstrem/internal/meta"
 	"github.com/javib/seedstrem/internal/prowlarr"
+	"github.com/javib/seedstrem/internal/qbit/fake"
 	"github.com/javib/seedstrem/internal/store"
 	"github.com/javib/seedstrem/internal/torrents"
 )
@@ -24,7 +24,7 @@ func testMagnet() string {
 	return "magnet:?xt=urn:btih:" + testHash + "&dn=The.Matrix.1999.1080p"
 }
 
-// harness wires a Handler over fakes: cinemeta, prowlarr, and Deluge.
+// harness wires a Handler over fakes: cinemeta, prowlarr, and qBittorrent.
 type harness struct {
 	handler  *Handler
 	server   *httptest.Server
@@ -490,7 +490,7 @@ func TestPlayRedirects(t *testing.T) {
 		t.Errorf("redirect location = %q, want /dl/{token}", loc)
 	}
 
-	// The torrent was added to Deluge, stopped + sequential.
+	// The torrent was added to qBittorrent, stopped + sequential.
 	var added bool
 	for _, c := range h.fakeDC.Calls() {
 		if strings.HasPrefix(c, "add magnet=") && strings.Contains(c, "seq=true") {

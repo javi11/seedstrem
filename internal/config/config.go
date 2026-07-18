@@ -19,17 +19,17 @@ import (
 
 // Config is the root configuration document.
 type Config struct {
-	Server   Server   `yaml:"server"`
-	Deluge   Deluge   `yaml:"deluge"`
-	Prowlarr Prowlarr `yaml:"prowlarr"`
-	Addon    Addon    `yaml:"addon"`
-	Filters  Filters  `yaml:"filters"`
-	Meta     Meta     `yaml:"meta"`
-	Paths    Paths    `yaml:"paths"`
-	Storage  Storage  `yaml:"storage"`
-	Stream   Stream   `yaml:"stream"`
-	Cleanup  Cleanup  `yaml:"cleanup"`
-	Log      Log      `yaml:"log"`
+	Server      Server      `yaml:"server"`
+	QBittorrent QBittorrent `yaml:"qbittorrent"`
+	Prowlarr    Prowlarr    `yaml:"prowlarr"`
+	Addon       Addon       `yaml:"addon"`
+	Filters     Filters     `yaml:"filters"`
+	Meta        Meta        `yaml:"meta"`
+	Paths       Paths       `yaml:"paths"`
+	Storage     Storage     `yaml:"storage"`
+	Stream      Stream      `yaml:"stream"`
+	Cleanup     Cleanup     `yaml:"cleanup"`
+	Log         Log         `yaml:"log"`
 }
 
 type Server struct {
@@ -38,13 +38,14 @@ type Server struct {
 	AdminPassword string `yaml:"admin_password"`
 }
 
-// Deluge configures the RPC connection to the Deluge daemon (not the
-// WebUI — seedstrem speaks Deluge's native daemon RPC directly).
-type Deluge struct {
-	Host     string `yaml:"host"`
-	Port     uint   `yaml:"port"`
+// QBittorrent configures the connection to the qBittorrent WebUI API.
+type QBittorrent struct {
+	URL      string `yaml:"url"`
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
+	// Category tags the torrents seedstrem adds, so they are
+	// distinguishable on a shared qBittorrent instance.
+	Category string `yaml:"category"`
 }
 
 // Prowlarr configures the torrent search backend.
@@ -74,8 +75,8 @@ type Filters struct {
 	MaxResults int   `yaml:"max_results"`
 }
 
-// Meta configures metadata resolution (Cinemeta) and the Deluge metadata
-// wait during resolve-on-play.
+// Meta configures metadata resolution (Cinemeta) and the qBittorrent
+// metadata wait during resolve-on-play.
 type Meta struct {
 	CinemetaURL     string        `yaml:"cinemeta_url"`
 	MetadataTimeout time.Duration `yaml:"metadata_timeout"`
@@ -85,7 +86,7 @@ type Meta struct {
 	TMDbAPIKey string `yaml:"tmdb_api_key"`
 }
 
-// Mapping remaps a path prefix as seen by Deluge to a local path.
+// Mapping remaps a path prefix as seen by qBittorrent to a local path.
 type Mapping struct {
 	Remote string `yaml:"remote"`
 	Local  string `yaml:"local"`
@@ -127,9 +128,10 @@ func Default() Config {
 			Listen:      ":8080",
 			ExternalURL: "http://localhost:8080",
 		},
-		Deluge: Deluge{
-			Host: "deluge",
-			Port: 58846,
+		QBittorrent: QBittorrent{
+			URL:      "http://qbittorrent:8080",
+			Username: "admin",
+			Category: "seedstrem",
 		},
 		Prowlarr: Prowlarr{
 			MovieCategories: []int{2000},
@@ -205,14 +207,10 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 	set("SERVER_LISTEN", &cfg.Server.Listen)
 	set("SERVER_EXTERNAL_URL", &cfg.Server.ExternalURL)
 	set("SERVER_ADMIN_PASSWORD", &cfg.Server.AdminPassword)
-	set("DELUGE_HOST", &cfg.Deluge.Host)
-	set("DELUGE_USERNAME", &cfg.Deluge.Username)
-	set("DELUGE_PASSWORD", &cfg.Deluge.Password)
-	if v := getenv("SEEDSTREM_DELUGE_PORT"); v != "" {
-		if n, err := strconv.ParseUint(v, 10, 16); err == nil {
-			cfg.Deluge.Port = uint(n)
-		}
-	}
+	set("QBITTORRENT_URL", &cfg.QBittorrent.URL)
+	set("QBITTORRENT_USERNAME", &cfg.QBittorrent.Username)
+	set("QBITTORRENT_PASSWORD", &cfg.QBittorrent.Password)
+	set("QBITTORRENT_CATEGORY", &cfg.QBittorrent.Category)
 	set("PROWLARR_URL", &cfg.Prowlarr.URL)
 	set("PROWLARR_API_KEY", &cfg.Prowlarr.APIKey)
 	set("META_CINEMETA_URL", &cfg.Meta.CinemetaURL)
@@ -295,11 +293,10 @@ func (c Config) Validate() error {
 	} else if !strings.HasPrefix(c.Server.ExternalURL, "http://") && !strings.HasPrefix(c.Server.ExternalURL, "https://") {
 		errs = append(errs, fmt.Errorf("server.external_url must start with http:// or https://, got %q", c.Server.ExternalURL))
 	}
-	if c.Deluge.Host == "" {
-		errs = append(errs, errors.New("deluge.host must not be empty"))
-	}
-	if c.Deluge.Port == 0 {
-		errs = append(errs, errors.New("deluge.port must not be zero"))
+	if c.QBittorrent.URL == "" {
+		errs = append(errs, errors.New("qbittorrent.url must not be empty"))
+	} else if !strings.HasPrefix(c.QBittorrent.URL, "http://") && !strings.HasPrefix(c.QBittorrent.URL, "https://") {
+		errs = append(errs, fmt.Errorf("qbittorrent.url must start with http:// or https://, got %q", c.QBittorrent.URL))
 	}
 	if c.Storage.Database == "" {
 		errs = append(errs, errors.New("storage.database must not be empty"))

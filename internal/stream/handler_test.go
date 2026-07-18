@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/javib/seedstrem/internal/config"
-	"github.com/javib/seedstrem/internal/deluge/fake"
 	"github.com/javib/seedstrem/internal/playsession"
+	"github.com/javib/seedstrem/internal/qbit/fake"
 	"github.com/javib/seedstrem/internal/store"
 	"github.com/javib/seedstrem/internal/torrents"
 )
@@ -258,7 +258,7 @@ func TestCheckAbandonedRemovesLowProgressTorrent(t *testing.T) {
 	h.checkAbandoned(tor)
 
 	if f.Get(testHash) != nil {
-		t.Error("expected torrent removed from deluge")
+		t.Error("expected torrent removed from qbittorrent")
 	}
 	if _, err := h.store.TorrentByID(context.Background(), tor.ID); err == nil {
 		t.Error("expected torrent removed from store")

@@ -1,9 +1,7 @@
-// Package fake provides an in-memory fake implementing deluge.Client
-// directly. Unlike qBittorrent's HTTP WebUI API, Deluge's native RPC is
-// a custom binary protocol, so faking the wire format would be far more
-// work than it's worth — every consumer already depends on the
-// deluge.Client Go interface, not a concrete transport, so faking at
-// that boundary is sufficient and simpler.
+// Package fake provides an in-memory fake implementing qbit.Client
+// directly. Every consumer depends on the qbit.Client Go interface, not
+// the concrete qBittorrent WebUI transport, so faking at that boundary is
+// sufficient and far simpler than standing up an httptest WebUI server.
 package fake
 
 import (
@@ -13,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/javib/seedstrem/internal/deluge"
 	"github.com/javib/seedstrem/internal/metainfo"
+	"github.com/javib/seedstrem/internal/qbit"
 )
 
 // File is one file of a fake torrent.
@@ -39,24 +37,24 @@ type Torrent struct {
 	Files       []File
 
 	PieceSize   int64
-	PieceStates []int // deluge.PieceState values
+	PieceStates []int // qbit.PieceState values
 
+	Category           string
 	Stopped            bool
 	SequentialDownload bool
 	FirstLastPiecePrio bool
 }
 
-// Server is an in-memory fake deluge.Client. Tests construct one
-// directly and pass it wherever a deluge.Client is expected — no
-// separate adapter/URL is needed since it already satisfies the
-// interface.
+// Server is an in-memory fake qbit.Client. Tests construct one directly
+// and pass it wherever a qbit.Client is expected — no separate
+// adapter/URL is needed since it already satisfies the interface.
 type Server struct {
 	mu       sync.Mutex
 	torrents map[string]*Torrent
 	calls    []string
 }
 
-var _ deluge.Client = (*Server)(nil)
+var _ qbit.Client = (*Server)(nil)
 
 // New creates an empty fake.
 func New() *Server {
@@ -107,9 +105,9 @@ func (s *Server) record(format string, args ...any) {
 	s.calls = append(s.calls, fmt.Sprintf(format, args...))
 }
 
-// --- deluge.Client ---
+// --- qbit.Client ---
 
-func (s *Server) AddMagnet(_ context.Context, magnet string, opts deluge.AddOptions) error {
+func (s *Server) AddMagnet(_ context.Context, magnet string, opts qbit.AddOptions) error {
 	hash, name, err := metainfo.FromMagnet(magnet)
 	if err != nil {
 		return fmt.Errorf("fake: invalid magnet: %w", err)
@@ -117,17 +115,18 @@ func (s *Server) AddMagnet(_ context.Context, magnet string, opts deluge.AddOpti
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.record("add magnet=%s stopped=%v seq=%v flp=%v",
-		hash, opts.Stopped, opts.SequentialDownload, opts.FirstLastPiecePrio)
+	s.record("add magnet=%s category=%s stopped=%v seq=%v flp=%v",
+		hash, opts.Category, opts.Stopped, opts.SequentialDownload, opts.FirstLastPiecePrio)
 	if _, exists := s.torrents[hash]; !exists {
-		state := deluge.StateDownloading
+		state := qbit.StateDownloading
 		if opts.Stopped {
-			state = deluge.StatePaused
+			state = qbit.StatePaused
 		}
 		s.torrents[hash] = &Torrent{
 			Hash:               hash,
 			Name:               name,
 			State:              state,
+			Category:           opts.Category,
 			Stopped:            opts.Stopped,
 			SequentialDownload: opts.SequentialDownload,
 			FirstLastPiecePrio: opts.FirstLastPiecePrio,
@@ -136,14 +135,14 @@ func (s *Server) AddMagnet(_ context.Context, magnet string, opts deluge.AddOpti
 	return nil
 }
 
-func (s *Server) Torrents(_ context.Context, hashes []string) ([]deluge.TorrentInfo, error) {
+func (s *Server) Torrents(_ context.Context, hashes []string) ([]qbit.TorrentInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	want := map[string]bool{}
 	for _, h := range hashes {
 		want[strings.ToLower(h)] = true
 	}
-	out := make([]deluge.TorrentInfo, 0, len(hashes))
+	out := make([]qbit.TorrentInfo, 0, len(hashes))
 	for hash, t := range s.torrents {
 		if !want[hash] {
 			continue
@@ -153,18 +152,18 @@ func (s *Server) Torrents(_ context.Context, hashes []string) ([]deluge.TorrentI
 	return out, nil
 }
 
-func (s *Server) Torrent(_ context.Context, hash string) (deluge.TorrentInfo, error) {
+func (s *Server) Torrent(_ context.Context, hash string) (qbit.TorrentInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.torrents[strings.ToLower(hash)]
 	if !ok {
-		return deluge.TorrentInfo{}, deluge.ErrTorrentNotFound
+		return qbit.TorrentInfo{}, qbit.ErrTorrentNotFound
 	}
 	return toTorrentInfo(t), nil
 }
 
-func toTorrentInfo(t *Torrent) deluge.TorrentInfo {
-	return deluge.TorrentInfo{
+func toTorrentInfo(t *Torrent) qbit.TorrentInfo {
+	return qbit.TorrentInfo{
 		Hash:        t.Hash,
 		Name:        t.Name,
 		State:       t.State,
@@ -176,45 +175,45 @@ func toTorrentInfo(t *Torrent) deluge.TorrentInfo {
 	}
 }
 
-func (s *Server) Files(_ context.Context, hash string) ([]deluge.FileInfo, error) {
+func (s *Server) Files(_ context.Context, hash string) ([]qbit.FileInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.torrents[strings.ToLower(hash)]
 	if !ok {
-		return nil, deluge.ErrTorrentNotFound
+		return nil, qbit.ErrTorrentNotFound
 	}
-	out := make([]deluge.FileInfo, len(t.Files))
+	out := make([]qbit.FileInfo, len(t.Files))
 	for i, f := range t.Files {
-		out[i] = deluge.FileInfo{Index: i, Name: f.Name, Size: f.Size, Progress: f.Progress, Priority: f.Priority}
+		out[i] = qbit.FileInfo{Index: i, Name: f.Name, Size: f.Size, Progress: f.Progress, Priority: f.Priority}
 	}
 	return out, nil
 }
 
-func (s *Server) Properties(_ context.Context, hash string) (deluge.Properties, error) {
+func (s *Server) Properties(_ context.Context, hash string) (qbit.Properties, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.torrents[strings.ToLower(hash)]
 	if !ok {
-		return deluge.Properties{}, deluge.ErrTorrentNotFound
+		return qbit.Properties{}, qbit.ErrTorrentNotFound
 	}
-	return deluge.Properties{PieceSize: t.PieceSize, SavePath: t.SavePath}, nil
+	return qbit.Properties{PieceSize: t.PieceSize, SavePath: t.SavePath}, nil
 }
 
-func (s *Server) PieceStates(_ context.Context, hash string) ([]deluge.PieceState, error) {
+func (s *Server) PieceStates(_ context.Context, hash string) ([]qbit.PieceState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.torrents[strings.ToLower(hash)]
 	if !ok {
-		return nil, deluge.ErrTorrentNotFound
+		return nil, qbit.ErrTorrentNotFound
 	}
-	out := make([]deluge.PieceState, len(t.PieceStates))
+	out := make([]qbit.PieceState, len(t.PieceStates))
 	for i, v := range t.PieceStates {
-		out[i] = deluge.PieceState(v)
+		out[i] = qbit.PieceState(v)
 	}
 	return out, nil
 }
 
-// Remove deletes a torrent entirely, as if the daemon forgot it.
+// Remove deletes a torrent entirely, as if qBittorrent forgot it.
 func (s *Server) Remove(hash string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -226,7 +225,7 @@ func (s *Server) SetFilePriority(_ context.Context, hash string, indices []int, 
 	defer s.mu.Unlock()
 	t, ok := s.torrents[strings.ToLower(hash)]
 	if !ok {
-		return deluge.ErrTorrentNotFound
+		return qbit.ErrTorrentNotFound
 	}
 	s.record("filePrio hash=%s indices=%v priority=%d", hash, indices, priority)
 	for _, idx := range indices {
@@ -243,11 +242,11 @@ func (s *Server) Start(_ context.Context, hash string) error {
 	defer s.mu.Unlock()
 	t, ok := s.torrents[strings.ToLower(hash)]
 	if !ok {
-		return deluge.ErrTorrentNotFound
+		return qbit.ErrTorrentNotFound
 	}
 	s.record("start hash=%s", hash)
 	t.Stopped = false
-	t.State = deluge.StateDownloading
+	t.State = qbit.StateDownloading
 	return nil
 }
 
@@ -256,7 +255,7 @@ func (s *Server) Delete(_ context.Context, hash string, deleteFiles bool) error 
 	defer s.mu.Unlock()
 	key := strings.ToLower(hash)
 	if _, ok := s.torrents[key]; !ok {
-		return deluge.ErrTorrentNotFound
+		return qbit.ErrTorrentNotFound
 	}
 	s.record("delete hash=%s deleteFiles=%v", hash, deleteFiles)
 	delete(s.torrents, key)
@@ -264,5 +263,5 @@ func (s *Server) Delete(_ context.Context, hash string, deleteFiles bool) error 
 }
 
 func (s *Server) Version(context.Context) (string, error) {
-	return "2.1.1", nil
+	return "4.6.5", nil
 }

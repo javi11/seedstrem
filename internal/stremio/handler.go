@@ -1,6 +1,6 @@
 // Package stremio implements seedstrem's Stremio addon: a stream-only
 // manifest plus a stream handler (Prowlarr search) and a resolve-on-play
-// handler that adds the chosen torrent to Deluge and redirects to
+// handler that adds the chosen torrent to qBittorrent and redirects to
 // the /dl streaming endpoint.
 package stremio
 

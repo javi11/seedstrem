@@ -7,12 +7,12 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/javib/seedstrem/internal/deluge"
 	"github.com/javib/seedstrem/internal/metainfo"
+	"github.com/javib/seedstrem/internal/qbit"
 	"github.com/javib/seedstrem/internal/store"
 )
 
-// metaPollInterval is how often WaitForMetadata re-checks Deluge for a
+// metaPollInterval is how often WaitForMetadata re-checks qBittorrent for a
 // resolved file list. The first check happens immediately.
 const metaPollInterval = 1 * time.Second
 
@@ -23,11 +23,11 @@ type Settings struct {
 	DeleteFilesOnRemove bool
 }
 
-// Service owns the add → wait → select → link mechanics against Deluge
+// Service owns the add → wait → select → link mechanics against qBittorrent
 // and the local store.
 type Service struct {
 	store    *store.Store
-	dc       deluge.Client
+	dc       qbit.Client
 	settings func() Settings
 	logger   *slog.Logger
 
@@ -37,7 +37,7 @@ type Service struct {
 }
 
 // New builds a Service.
-func New(st *store.Store, dc deluge.Client, settings func() Settings, logger *slog.Logger) *Service {
+func New(st *store.Store, dc qbit.Client, settings func() Settings, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -62,7 +62,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// EnsureAdded adds a magnet to Deluge (stopped, sequential,
+// EnsureAdded adds a magnet to qBittorrent (stopped, sequential,
 // first/last-piece priority) and persists the id↔hash mapping. It is
 // idempotent on the infohash: a re-add returns the existing torrent.
 func (s *Service) EnsureAdded(ctx context.Context, magnet string) (store.Torrent, error) {
@@ -78,14 +78,14 @@ func (s *Service) EnsureAdded(ctx context.Context, magnet string) (store.Torrent
 		return store.Torrent{}, fmt.Errorf("lookup torrent by hash: %w", err)
 	}
 
-	opts := deluge.AddOptions{
+	opts := qbit.AddOptions{
 		Stopped:            true,
 		SequentialDownload: true,
 		FirstLastPiecePrio: true,
 	}
-	s.logger.Debug("torrents: adding magnet to deluge", "hash", hash, "name", name)
+	s.logger.Debug("torrents: adding magnet to qbittorrent", "hash", hash, "name", name)
 	if err := s.dc.AddMagnet(ctx, magnet, opts); err != nil {
-		return store.Torrent{}, fmt.Errorf("add magnet to deluge: %w", err)
+		return store.Torrent{}, fmt.Errorf("add magnet to qbittorrent: %w", err)
 	}
 
 	id, err := NewID()
@@ -111,17 +111,17 @@ func (s *Service) EnsureAdded(ctx context.Context, magnet string) (store.Torrent
 	return tor, nil
 }
 
-// WaitForMetadata polls Deluge until it has resolved the torrent's file
+// WaitForMetadata polls qBittorrent until it has resolved the torrent's file
 // list (non-empty) or timeout elapses.
-func (s *Service) WaitForMetadata(ctx context.Context, hash string, timeout time.Duration) ([]deluge.FileInfo, error) {
+func (s *Service) WaitForMetadata(ctx context.Context, hash string, timeout time.Duration) ([]qbit.FileInfo, error) {
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
 	deadline := time.Now().Add(timeout)
 	for {
 		files, err := s.dc.Files(ctx, hash)
-		if err != nil && !errors.Is(err, deluge.ErrTorrentNotFound) {
-			return nil, fmt.Errorf("deluge files: %w", err)
+		if err != nil && !errors.Is(err, qbit.ErrTorrentNotFound) {
+			return nil, fmt.Errorf("qbittorrent files: %w", err)
 		}
 		if len(files) > 0 {
 			s.logger.Debug("torrents: metadata ready", "hash", hash, "files", len(files))
@@ -137,14 +137,14 @@ func (s *Service) WaitForMetadata(ctx context.Context, hash string, timeout time
 	}
 }
 
-// ErrMetadataTimeout is returned when Deluge did not resolve the
+// ErrMetadataTimeout is returned when qBittorrent did not resolve the
 // torrent's file list within the allotted time.
 var ErrMetadataTimeout = errors.New("timed out waiting for torrent metadata")
 
 // SelectAndLink marks fileIndex as wanted (others unwanted), starts the
 // torrent, and mints a streaming link for that file. It is idempotent on
 // (torrentID, fileIndex): a repeat call returns the existing link.
-func (s *Service) SelectAndLink(ctx context.Context, tor store.Torrent, fileIndex int, files []deluge.FileInfo) (store.Link, error) {
+func (s *Service) SelectAndLink(ctx context.Context, tor store.Torrent, fileIndex int, files []qbit.FileInfo) (store.Link, error) {
 	if existing, err := s.linkFor(ctx, tor.ID, fileIndex); err == nil {
 		return existing, nil
 	} else if !errors.Is(err, store.ErrNotFound) {
@@ -177,7 +177,7 @@ func (s *Service) SelectAndLink(ctx context.Context, tor store.Torrent, fileInde
 	if err != nil {
 		return store.Link{}, fmt.Errorf("generate link token: %w", err)
 	}
-	var picked deluge.FileInfo
+	var picked qbit.FileInfo
 	for _, f := range files {
 		if f.Index == fileIndex {
 			picked = f
@@ -224,13 +224,13 @@ func (s *Service) linkFor(ctx context.Context, torrentID string, fileIndex int) 
 	return store.Link{}, store.ErrNotFound
 }
 
-// Remove deletes a torrent from Deluge and the local store. A torrent
+// Remove deletes a torrent from qBittorrent and the local store. A torrent
 // already missing on either side is treated as already-removed, not an
 // error.
 func (s *Service) Remove(ctx context.Context, tor store.Torrent) error {
 	deleteFiles := s.settings().DeleteFilesOnRemove
-	if err := s.dc.Delete(ctx, tor.Hash, deleteFiles); err != nil && !errors.Is(err, deluge.ErrTorrentNotFound) {
-		return fmt.Errorf("delete from deluge: %w", err)
+	if err := s.dc.Delete(ctx, tor.Hash, deleteFiles); err != nil && !errors.Is(err, qbit.ErrTorrentNotFound) {
+		return fmt.Errorf("delete from qbittorrent: %w", err)
 	}
 	if err := s.store.DeleteTorrent(ctx, tor.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("delete from store: %w", err)

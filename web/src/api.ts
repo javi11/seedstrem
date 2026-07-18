@@ -47,11 +47,11 @@ export interface Config {
     external_url: string;
     admin_password: string;
   };
-  deluge: {
-    host: string;
-    port: number;
+  qbittorrent: {
+    url: string;
     username: string;
     password: string;
+    category: string;
   };
   prowlarr: {
     url: string;
@@ -91,7 +91,7 @@ export interface Status {
   version: string;
   external_url: string;
   manifest_url: string;
-  deluge: { connected: boolean; version?: string; error?: string };
+  qbittorrent: { connected: boolean; version?: string; error?: string };
   torrents: Record<string, number>;
 }
 
@@ -122,13 +122,17 @@ export const api = {
   getConfig: () => request<Config>("GET", "/api/config"),
   putConfig: (cfg: Config) =>
     request<{ config: Config; restart_required?: boolean }>("PUT", "/api/config", cfg),
-  testDeluge: (host: string, port: number, username: string, password: string) =>
-    request<{ ok: boolean; version?: string; error?: string }>("POST", "/api/config/test-deluge", {
-      host,
-      port,
-      username,
-      password,
-    }),
+  testQbittorrent: (url: string, username: string, password: string, category: string) =>
+    request<{ ok: boolean; version?: string; error?: string }>(
+      "POST",
+      "/api/config/test-qbittorrent",
+      {
+        url,
+        username,
+        password,
+        category,
+      },
+    ),
   testProwlarr: (url: string, apiKey: string) =>
     request<{ ok: boolean; error?: string }>("POST", "/api/config/test-prowlarr", {
       url,

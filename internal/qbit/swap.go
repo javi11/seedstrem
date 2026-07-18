@@ -1,12 +1,12 @@
-package deluge
+package qbit
 
 import (
 	"context"
 	"sync/atomic"
 )
 
-// Swappable is a Client whose backing client can be replaced at
-// runtime (when the admin UI changes Deluge connection settings).
+// Swappable is a Client whose backing client can be replaced at runtime
+// (when the admin UI changes qBittorrent connection settings).
 type Swappable struct {
 	current atomic.Pointer[Client]
 }

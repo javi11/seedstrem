@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/javib/seedstrem/internal/deluge"
-	"github.com/javib/seedstrem/internal/deluge/fake"
+	"github.com/javib/seedstrem/internal/qbit"
+	"github.com/javib/seedstrem/internal/qbit/fake"
 	"github.com/javib/seedstrem/internal/store"
 )
 
 // 40-char hex infohash → magnet. metainfo.FromMagnet and the fake both
-// lowercase it, so the store mapping and deluge lookups align.
+// lowercase it, so the store mapping and qbittorrent lookups align.
 const testHash = "0123456789abcdef0123456789abcdef01234567"
 
 func testMagnet(name string) string {
@@ -44,7 +44,7 @@ func TestResolveIdempotent(t *testing.T) {
 	// season pack; add() won't overwrite an existing hash.
 	fakeDC.Put(&fake.Torrent{
 		Hash:  testHash,
-		State: deluge.StatePaused,
+		State: qbit.StatePaused,
 		Files: []fake.File{
 			{Name: "Show.S01E04.1080p.mkv", Size: 500 << 20},
 			{Name: "Show.S01E05.1080p.mkv", Size: 480 << 20},
@@ -101,7 +101,7 @@ func TestRemove(t *testing.T) {
 	svc, fakeDC, db := newService(t)
 	ctx := context.Background()
 
-	fakeDC.Put(&fake.Torrent{Hash: testHash, State: deluge.StateSeeding})
+	fakeDC.Put(&fake.Torrent{Hash: testHash, State: qbit.StateSeeding})
 	tor, err := svc.EnsureAdded(ctx, testMagnet("Show"))
 	if err != nil {
 		t.Fatalf("ensure added: %v", err)
@@ -112,23 +112,23 @@ func TestRemove(t *testing.T) {
 	}
 
 	if fakeDC.Get(testHash) != nil {
-		t.Error("torrent still present in deluge after remove")
+		t.Error("torrent still present in qbittorrent after remove")
 	}
 	if _, err := db.TorrentByID(ctx, tor.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("torrent by id error = %v, want ErrNotFound", err)
 	}
 }
 
-func TestRemoveMissingFromDelugeIsNotAnError(t *testing.T) {
+func TestRemoveMissingFromqBittorrentIsNotAnError(t *testing.T) {
 	svc, fakeDC, db := newService(t)
 	ctx := context.Background()
 
-	fakeDC.Put(&fake.Torrent{Hash: testHash, State: deluge.StateSeeding})
+	fakeDC.Put(&fake.Torrent{Hash: testHash, State: qbit.StateSeeding})
 	tor, err := svc.EnsureAdded(ctx, testMagnet("Show"))
 	if err != nil {
 		t.Fatalf("ensure added: %v", err)
 	}
-	fakeDC.Remove(testHash) // simulate it having vanished from Deluge already
+	fakeDC.Remove(testHash) // simulate it having vanished from qBittorrent already
 
 	if err := svc.Remove(ctx, tor); err != nil {
 		t.Fatalf("remove: %v", err)
@@ -141,7 +141,7 @@ func TestRemoveMissingFromDelugeIsNotAnError(t *testing.T) {
 func TestWaitForMetadataTimeout(t *testing.T) {
 	svc, fakeDC, _ := newService(t)
 	// Torrent exists but never resolves files.
-	fakeDC.Put(&fake.Torrent{Hash: testHash, State: deluge.StateDownloading})
+	fakeDC.Put(&fake.Torrent{Hash: testHash, State: qbit.StateDownloading})
 
 	// Speed up the poll loop.
 	svc.sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }

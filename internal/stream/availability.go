@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/javib/seedstrem/internal/deluge"
+	"github.com/javib/seedstrem/internal/qbit"
 )
 
 // ErrWaitTimeout is returned when pieces did not arrive in time.
@@ -21,7 +21,7 @@ const (
 // Availability answers "are these pieces on disk yet?" with a short-TTL
 // cache shared across concurrent readers of the same torrent.
 type Availability struct {
-	dc deluge.Client
+	dc qbit.Client
 
 	mu    sync.Mutex
 	cache map[string]*pieceEntry
@@ -32,13 +32,13 @@ type Availability struct {
 }
 
 type pieceEntry struct {
-	states    []deluge.PieceState
+	states    []qbit.PieceState
 	fetchedAt time.Time
 	inflight  chan struct{} // non-nil while a fetch is running
 }
 
 // NewAvailability creates an Availability backed by dc.
-func NewAvailability(dc deluge.Client) *Availability {
+func NewAvailability(dc qbit.Client) *Availability {
 	return &Availability{
 		dc:    dc,
 		cache: map[string]*pieceEntry{},
@@ -60,7 +60,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 
 // states returns cached piece states, fetching at most once per TTL per
 // torrent even under concurrent readers.
-func (a *Availability) states(ctx context.Context, hash string) ([]deluge.PieceState, error) {
+func (a *Availability) states(ctx context.Context, hash string) ([]qbit.PieceState, error) {
 	for {
 		a.mu.Lock()
 		entry, ok := a.cache[hash]
@@ -112,7 +112,7 @@ func (a *Availability) HaveRange(ctx context.Context, hash string, first, last i
 		return false, fmt.Errorf("piece range [%d,%d] out of bounds (%d pieces)", first, last, len(states))
 	}
 	for i := first; i <= last; i++ {
-		if states[i] != deluge.PieceHave {
+		if states[i] != qbit.PieceHave {
 			return false, nil
 		}
 	}
