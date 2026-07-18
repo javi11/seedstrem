@@ -27,15 +27,16 @@ func TestLoadFile(t *testing.T) {
 server:
   listen: ":9090"
   external_url: "https://media.example.com"
-qbittorrent:
-  url: "http://qb:8081"
+deluge:
+  host: "deluge-host"
+  port: 58846
   username: "u"
   password: "p"
 stream:
   wait_timeout: 30s
 paths:
   mappings:
-    - qbit: /dl
+    - remote: /dl
       local: /mnt/dl
 `
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
@@ -51,8 +52,8 @@ paths:
 	if cfg.Stream.WaitTimeout != 30*time.Second {
 		t.Errorf("got wait_timeout %v; want 30s", cfg.Stream.WaitTimeout)
 	}
-	if cfg.QBittorrent.Category != "seedstrem" {
-		t.Errorf("default category lost: %q", cfg.QBittorrent.Category)
+	if cfg.Deluge.Host != "deluge-host" || cfg.Deluge.Port != 58846 {
+		t.Errorf("deluge connection not parsed: %+v", cfg.Deluge)
 	}
 	if len(cfg.Paths.Mappings) != 1 || cfg.Paths.Mappings[0].Local != "/mnt/dl" {
 		t.Errorf("mappings not parsed: %+v", cfg.Paths.Mappings)
@@ -62,19 +63,20 @@ paths:
 func TestApplyEnv(t *testing.T) {
 	cfg := Default()
 	env := map[string]string{
-		"SEEDSTREM_QBITTORRENT_URL":     "http://other:9999",
+		"SEEDSTREM_DELUGE_HOST":         "other-host",
+		"SEEDSTREM_DELUGE_PORT":         "12345",
 		"SEEDSTREM_STREAM_WAIT_TIMEOUT": "90s",
 		"SEEDSTREM_PATHS_MAPPINGS":      "/a:/b,/c:/d",
 	}
 	applyEnv(&cfg, func(k string) string { return env[k] })
 
-	if cfg.QBittorrent.URL != "http://other:9999" {
-		t.Errorf("qbit url override failed: %q", cfg.QBittorrent.URL)
+	if cfg.Deluge.Host != "other-host" || cfg.Deluge.Port != 12345 {
+		t.Errorf("deluge override failed: %+v", cfg.Deluge)
 	}
 	if cfg.Stream.WaitTimeout != 90*time.Second {
 		t.Errorf("wait timeout override failed: %v", cfg.Stream.WaitTimeout)
 	}
-	if len(cfg.Paths.Mappings) != 2 || cfg.Paths.Mappings[1].QBit != "/c" {
+	if len(cfg.Paths.Mappings) != 2 || cfg.Paths.Mappings[1].Remote != "/c" {
 		t.Errorf("mappings override failed: %+v", cfg.Paths.Mappings)
 	}
 }
@@ -86,7 +88,7 @@ func TestValidateCollectsAllErrors(t *testing.T) {
 		t.Fatal("expected validation errors")
 	}
 	msg := err.Error()
-	for _, want := range []string{"server.listen", "server.external_url", "qbittorrent.url", "stream.wait_timeout"} {
+	for _, want := range []string{"server.listen", "server.external_url", "deluge.host", "stream.wait_timeout"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("expected error mentioning %q, got: %s", want, msg)
 		}

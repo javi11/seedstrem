@@ -119,7 +119,7 @@ func (c *Client) Search(ctx context.Context, query, searchType string, categorie
 	out := make([]Result, 0, len(raw))
 	for _, r := range raw {
 		if r.Protocol != "" && r.Protocol != "torrent" {
-			continue // usenet or unknown — not resolvable via qBittorrent
+			continue // usenet or unknown — not resolvable via Deluge
 		}
 		res := normalize(r)
 		if res.MagnetURL == "" {

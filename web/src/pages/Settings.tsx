@@ -16,7 +16,7 @@ export function Settings() {
       .then((c) => {
         // Secrets arrive masked; blank the fields so they follow the
         // "empty = keep existing" convention and never submit the mask.
-        c.qbittorrent.password = "";
+        c.deluge.password = "";
         c.server.admin_password = "";
         c.prowlarr.api_key = "";
         // A nil slice is serialized as JSON null; configs predating the
@@ -45,7 +45,7 @@ export function Settings() {
       const res = await api.putConfig(config!);
       // Re-blank secrets: the response re-masks them, and leaving typed
       // values in state would resubmit them on the next unrelated save.
-      res.config.qbittorrent.password = "";
+      res.config.deluge.password = "";
       res.config.server.admin_password = "";
       res.config.prowlarr.api_key = "";
       res.config.prowlarr.indexer_ids = res.config.prowlarr.indexer_ids ?? [];
@@ -62,15 +62,16 @@ export function Settings() {
     }
   }
 
-  async function testQbit() {
+  async function testDeluge() {
     setTestResult("…");
     try {
-      const res = await api.testQbit(
-        config!.qbittorrent.url,
-        config!.qbittorrent.username,
-        config!.qbittorrent.password,
+      const res = await api.testDeluge(
+        config!.deluge.host,
+        config!.deluge.port,
+        config!.deluge.username,
+        config!.deluge.password,
       );
-      setTestResult(res.ok ? `✓ Connected (qBittorrent ${res.version})` : `✗ ${res.error}`);
+      setTestResult(res.ok ? `✓ Connected (Deluge ${res.version})` : `✗ ${res.error}`);
     } catch (err) {
       setTestResult(`✗ ${(err as Error).message}`);
     }
@@ -122,22 +123,39 @@ export function Settings() {
 
       <div className="card bg-base-100 shadow">
         <div className="card-body">
-          <h2 className="card-title">qBittorrent</h2>
-          <label className="form-control">
-            <span className="label-text">WebUI URL</span>
-            <input
-              className="input input-bordered"
-              value={config.qbittorrent.url}
-              onChange={(e) => update((c) => (c.qbittorrent.url = e.target.value))}
-            />
-          </label>
+          <h2 className="card-title">Deluge</h2>
+          <p className="text-sm opacity-70">
+            Connects to the Deluge daemon&apos;s RPC port directly (not the Web UI).
+          </p>
+          <div className="grid grid-cols-3 gap-2">
+            <label className="form-control col-span-2">
+              <span className="label-text">Host</span>
+              <input
+                className="input input-bordered"
+                placeholder="deluge"
+                value={config.deluge.host}
+                onChange={(e) => update((c) => (c.deluge.host = e.target.value))}
+              />
+            </label>
+            <label className="form-control">
+              <span className="label-text">Port</span>
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                className="input input-bordered"
+                value={config.deluge.port}
+                onChange={(e) => update((c) => (c.deluge.port = Number(e.target.value)))}
+              />
+            </label>
+          </div>
           <div className="grid grid-cols-2 gap-2">
             <label className="form-control">
               <span className="label-text">Username</span>
               <input
                 className="input input-bordered"
-                value={config.qbittorrent.username}
-                onChange={(e) => update((c) => (c.qbittorrent.username = e.target.value))}
+                value={config.deluge.username}
+                onChange={(e) => update((c) => (c.deluge.username = e.target.value))}
               />
             </label>
             <label className="form-control">
@@ -146,21 +164,13 @@ export function Settings() {
                 type="password"
                 className="input input-bordered"
                 placeholder="unchanged"
-                value={config.qbittorrent.password}
-                onChange={(e) => update((c) => (c.qbittorrent.password = e.target.value))}
+                value={config.deluge.password}
+                onChange={(e) => update((c) => (c.deluge.password = e.target.value))}
               />
             </label>
           </div>
-          <label className="form-control">
-            <span className="label-text">Category (torrents managed by seedstrem)</span>
-            <input
-              className="input input-bordered"
-              value={config.qbittorrent.category}
-              onChange={(e) => update((c) => (c.qbittorrent.category = e.target.value))}
-            />
-          </label>
           <div className="card-actions items-center">
-            <button type="button" className="btn btn-outline" onClick={testQbit}>
+            <button type="button" className="btn btn-outline" onClick={testDeluge}>
               Test connection
             </button>
             {testResult && <span className="text-sm">{testResult}</span>}
@@ -366,17 +376,17 @@ export function Settings() {
         <div className="card-body">
           <h2 className="card-title">Path mappings</h2>
           <p className="text-sm opacity-70">
-            Translate paths as qBittorrent sees them to paths seedstrem can read (e.g. Docker
-            volume mounts: qBittorrent <code>/downloads</code> → seedstrem <code>/data</code>).
+            Translate paths as Deluge sees them to paths seedstrem can read (e.g. Docker
+            volume mounts: Deluge <code>/downloads</code> → seedstrem <code>/data</code>).
           </p>
           {config.paths.mappings.map((m, i) => (
             <div className="flex items-end gap-2" key={i}>
               <label className="form-control flex-1">
-                <span className="label-text">qBittorrent path</span>
+                <span className="label-text">Deluge path</span>
                 <input
                   className="input input-bordered"
-                  value={m.qbit}
-                  onChange={(e) => update((c) => (c.paths.mappings[i].qbit = e.target.value))}
+                  value={m.remote}
+                  onChange={(e) => update((c) => (c.paths.mappings[i].remote = e.target.value))}
                 />
               </label>
               <label className="form-control flex-1">
@@ -400,7 +410,7 @@ export function Settings() {
             <button
               type="button"
               className="btn btn-outline btn-sm"
-              onClick={() => update((c) => c.paths.mappings.push({ qbit: "", local: "" }))}
+              onClick={() => update((c) => c.paths.mappings.push({ remote: "", local: "" }))}
             >
               + Add mapping
             </button>

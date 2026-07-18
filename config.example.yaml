@@ -1,5 +1,5 @@
 # seedstrem configuration. Every key can be overridden with a
-# SEEDSTREM_* environment variable (e.g. SEEDSTREM_QBITTORRENT_URL).
+# SEEDSTREM_* environment variable (e.g. SEEDSTREM_DELUGE_HOST).
 server:
   listen: ":8080"
   # Base URL used to build the Stremio manifest and stream links handed
@@ -8,12 +8,17 @@ server:
   # Web UI login password. Generated and logged on first run if empty.
   admin_password: ""
 
-qbittorrent:
-  url: "http://qbittorrent:8080"
-  username: "admin"
+deluge:
+  # seedstrem speaks Deluge's native daemon RPC directly (not the Web
+  # UI) — the daemon must have "Allow Remote Connections" enabled
+  # (Preferences → Daemon in Deluge's Web UI).
+  host: "deluge"
+  port: 58846
+  # Deluge auto-creates a "localclient" account with a random password
+  # stored in Deluge's own config dir (the "auth" file); or add your own
+  # account under Preferences → Other/Accounts.
+  username: "localclient"
   password: ""
-  # Torrents added by seedstrem get this category.
-  category: "seedstrem"
 
 prowlarr:
   # Torrent search backend. Leave url empty to configure later in the
@@ -45,8 +50,8 @@ filters:
 meta:
   # Cinemeta provides titles/years for IMDB ids.
   cinemeta_url: "https://v3-cinemeta.strem.io"
-  # How long resolve-on-play waits for qBittorrent to fetch torrent
-  # metadata before answering 503 (players retry).
+  # How long resolve-on-play waits for Deluge to fetch torrent metadata
+  # before answering 503 (players retry).
   metadata_timeout: 60s
   # Optional. Get a free key at https://www.themoviedb.org/settings/api.
   # Lets seedstrem resolve IMDb ids to TMDb ids for indexers that support
@@ -55,11 +60,11 @@ meta:
   tmdb_api_key: ""
 
 paths:
-  # Translate qBittorrent's paths to paths seedstrem can read.
+  # Translate Deluge's paths to paths seedstrem can read.
   # With the bundled docker-compose both containers share one host
-  # directory: qBittorrent mounts it at /downloads, seedstrem at /data.
+  # directory: Deluge mounts it at /downloads, seedstrem at /data.
   mappings:
-    - qbit: "/downloads"
+    - remote: "/downloads"
       local: "/data"
 
 storage:

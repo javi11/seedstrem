@@ -1,4 +1,4 @@
-// Package store persists the small amount of state qBittorrent cannot
+// Package store persists the small amount of state Deluge cannot
 // hold for us: RealDebrid-style torrent ids, the selection phase, and
 // the opaque per-file link tokens.
 package store

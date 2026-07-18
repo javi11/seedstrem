@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/javib/seedstrem/internal/qbit"
+	"github.com/javib/seedstrem/internal/deluge"
 )
 
 // ErrWaitTimeout is returned when pieces did not arrive in time.
@@ -21,7 +21,7 @@ const (
 // Availability answers "are these pieces on disk yet?" with a short-TTL
 // cache shared across concurrent readers of the same torrent.
 type Availability struct {
-	qb qbit.Client
+	dc deluge.Client
 
 	mu    sync.Mutex
 	cache map[string]*pieceEntry
@@ -32,15 +32,15 @@ type Availability struct {
 }
 
 type pieceEntry struct {
-	states    []qbit.PieceState
+	states    []deluge.PieceState
 	fetchedAt time.Time
 	inflight  chan struct{} // non-nil while a fetch is running
 }
 
-// NewAvailability creates an Availability backed by qb.
-func NewAvailability(qb qbit.Client) *Availability {
+// NewAvailability creates an Availability backed by dc.
+func NewAvailability(dc deluge.Client) *Availability {
 	return &Availability{
-		qb:    qb,
+		dc:    dc,
 		cache: map[string]*pieceEntry{},
 		now:   time.Now,
 		sleep: sleepCtx,
@@ -60,7 +60,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 
 // states returns cached piece states, fetching at most once per TTL per
 // torrent even under concurrent readers.
-func (a *Availability) states(ctx context.Context, hash string) ([]qbit.PieceState, error) {
+func (a *Availability) states(ctx context.Context, hash string) ([]deluge.PieceState, error) {
 	for {
 		a.mu.Lock()
 		entry, ok := a.cache[hash]
@@ -84,7 +84,7 @@ func (a *Availability) states(ctx context.Context, hash string) ([]qbit.PieceSta
 		a.cache[hash] = &pieceEntry{inflight: ch}
 		a.mu.Unlock()
 
-		states, err := a.qb.PieceStates(ctx, hash)
+		states, err := a.dc.PieceStates(ctx, hash)
 
 		a.mu.Lock()
 		if err != nil {
@@ -112,7 +112,7 @@ func (a *Availability) HaveRange(ctx context.Context, hash string, first, last i
 		return false, fmt.Errorf("piece range [%d,%d] out of bounds (%d pieces)", first, last, len(states))
 	}
 	for i := first; i <= last; i++ {
-		if states[i] != qbit.PieceHave {
+		if states[i] != deluge.PieceHave {
 			return false, nil
 		}
 	}

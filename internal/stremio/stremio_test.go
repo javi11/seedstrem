@@ -11,10 +11,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/javib/seedstrem/internal/deluge/fake"
 	"github.com/javib/seedstrem/internal/meta"
 	"github.com/javib/seedstrem/internal/prowlarr"
-	"github.com/javib/seedstrem/internal/qbit"
-	"github.com/javib/seedstrem/internal/qbit/fake"
 	"github.com/javib/seedstrem/internal/store"
 	"github.com/javib/seedstrem/internal/torrents"
 )
@@ -25,13 +24,13 @@ func testMagnet() string {
 	return "magnet:?xt=urn:btih:" + testHash + "&dn=The.Matrix.1999.1080p"
 }
 
-// harness wires a Handler over fakes: cinemeta, prowlarr, and qBittorrent.
+// harness wires a Handler over fakes: cinemeta, prowlarr, and Deluge.
 type harness struct {
 	handler  *Handler
 	server   *httptest.Server
 	prowlarr *httptest.Server
 	cinemeta *httptest.Server
-	fakeQB   *fake.Server
+	fakeDC   *fake.Server
 }
 
 func newHarness(t *testing.T) *harness {
@@ -55,11 +54,10 @@ func newHarness(t *testing.T) *harness {
 	}))
 	t.Cleanup(prow.Close)
 
-	fakeQB := fake.New()
-	t.Cleanup(fakeQB.Close)
-	fakeQB.Put(&fake.Torrent{
+	fakeDC := fake.New()
+	fakeDC.Put(&fake.Torrent{
 		Hash:  testHash,
-		State: qbit.StateStoppedDL,
+		State: "Paused",
 		Files: []fake.File{{Name: "The.Matrix.1999.1080p.BluRay.mkv", Size: 8 << 30}},
 	})
 
@@ -69,14 +67,13 @@ func newHarness(t *testing.T) *harness {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	qb := qbit.New(fakeQB.URL(), "admin", "pass")
-	svc := torrents.New(db, qb, func() torrents.Settings {
-		return torrents.Settings{Category: "seedstrem", MetadataTimeout: 2 * time.Second}
+	svc := torrents.New(db, fakeDC, func() torrents.Settings {
+		return torrents.Settings{MetadataTimeout: 2 * time.Second}
 	}, nil)
 
 	metaClient := meta.New(cinemeta.URL, "")
 
-	h := &harness{prowlarr: prow, cinemeta: cinemeta, fakeQB: fakeQB}
+	h := &harness{prowlarr: prow, cinemeta: cinemeta, fakeDC: fakeDC}
 	h.handler = New(svc, metaClient, func() Settings {
 		return Settings{
 			ExternalURL: h.server.URL,
@@ -429,9 +426,9 @@ func TestStreamTmdbOnlyFallsBackToText(t *testing.T) {
 
 func TestManifestVersion(t *testing.T) {
 	tests := map[string]string{
-		"1.2.3":          "1.2.3",
-		"v1.2.3":         "1.2.3",
-		"1.2.3-rc.1":     "1.2.3-rc.1",
+		"1.2.3":          "1.2.3",      // plain semver
+		"v1.2.3":         "1.2.3",      // leading v stripped
+		"1.2.3-rc.1":     "1.2.3-rc.1", // prerelease kept
 		"0.0.0-main.abc": "0.0.0-main.abc",
 		"main":           fallbackVersion,
 		"docker":         fallbackVersion,
@@ -493,15 +490,15 @@ func TestPlayRedirects(t *testing.T) {
 		t.Errorf("redirect location = %q, want /dl/{token}", loc)
 	}
 
-	// The torrent was added to qBittorrent, stopped + sequential.
+	// The torrent was added to Deluge, stopped + sequential.
 	var added bool
-	for _, c := range h.fakeQB.Calls() {
+	for _, c := range h.fakeDC.Calls() {
 		if strings.HasPrefix(c, "add magnet=") && strings.Contains(c, "seq=true") {
 			added = true
 		}
 	}
 	if !added {
-		t.Errorf("magnet not added correctly: %v", h.fakeQB.Calls())
+		t.Errorf("magnet not added correctly: %v", h.fakeDC.Calls())
 	}
 }
 

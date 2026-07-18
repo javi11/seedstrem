@@ -1,7 +1,7 @@
 package torrents
 
 import (
-	"github.com/javib/seedstrem/internal/qbit"
+	"github.com/javib/seedstrem/internal/deluge"
 	"github.com/javib/seedstrem/internal/store"
 )
 
@@ -16,19 +16,18 @@ const (
 	StatusError            = "error"
 )
 
-// DeriveStatus maps our lifecycle phase plus live qBittorrent state to a
+// DeriveStatus maps our lifecycle phase plus live Deluge state to a
 // coarse status string.
 //
-//   - stickyError: a persisted local error (e.g. torrent vanished from qbit)
-//   - filesKnown: qBittorrent has resolved metadata (file list non-empty)
-//   - progress: qBittorrent progress over wanted files, 0..1
-func DeriveStatus(phase, qbitState string, stickyError bool, filesKnown bool, progress float64) string {
+//   - stickyError: a persisted local error (e.g. torrent vanished from Deluge)
+//   - filesKnown: Deluge has resolved metadata (file list non-empty)
+//   - progress: torrent progress, 0..1
+func DeriveStatus(phase, delugeState string, stickyError bool, filesKnown bool, progress float64) string {
 	if stickyError {
 		return StatusError
 	}
 
-	switch qbitState {
-	case qbit.StateError, qbit.StateMissingFiles:
+	if delugeState == deluge.StateError {
 		return StatusError
 	}
 
@@ -44,17 +43,15 @@ func DeriveStatus(phase, qbitState string, stickyError bool, filesKnown bool, pr
 		return StatusDownloaded
 	}
 
-	switch qbitState {
-	case qbit.StateQueuedDL, qbit.StateCheckingDL, qbit.StateAllocating,
-		qbit.StateStoppedDL, qbit.StatePausedDL, qbit.StateCheckingResumeData:
+	switch delugeState {
+	case deluge.StateQueued, deluge.StateChecking, deluge.StateAllocating, deluge.StatePaused:
 		return StatusQueued
-	case qbit.StateDownloading, qbit.StateStalledDL, qbit.StateMetaDL, qbit.StateForcedDL:
+	case deluge.StateDownloading:
 		return StatusDownloading
-	case qbit.StateUploading, qbit.StateStalledUP, qbit.StateStoppedUP, qbit.StatePausedUP,
-		qbit.StateQueuedUP, qbit.StateForcedUP, qbit.StateCheckingUP, qbit.StateMoving:
+	case deluge.StateSeeding, deluge.StateMoving, deluge.StateActive:
 		// Upload-side state but selected files not at 100%: the wanted
-		// files finished (qbit reports progress over wanted files) —
-		// treat as downloaded.
+		// files finished (progress is over the whole torrent, but
+		// unselected files don't count toward it) — treat as downloaded.
 		return StatusDownloaded
 	default:
 		return StatusDownloading

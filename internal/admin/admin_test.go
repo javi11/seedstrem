@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/javib/seedstrem/internal/config"
-	"github.com/javib/seedstrem/internal/qbit"
-	"github.com/javib/seedstrem/internal/qbit/fake"
+	"github.com/javib/seedstrem/internal/deluge"
+	"github.com/javib/seedstrem/internal/deluge/fake"
 	"github.com/javib/seedstrem/internal/store"
 )
 
@@ -29,11 +29,9 @@ type env struct {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	f := fake.New()
-	t.Cleanup(f.Close)
 
 	cfg := config.Default()
 	cfg.Server.AdminPassword = adminPassword
-	cfg.QBittorrent.URL = f.URL()
 	cfg.Storage.Database = filepath.Join(t.TempDir(), "db")
 	cm := config.NewManager(cfg, filepath.Join(t.TempDir(), "config.yaml"))
 
@@ -43,8 +41,8 @@ func newEnv(t *testing.T) *env {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	qb := qbit.NewSwappable(qbit.New(f.URL(), "u", "p"))
-	h := New(cm, st, qb, "test", nil)
+	dc := deluge.NewSwappable(f)
+	h := New(cm, st, dc, "test", nil)
 	return &env{handler: h.Router(), config: cm, fake: f, t: t}
 }
 
@@ -105,7 +103,7 @@ func TestCSRFHeaderRequired(t *testing.T) {
 	e := newEnv(t)
 	e.login(t)
 
-	req := httptest.NewRequest(http.MethodPost, "/config/test-qbit", nil)
+	req := httptest.NewRequest(http.MethodPost, "/config/test-deluge", nil)
 	req.AddCookie(e.cookie)
 	// No X-Requested-With header.
 	w := httptest.NewRecorder()
@@ -133,7 +131,7 @@ func TestSessionExpiry(t *testing.T) {
 func TestGetConfigMasksSecrets(t *testing.T) {
 	e := newEnv(t)
 	cfg := e.config.Get()
-	cfg.QBittorrent.Password = "qbit-secret"
+	cfg.Deluge.Password = "deluge-secret"
 	if err := e.config.Update(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +142,7 @@ func TestGetConfigMasksSecrets(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	body := w.Body.String()
-	if strings.Contains(body, "qbit-secret") || strings.Contains(body, adminPassword) {
+	if strings.Contains(body, "deluge-secret") || strings.Contains(body, adminPassword) {
 		t.Errorf("secrets leaked: %s", body)
 	}
 }
@@ -152,7 +150,7 @@ func TestGetConfigMasksSecrets(t *testing.T) {
 func TestPutConfigKeepsMaskedPassword(t *testing.T) {
 	e := newEnv(t)
 	cfg := e.config.Get()
-	cfg.QBittorrent.Password = "qbit-secret"
+	cfg.Deluge.Password = "deluge-secret"
 	if err := e.config.Update(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -169,17 +167,17 @@ func TestPutConfigKeepsMaskedPassword(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("put status = %d body=%s", w.Code, w.Body.String())
 	}
-	if got := e.config.Get().QBittorrent.Password; got != "qbit-secret" {
+	if got := e.config.Get().Deluge.Password; got != "deluge-secret" {
 		t.Errorf("masked password overwrote stored value: %q", got)
 	}
 
 	// Setting a real new password does update.
-	dto.QBittorrent.Password = "new-secret"
+	dto.Deluge.Password = "new-secret"
 	payload, _ = json.Marshal(dto)
 	if w = e.do(t, http.MethodPut, "/config", string(payload)); w.Code != http.StatusOK {
 		t.Fatalf("put status = %d", w.Code)
 	}
-	if got := e.config.Get().QBittorrent.Password; got != "new-secret" {
+	if got := e.config.Get().Deluge.Password; got != "new-secret" {
 		t.Errorf("password not updated: %q", got)
 	}
 }
@@ -236,24 +234,22 @@ func TestPutConfigValidates(t *testing.T) {
 	}
 }
 
-func TestTestQbit(t *testing.T) {
+func TestTestDeluge(t *testing.T) {
 	e := newEnv(t)
 	e.login(t)
 
-	w := e.do(t, http.MethodPost, "/config/test-qbit", `{"url":"`+e.fake.URL()+`","username":"u","password":"p"}`)
+	// The test-connection endpoint always dials a real Deluge daemon
+	// RPC connection (it can't use the injected fake, since it builds a
+	// fresh client from the posted host/port), so only the failure path
+	// is exercisable in a unit test without a live daemon.
+	w := e.do(t, http.MethodPost, "/config/test-deluge", `{"host":"127.0.0.1","port":1,"username":"u","password":"p"}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var res map[string]any
 	json.Unmarshal(w.Body.Bytes(), &res)
-	if res["ok"] != true || res["version"] != "v5.0.0" {
-		t.Errorf("test-qbit result: %v", res)
-	}
-
-	w = e.do(t, http.MethodPost, "/config/test-qbit", `{"url":"http://127.0.0.1:1","username":"u","password":"p"}`)
-	json.Unmarshal(w.Body.Bytes(), &res)
 	if res["ok"] != false {
-		t.Errorf("expected failure for dead qbit: %v", res)
+		t.Errorf("expected failure for dead deluge: %v", res)
 	}
 }
 
@@ -313,8 +309,8 @@ func TestStatus(t *testing.T) {
 	}
 	var status map[string]any
 	json.Unmarshal(w.Body.Bytes(), &status)
-	if status["qbittorrent"].(map[string]any)["connected"] != true {
-		t.Errorf("qbit not connected: %v", status)
+	if status["deluge"].(map[string]any)["connected"] != true {
+		t.Errorf("deluge not connected: %v", status)
 	}
 	manifestURL, _ := status["manifest_url"].(string)
 	if !strings.HasSuffix(manifestURL, "/stremio/manifest.json") {

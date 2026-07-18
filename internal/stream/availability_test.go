@@ -8,8 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/javib/seedstrem/internal/qbit"
-	"github.com/javib/seedstrem/internal/qbit/fake"
+	"github.com/javib/seedstrem/internal/deluge/fake"
 )
 
 const testHash = "0123456789abcdef0123456789abcdef01234567"
@@ -17,8 +16,7 @@ const testHash = "0123456789abcdef0123456789abcdef01234567"
 func newAvail(t *testing.T) (*Availability, *fake.Server) {
 	t.Helper()
 	f := fake.New()
-	t.Cleanup(f.Close)
-	return NewAvailability(qbit.New(f.URL(), "u", "p")), f
+	return NewAvailability(f), f
 }
 
 func TestHaveRange(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/javib/seedstrem/internal/qbit"
+	"github.com/javib/seedstrem/internal/deluge"
 )
 
 // ErrNoFileMatch is returned when no file in a torrent matches the selector.
@@ -88,7 +88,7 @@ func matchEpisode(name string, season, episode int) bool {
 
 // PickFile returns the index of the file to stream for sel, or an error
 // when nothing suitable is found.
-func PickFile(files []qbit.FileInfo, sel Selector) (int, error) {
+func PickFile(files []deluge.FileInfo, sel Selector) (int, error) {
 	best := -1
 	var bestSize int64 = -1
 	for _, f := range files {

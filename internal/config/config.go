@@ -19,16 +19,16 @@ import (
 
 // Config is the root configuration document.
 type Config struct {
-	Server      Server      `yaml:"server"`
-	QBittorrent QBittorrent `yaml:"qbittorrent"`
-	Prowlarr    Prowlarr    `yaml:"prowlarr"`
-	Addon       Addon       `yaml:"addon"`
-	Filters     Filters     `yaml:"filters"`
-	Meta        Meta        `yaml:"meta"`
-	Paths       Paths       `yaml:"paths"`
-	Storage     Storage     `yaml:"storage"`
-	Stream      Stream      `yaml:"stream"`
-	Log         Log         `yaml:"log"`
+	Server   Server   `yaml:"server"`
+	Deluge   Deluge   `yaml:"deluge"`
+	Prowlarr Prowlarr `yaml:"prowlarr"`
+	Addon    Addon    `yaml:"addon"`
+	Filters  Filters  `yaml:"filters"`
+	Meta     Meta     `yaml:"meta"`
+	Paths    Paths    `yaml:"paths"`
+	Storage  Storage  `yaml:"storage"`
+	Stream   Stream   `yaml:"stream"`
+	Log      Log      `yaml:"log"`
 }
 
 type Server struct {
@@ -37,11 +37,13 @@ type Server struct {
 	AdminPassword string `yaml:"admin_password"`
 }
 
-type QBittorrent struct {
-	URL      string `yaml:"url"`
+// Deluge configures the RPC connection to the Deluge daemon (not the
+// WebUI — seedstrem speaks Deluge's native daemon RPC directly).
+type Deluge struct {
+	Host     string `yaml:"host"`
+	Port     uint   `yaml:"port"`
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
-	Category string `yaml:"category"`
 }
 
 // Prowlarr configures the torrent search backend.
@@ -72,8 +74,8 @@ type Filters struct {
 	MaxResults int      `yaml:"max_results"`
 }
 
-// Meta configures metadata resolution (Cinemeta) and the qBittorrent
-// metadata wait during resolve-on-play.
+// Meta configures metadata resolution (Cinemeta) and the Deluge metadata
+// wait during resolve-on-play.
 type Meta struct {
 	CinemetaURL     string        `yaml:"cinemeta_url"`
 	MetadataTimeout time.Duration `yaml:"metadata_timeout"`
@@ -83,10 +85,10 @@ type Meta struct {
 	TMDbAPIKey string `yaml:"tmdb_api_key"`
 }
 
-// Mapping remaps a path prefix as seen by qBittorrent to a local path.
+// Mapping remaps a path prefix as seen by Deluge to a local path.
 type Mapping struct {
-	QBit  string `yaml:"qbit"`
-	Local string `yaml:"local"`
+	Remote string `yaml:"remote"`
+	Local  string `yaml:"local"`
 }
 
 type Paths struct {
@@ -114,10 +116,9 @@ func Default() Config {
 			Listen:      ":8080",
 			ExternalURL: "http://localhost:8080",
 		},
-		QBittorrent: QBittorrent{
-			URL:      "http://qbittorrent:8080",
-			Username: "admin",
-			Category: "seedstrem",
+		Deluge: Deluge{
+			Host: "deluge",
+			Port: 58846,
 		},
 		Prowlarr: Prowlarr{
 			MovieCategories: []int{2000},
@@ -138,7 +139,7 @@ func Default() Config {
 			MetadataTimeout: 60 * time.Second,
 		},
 		Paths: Paths{
-			Mappings: []Mapping{{QBit: "/downloads", Local: "/data"}},
+			Mappings: []Mapping{{Remote: "/downloads", Local: "/data"}},
 		},
 		Storage: Storage{
 			Database:            "seedstrem.db",
@@ -189,10 +190,14 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 	set("SERVER_LISTEN", &cfg.Server.Listen)
 	set("SERVER_EXTERNAL_URL", &cfg.Server.ExternalURL)
 	set("SERVER_ADMIN_PASSWORD", &cfg.Server.AdminPassword)
-	set("QBITTORRENT_URL", &cfg.QBittorrent.URL)
-	set("QBITTORRENT_USERNAME", &cfg.QBittorrent.Username)
-	set("QBITTORRENT_PASSWORD", &cfg.QBittorrent.Password)
-	set("QBITTORRENT_CATEGORY", &cfg.QBittorrent.Category)
+	set("DELUGE_HOST", &cfg.Deluge.Host)
+	set("DELUGE_USERNAME", &cfg.Deluge.Username)
+	set("DELUGE_PASSWORD", &cfg.Deluge.Password)
+	if v := getenv("SEEDSTREM_DELUGE_PORT"); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 16); err == nil {
+			cfg.Deluge.Port = uint(n)
+		}
+	}
 	set("PROWLARR_URL", &cfg.Prowlarr.URL)
 	set("PROWLARR_API_KEY", &cfg.Prowlarr.APIKey)
 	set("META_CINEMETA_URL", &cfg.Meta.CinemetaURL)
@@ -238,14 +243,14 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 	setInts("PROWLARR_TV_CATEGORIES", &cfg.Prowlarr.TVCategories)
 	setInts("PROWLARR_ANIME_CATEGORIES", &cfg.Prowlarr.AnimeCategories)
 	setInts("PROWLARR_INDEXER_IDS", &cfg.Prowlarr.IndexerIDs)
-	// SEEDSTREM_PATHS_MAPPINGS: comma-separated "qbit:local" pairs,
+	// SEEDSTREM_PATHS_MAPPINGS: comma-separated "remote:local" pairs,
 	// e.g. "/downloads:/data,/media:/mnt/media".
 	if v := getenv("SEEDSTREM_PATHS_MAPPINGS"); v != "" {
 		var mappings []Mapping
 		for _, pair := range strings.Split(v, ",") {
-			qbit, local, ok := strings.Cut(strings.TrimSpace(pair), ":")
-			if ok && qbit != "" && local != "" {
-				mappings = append(mappings, Mapping{QBit: qbit, Local: local})
+			remote, local, ok := strings.Cut(strings.TrimSpace(pair), ":")
+			if ok && remote != "" && local != "" {
+				mappings = append(mappings, Mapping{Remote: remote, Local: local})
 			}
 		}
 		if len(mappings) > 0 {
@@ -265,11 +270,11 @@ func (c Config) Validate() error {
 	} else if !strings.HasPrefix(c.Server.ExternalURL, "http://") && !strings.HasPrefix(c.Server.ExternalURL, "https://") {
 		errs = append(errs, fmt.Errorf("server.external_url must start with http:// or https://, got %q", c.Server.ExternalURL))
 	}
-	if c.QBittorrent.URL == "" {
-		errs = append(errs, errors.New("qbittorrent.url must not be empty"))
+	if c.Deluge.Host == "" {
+		errs = append(errs, errors.New("deluge.host must not be empty"))
 	}
-	if c.QBittorrent.Category == "" {
-		errs = append(errs, errors.New("qbittorrent.category must not be empty"))
+	if c.Deluge.Port == 0 {
+		errs = append(errs, errors.New("deluge.port must not be zero"))
 	}
 	if c.Storage.Database == "" {
 		errs = append(errs, errors.New("storage.database must not be empty"))
@@ -305,8 +310,8 @@ func (c Config) Validate() error {
 	}
 	for i, m := range c.Paths.Mappings {
 		switch {
-		case m.QBit == "" || m.Local == "":
-			errs = append(errs, fmt.Errorf("paths.mappings[%d]: qbit and local must both be set", i))
+		case m.Remote == "" || m.Local == "":
+			errs = append(errs, fmt.Errorf("paths.mappings[%d]: remote and local must both be set", i))
 		case !filepath.IsAbs(m.Local):
 			errs = append(errs, fmt.Errorf("paths.mappings[%d]: local %q must be an absolute path", i, m.Local))
 		case strings.Contains(m.Local, ".."):

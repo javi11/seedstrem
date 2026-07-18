@@ -7,28 +7,27 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/javib/seedstrem/internal/deluge"
 	"github.com/javib/seedstrem/internal/metainfo"
-	"github.com/javib/seedstrem/internal/qbit"
 	"github.com/javib/seedstrem/internal/store"
 )
 
-// metaPollInterval is how often WaitForMetadata re-checks qBittorrent for
-// a resolved file list. The first check happens immediately.
+// metaPollInterval is how often WaitForMetadata re-checks Deluge for a
+// resolved file list. The first check happens immediately.
 const metaPollInterval = 1 * time.Second
 
 // Settings is the live configuration slice the service needs, fetched per
 // call so config hot-reload takes effect without restart.
 type Settings struct {
-	Category            string
 	MetadataTimeout     time.Duration
 	DeleteFilesOnRemove bool
 }
 
-// Service owns the add → wait → select → link mechanics against
-// qBittorrent and the local store.
+// Service owns the add → wait → select → link mechanics against Deluge
+// and the local store.
 type Service struct {
 	store    *store.Store
-	qb       qbit.Client
+	dc       deluge.Client
 	settings func() Settings
 	logger   *slog.Logger
 
@@ -38,13 +37,13 @@ type Service struct {
 }
 
 // New builds a Service.
-func New(st *store.Store, qb qbit.Client, settings func() Settings, logger *slog.Logger) *Service {
+func New(st *store.Store, dc deluge.Client, settings func() Settings, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Service{
 		store:    st,
-		qb:       qb,
+		dc:       dc,
 		settings: settings,
 		logger:   logger,
 		now:      func() int64 { return time.Now().Unix() },
@@ -63,7 +62,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// EnsureAdded adds a magnet to qBittorrent (stopped, sequential,
+// EnsureAdded adds a magnet to Deluge (stopped, sequential,
 // first/last-piece priority) and persists the id↔hash mapping. It is
 // idempotent on the infohash: a re-add returns the existing torrent.
 func (s *Service) EnsureAdded(ctx context.Context, magnet string) (store.Torrent, error) {
@@ -79,16 +78,14 @@ func (s *Service) EnsureAdded(ctx context.Context, magnet string) (store.Torrent
 		return store.Torrent{}, fmt.Errorf("lookup torrent by hash: %w", err)
 	}
 
-	opts := qbit.AddOptions{
-		Category:           s.settings().Category,
+	opts := deluge.AddOptions{
 		Stopped:            true,
 		SequentialDownload: true,
 		FirstLastPiecePrio: true,
 	}
-	s.logger.Debug("torrents: adding magnet to qbittorrent",
-		"hash", hash, "name", name, "category", opts.Category)
-	if err := s.qb.AddMagnet(ctx, magnet, opts); err != nil {
-		return store.Torrent{}, fmt.Errorf("add magnet to qbittorrent: %w", err)
+	s.logger.Debug("torrents: adding magnet to deluge", "hash", hash, "name", name)
+	if err := s.dc.AddMagnet(ctx, magnet, opts); err != nil {
+		return store.Torrent{}, fmt.Errorf("add magnet to deluge: %w", err)
 	}
 
 	id, err := NewID()
@@ -114,17 +111,17 @@ func (s *Service) EnsureAdded(ctx context.Context, magnet string) (store.Torrent
 	return tor, nil
 }
 
-// WaitForMetadata polls qBittorrent until it has resolved the torrent's
-// file list (non-empty) or timeout elapses.
-func (s *Service) WaitForMetadata(ctx context.Context, hash string, timeout time.Duration) ([]qbit.FileInfo, error) {
+// WaitForMetadata polls Deluge until it has resolved the torrent's file
+// list (non-empty) or timeout elapses.
+func (s *Service) WaitForMetadata(ctx context.Context, hash string, timeout time.Duration) ([]deluge.FileInfo, error) {
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		files, err := s.qb.Files(ctx, hash)
-		if err != nil && !errors.Is(err, qbit.ErrTorrentNotFound) {
-			return nil, fmt.Errorf("qbit files: %w", err)
+		files, err := s.dc.Files(ctx, hash)
+		if err != nil && !errors.Is(err, deluge.ErrTorrentNotFound) {
+			return nil, fmt.Errorf("deluge files: %w", err)
 		}
 		if len(files) > 0 {
 			s.logger.Debug("torrents: metadata ready", "hash", hash, "files", len(files))
@@ -140,14 +137,14 @@ func (s *Service) WaitForMetadata(ctx context.Context, hash string, timeout time
 	}
 }
 
-// ErrMetadataTimeout is returned when qBittorrent did not resolve the
+// ErrMetadataTimeout is returned when Deluge did not resolve the
 // torrent's file list within the allotted time.
 var ErrMetadataTimeout = errors.New("timed out waiting for torrent metadata")
 
 // SelectAndLink marks fileIndex as wanted (others unwanted), starts the
 // torrent, and mints a streaming link for that file. It is idempotent on
 // (torrentID, fileIndex): a repeat call returns the existing link.
-func (s *Service) SelectAndLink(ctx context.Context, tor store.Torrent, fileIndex int, files []qbit.FileInfo) (store.Link, error) {
+func (s *Service) SelectAndLink(ctx context.Context, tor store.Torrent, fileIndex int, files []deluge.FileInfo) (store.Link, error) {
 	if existing, err := s.linkFor(ctx, tor.ID, fileIndex); err == nil {
 		return existing, nil
 	} else if !errors.Is(err, store.ErrNotFound) {
@@ -166,13 +163,13 @@ func (s *Service) SelectAndLink(ctx context.Context, tor store.Torrent, fileInde
 		return store.Link{}, fmt.Errorf("file index %d not in torrent", fileIndex)
 	}
 
-	if err := s.qb.SetFilePriority(ctx, tor.Hash, unselectedIdx, 0); err != nil {
+	if err := s.dc.SetFilePriority(ctx, tor.Hash, unselectedIdx, 0); err != nil {
 		return store.Link{}, fmt.Errorf("deselect files: %w", err)
 	}
-	if err := s.qb.SetFilePriority(ctx, tor.Hash, selectedIdx, 1); err != nil {
+	if err := s.dc.SetFilePriority(ctx, tor.Hash, selectedIdx, 1); err != nil {
 		return store.Link{}, fmt.Errorf("select file: %w", err)
 	}
-	if err := s.qb.Start(ctx, tor.Hash); err != nil {
+	if err := s.dc.Start(ctx, tor.Hash); err != nil {
 		return store.Link{}, fmt.Errorf("start torrent: %w", err)
 	}
 
@@ -180,7 +177,7 @@ func (s *Service) SelectAndLink(ctx context.Context, tor store.Torrent, fileInde
 	if err != nil {
 		return store.Link{}, fmt.Errorf("generate link token: %w", err)
 	}
-	var picked qbit.FileInfo
+	var picked deluge.FileInfo
 	for _, f := range files {
 		if f.Index == fileIndex {
 			picked = f

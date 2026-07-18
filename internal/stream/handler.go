@@ -14,7 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/javib/seedstrem/internal/qbit"
+	"github.com/javib/seedstrem/internal/deluge"
 	"github.com/javib/seedstrem/internal/store"
 )
 
@@ -25,10 +25,10 @@ type Settings struct {
 }
 
 // Handler serves /dl/{token}/{filename} with Range support over files
-// qBittorrent may still be downloading.
+// Deluge may still be downloading.
 type Handler struct {
 	store    *store.Store
-	qb       qbit.Client
+	dc       deluge.Client
 	resolver *Resolver
 	avail    *Availability
 	settings func() Settings
@@ -36,11 +36,11 @@ type Handler struct {
 }
 
 // NewHandler creates the streaming handler.
-func NewHandler(st *store.Store, qb qbit.Client, resolver *Resolver, avail *Availability, settings func() Settings, logger *slog.Logger) *Handler {
+func NewHandler(st *store.Store, dc deluge.Client, resolver *Resolver, avail *Availability, settings func() Settings, logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{store: st, qb: qb, resolver: resolver, avail: avail, settings: settings, logger: logger}
+	return &Handler{store: st, dc: dc, resolver: resolver, avail: avail, settings: settings, logger: logger}
 }
 
 // Router returns the router to mount at /dl.
@@ -77,17 +77,17 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	info, err := h.qb.Torrent(ctx, tor.Hash)
+	info, err := h.dc.Torrent(ctx, tor.Hash)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	files, err := h.qb.Files(ctx, tor.Hash)
+	files, err := h.dc.Files(ctx, tor.Hash)
 	if err != nil {
-		h.internalError(w, "qbit files", err)
+		h.internalError(w, "deluge files", err)
 		return
 	}
-	var file qbit.FileInfo
+	var file deluge.FileInfo
 	found := false
 	for _, f := range files {
 		if f.Index == link.FileIndex {
@@ -104,7 +104,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 
 	localPath, err := h.resolver.FilePath(ctx, info, file)
 	if err != nil {
-		// Selected but qBittorrent has not created the file yet.
+		// Selected but Deluge has not created the file yet.
 		h.retryLater(w, "file not on disk yet", err)
 		return
 	}
@@ -130,7 +130,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Streaming while downloading.
-	props, err := h.qb.Properties(ctx, tor.Hash)
+	props, err := h.dc.Properties(ctx, tor.Hash)
 	if err != nil || props.PieceSize <= 0 {
 		h.retryLater(w, "piece size unavailable", err)
 		return
@@ -180,7 +180,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		hash:       tor.Hash,
 		chunkSize:  chunk,
 		reopen: func() (*os.File, error) {
-			freshInfo, err := h.qb.Torrent(ctx, tor.Hash)
+			freshInfo, err := h.dc.Torrent(ctx, tor.Hash)
 			if err != nil {
 				return nil, err
 			}

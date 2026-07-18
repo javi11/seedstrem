@@ -1,5 +1,5 @@
 // Command seedstrem runs a Stremio addon that searches Prowlarr indexers
-// and streams torrents through qBittorrent while they download.
+// and streams torrents through Deluge while they download.
 package main
 
 import (
@@ -16,9 +16,9 @@ import (
 
 	"github.com/javib/seedstrem/internal/admin"
 	"github.com/javib/seedstrem/internal/config"
+	"github.com/javib/seedstrem/internal/deluge"
 	"github.com/javib/seedstrem/internal/meta"
 	"github.com/javib/seedstrem/internal/prowlarr"
-	"github.com/javib/seedstrem/internal/qbit"
 	"github.com/javib/seedstrem/internal/server"
 	"github.com/javib/seedstrem/internal/store"
 	"github.com/javib/seedstrem/internal/stream"
@@ -81,12 +81,11 @@ func run() error {
 	defer db.Close()
 
 	cm := config.NewManager(cfg, *configPath)
-	qb := qbit.NewSwappable(qbit.New(cfg.QBittorrent.URL, cfg.QBittorrent.Username, cfg.QBittorrent.Password))
+	dc := deluge.NewSwappable(deluge.New(cfg.Deluge.Host, cfg.Deluge.Port, cfg.Deluge.Username, cfg.Deluge.Password))
 
-	torrentSvc := torrents.New(db, qb, func() torrents.Settings {
+	torrentSvc := torrents.New(db, dc, func() torrents.Settings {
 		c := cm.Get()
 		return torrents.Settings{
-			Category:            c.QBittorrent.Category,
 			MetadataTimeout:     c.Meta.MetadataTimeout,
 			DeleteFilesOnRemove: c.Storage.DeleteFilesOnRemove,
 		}
@@ -120,9 +119,9 @@ func run() error {
 		}
 	}, version, logger)
 
-	resolver := stream.NewResolver(qb, func() []config.Mapping { return cm.Get().Paths.Mappings })
-	avail := stream.NewAvailability(qb)
-	streamHandler := stream.NewHandler(db, qb, resolver, avail, func() stream.Settings {
+	resolver := stream.NewResolver(dc, func() []config.Mapping { return cm.Get().Paths.Mappings })
+	avail := stream.NewAvailability(dc)
+	streamHandler := stream.NewHandler(db, dc, resolver, avail, func() stream.Settings {
 		c := cm.Get()
 		return stream.Settings{
 			WaitTimeout: c.Stream.WaitTimeout,
@@ -130,11 +129,11 @@ func run() error {
 		}
 	}, logger)
 
-	adminHandler := admin.New(cm, db, qb, version, logger)
+	adminHandler := admin.New(cm, db, dc, version, logger)
 
 	syncCtx, stopSync := context.WithCancel(context.Background())
 	defer stopSync()
-	go syncer.New(db, qb, func() string { return cm.Get().QBittorrent.Category }, logger, 30*time.Second).Run(syncCtx)
+	go syncer.New(db, dc, logger, 30*time.Second).Run(syncCtx)
 
 	handler := server.New(server.Options{
 		Logger:  logger,

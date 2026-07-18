@@ -14,8 +14,8 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/javib/seedstrem/internal/config"
+	"github.com/javib/seedstrem/internal/deluge"
 	"github.com/javib/seedstrem/internal/prowlarr"
-	"github.com/javib/seedstrem/internal/qbit"
 	"github.com/javib/seedstrem/internal/store"
 	"github.com/javib/seedstrem/internal/torrents"
 )
@@ -26,18 +26,18 @@ const passwordMask = "••••••••"
 type Handler struct {
 	config  *config.Manager
 	store   *store.Store
-	qb      *qbit.Swappable
+	dc      *deluge.Swappable
 	logger  *slog.Logger
 	version string
 }
 
-// New creates the admin handler. qb must be the swappable client so
-// qBittorrent setting changes apply live.
-func New(cm *config.Manager, st *store.Store, qb *qbit.Swappable, version string, logger *slog.Logger) *Handler {
+// New creates the admin handler. dc must be the swappable client so
+// Deluge connection settings apply live.
+func New(cm *config.Manager, st *store.Store, dc *deluge.Swappable, version string, logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{config: cm, store: st, qb: qb, logger: logger, version: version}
+	return &Handler{config: cm, store: st, dc: dc, logger: logger, version: version}
 }
 
 // Router returns the router to mount at /api.
@@ -55,7 +55,7 @@ func (h *Handler) Router() http.Handler {
 		r.Get("/session", h.sessionInfo)
 		r.Get("/config", h.getConfig)
 		r.Put("/config", h.putConfig)
-		r.Post("/config/test-qbit", h.testQbit)
+		r.Post("/config/test-deluge", h.testDeluge)
 		r.Post("/config/test-prowlarr", h.testProwlarr)
 		r.Post("/config/prowlarr-indexers", h.prowlarrIndexers)
 		r.Get("/status", h.status)
@@ -91,8 +91,8 @@ func (h *Handler) sessionInfo(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
 }
 
-// configDTO is the JSON shape exchanged with the UI. The qBittorrent
-// and admin passwords are masked on read; sending the mask back (or an
+// configDTO is the JSON shape exchanged with the UI. The Deluge and
+// admin passwords are masked on read; sending the mask back (or an
 // empty string) keeps the stored value.
 type configDTO struct {
 	Server struct {
@@ -100,12 +100,12 @@ type configDTO struct {
 		ExternalURL   string `json:"external_url"`
 		AdminPassword string `json:"admin_password"`
 	} `json:"server"`
-	QBittorrent struct {
-		URL      string `json:"url"`
+	Deluge struct {
+		Host     string `json:"host"`
+		Port     uint   `json:"port"`
 		Username string `json:"username"`
 		Password string `json:"password"`
-		Category string `json:"category"`
-	} `json:"qbittorrent"`
+	} `json:"deluge"`
 	Prowlarr struct {
 		URL             string `json:"url"`
 		APIKey          string `json:"api_key"`
@@ -148,12 +148,12 @@ func toDTO(cfg config.Config) configDTO {
 	dto.Server.Listen = cfg.Server.Listen
 	dto.Server.ExternalURL = cfg.Server.ExternalURL
 	dto.Server.AdminPassword = passwordMask
-	dto.QBittorrent.URL = cfg.QBittorrent.URL
-	dto.QBittorrent.Username = cfg.QBittorrent.Username
-	if cfg.QBittorrent.Password != "" {
-		dto.QBittorrent.Password = passwordMask
+	dto.Deluge.Host = cfg.Deluge.Host
+	dto.Deluge.Port = cfg.Deluge.Port
+	dto.Deluge.Username = cfg.Deluge.Username
+	if cfg.Deluge.Password != "" {
+		dto.Deluge.Password = passwordMask
 	}
-	dto.QBittorrent.Category = cfg.QBittorrent.Category
 	dto.Prowlarr.URL = cfg.Prowlarr.URL
 	if cfg.Prowlarr.APIKey != "" {
 		dto.Prowlarr.APIKey = passwordMask
@@ -194,15 +194,13 @@ func (dto configDTO) apply(cfg config.Config) config.Config {
 	if pw := dto.Server.AdminPassword; pw != "" && pw != passwordMask {
 		cfg.Server.AdminPassword = pw
 	}
-	cfg.QBittorrent.URL = dto.QBittorrent.URL
-	cfg.QBittorrent.Username = dto.QBittorrent.Username
-	// Empty or masked = keep the stored password. Clearing a qBittorrent
-	// password entirely isn't supported via the UI (qBittorrent always
-	// has one); set a new value to change it.
-	if pw := dto.QBittorrent.Password; pw != "" && pw != passwordMask {
-		cfg.QBittorrent.Password = pw
+	cfg.Deluge.Host = dto.Deluge.Host
+	cfg.Deluge.Port = dto.Deluge.Port
+	cfg.Deluge.Username = dto.Deluge.Username
+	// Empty or masked = keep the stored password.
+	if pw := dto.Deluge.Password; pw != "" && pw != passwordMask {
+		cfg.Deluge.Password = pw
 	}
-	cfg.QBittorrent.Category = dto.QBittorrent.Category
 	cfg.Prowlarr.URL = dto.Prowlarr.URL
 	// Empty or masked API key = keep the stored key.
 	if k := dto.Prowlarr.APIKey; k != "" && k != passwordMask {
@@ -257,10 +255,10 @@ func (h *Handler) putConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Hot-apply the qBittorrent client if its settings changed.
-	if next.QBittorrent != current.QBittorrent {
-		h.qb.Swap(qbit.New(next.QBittorrent.URL, next.QBittorrent.Username, next.QBittorrent.Password))
-		h.logger.Info("qbittorrent client reconfigured", "url", next.QBittorrent.URL)
+	// Hot-apply the Deluge client if its settings changed.
+	if next.Deluge != current.Deluge {
+		h.dc.Swap(deluge.New(next.Deluge.Host, next.Deluge.Port, next.Deluge.Username, next.Deluge.Password))
+		h.logger.Info("deluge client reconfigured", "host", next.Deluge.Host, "port", next.Deluge.Port)
 	}
 
 	resp := map[string]any{"config": toDTO(next)}
@@ -270,9 +268,10 @@ func (h *Handler) putConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) testQbit(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) testDeluge(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		URL      string `json:"url"`
+		Host     string `json:"host"`
+		Port     uint   `json:"port"`
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
@@ -281,12 +280,12 @@ func (h *Handler) testQbit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Password == passwordMask {
-		body.Password = h.config.Get().QBittorrent.Password
+		body.Password = h.config.Get().Deluge.Password
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	version, err := qbit.New(body.URL, body.Username, body.Password).Version(ctx)
+	version, err := deluge.New(body.Host, body.Port, body.Username, body.Password).Version(ctx)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -300,24 +299,19 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	qbitStatus := map[string]any{"connected": false}
-	if version, err := h.qb.Version(ctx); err == nil {
-		qbitStatus = map[string]any{"connected": true, "version": version}
+	delugeStatus := map[string]any{"connected": false}
+	if version, err := h.dc.Version(ctx); err == nil {
+		delugeStatus = map[string]any{"connected": true, "version": version}
 	} else {
-		qbitStatus["error"] = err.Error()
+		delugeStatus["error"] = err.Error()
 	}
 
 	counts := map[string]int{}
 	if stored, err := h.store.AllTorrents(ctx); err == nil {
-		live := map[string]qbit.TorrentInfo{}
-		if qbTorrents, err := h.qb.Torrents(ctx, cfg.QBittorrent.Category); err == nil {
-			for _, t := range qbTorrents {
-				live[strings.ToLower(t.Hash)] = t
-			}
-		}
+		live := h.liveByHash(ctx, stored)
 		for _, tor := range stored {
-			info, inQbit := live[tor.Hash]
-			status := torrents.DeriveStatus(tor.Phase, info.State, tor.Error != "" || !inQbit, info.TotalSize > 0, info.Progress)
+			info, inDeluge := live[tor.Hash]
+			status := torrents.DeriveStatus(tor.Phase, info.State, tor.Error != "" || !inDeluge, info.Size > 0, info.Progress)
 			counts[status]++
 		}
 	}
@@ -326,9 +320,29 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 		"version":      h.version,
 		"external_url": cfg.Server.ExternalURL,
 		"manifest_url": strings.TrimSuffix(cfg.Server.ExternalURL, "/") + "/stremio/manifest.json",
-		"qbittorrent":  qbitStatus,
+		"deluge":       delugeStatus,
 		"torrents":     counts,
 	})
+}
+
+// liveByHash fetches live Deluge state for exactly the hashes seedstrem
+// already tracks in the store (Deluge has no category/label concept to
+// scope a listing by, unlike qBittorrent).
+func (h *Handler) liveByHash(ctx context.Context, stored []store.Torrent) map[string]deluge.TorrentInfo {
+	live := map[string]deluge.TorrentInfo{}
+	if len(stored) == 0 {
+		return live
+	}
+	hashes := make([]string, len(stored))
+	for i, tor := range stored {
+		hashes[i] = tor.Hash
+	}
+	if dcTorrents, err := h.dc.Torrents(ctx, hashes); err == nil {
+		for _, t := range dcTorrents {
+			live[strings.ToLower(t.Hash)] = t
+		}
+	}
+	return live
 }
 
 // torrentItem is the UI torrent listing shape.
@@ -362,17 +376,12 @@ func (h *Handler) torrents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	live := map[string]qbit.TorrentInfo{}
-	if qbTorrents, err := h.qb.Torrents(ctx, cfg.QBittorrent.Category); err == nil {
-		for _, t := range qbTorrents {
-			live[strings.ToLower(t.Hash)] = t
-		}
-	}
+	live := h.liveByHash(ctx, stored)
 
 	base := strings.TrimSuffix(cfg.Server.ExternalURL, "/")
 	items := make([]torrentItem, 0, len(stored))
 	for _, tor := range stored {
-		info, inQbit := live[tor.Hash]
+		info, inDeluge := live[tor.Hash]
 		links, err := h.store.LinksByTorrent(ctx, tor.ID)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "load links")
@@ -390,7 +399,7 @@ func (h *Handler) torrents(w http.ResponseWriter, r *http.Request) {
 			ID:       tor.ID,
 			Name:     name,
 			Hash:     tor.Hash,
-			Status:   torrents.DeriveStatus(tor.Phase, info.State, tor.Error != "" || !inQbit, info.TotalSize > 0, info.Progress),
+			Status:   torrents.DeriveStatus(tor.Phase, info.State, tor.Error != "" || !inDeluge, info.Size > 0, info.Progress),
 			Progress: info.Progress,
 			Speed:    info.DlSpeed,
 			Seeders:  info.NumSeeds,

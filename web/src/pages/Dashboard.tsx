@@ -64,12 +64,12 @@ export function Dashboard() {
     <div className="flex flex-col gap-4">
       <div className="stats stats-vertical shadow sm:stats-horizontal">
         <div className="stat">
-          <div className="stat-title">qBittorrent</div>
-          <div className={`stat-value text-lg ${status.qbittorrent.connected ? "text-success" : "text-error"}`}>
-            {status.qbittorrent.connected ? `Connected (${status.qbittorrent.version})` : "Disconnected"}
+          <div className="stat-title">Deluge</div>
+          <div className={`stat-value text-lg ${status.deluge.connected ? "text-success" : "text-error"}`}>
+            {status.deluge.connected ? `Connected (${status.deluge.version})` : "Disconnected"}
           </div>
-          {status.qbittorrent.error && (
-            <div className="stat-desc text-error">{status.qbittorrent.error}</div>
+          {status.deluge.error && (
+            <div className="stat-desc text-error">{status.deluge.error}</div>
           )}
         </div>
         {Object.entries(STATUS_LABELS).map(([key, label]) => (
@@ -95,7 +95,7 @@ export function Dashboard() {
           <h2 className="card-title">Stremio addon</h2>
           <p className="text-sm opacity-70">
             Install this addon in Stremio, then search for movies or shows — seedstrem finds
-            torrents via Prowlarr and streams them through qBittorrent. Manifest URL:
+            torrents via Prowlarr and streams them through Deluge. Manifest URL:
           </p>
           <div className="flex items-center gap-2">
             <input
