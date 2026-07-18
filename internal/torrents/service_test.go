@@ -2,6 +2,7 @@ package torrents
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -93,6 +94,47 @@ func TestResolveIdempotent(t *testing.T) {
 	}
 	if _, err := db.LinkByToken(ctx, link1.Token); err != nil {
 		t.Errorf("link not found by token: %v", err)
+	}
+}
+
+func TestRemove(t *testing.T) {
+	svc, fakeDC, db := newService(t)
+	ctx := context.Background()
+
+	fakeDC.Put(&fake.Torrent{Hash: testHash, State: deluge.StateSeeding})
+	tor, err := svc.EnsureAdded(ctx, testMagnet("Show"))
+	if err != nil {
+		t.Fatalf("ensure added: %v", err)
+	}
+
+	if err := svc.Remove(ctx, tor); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	if fakeDC.Get(testHash) != nil {
+		t.Error("torrent still present in deluge after remove")
+	}
+	if _, err := db.TorrentByID(ctx, tor.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("torrent by id error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestRemoveMissingFromDelugeIsNotAnError(t *testing.T) {
+	svc, fakeDC, db := newService(t)
+	ctx := context.Background()
+
+	fakeDC.Put(&fake.Torrent{Hash: testHash, State: deluge.StateSeeding})
+	tor, err := svc.EnsureAdded(ctx, testMagnet("Show"))
+	if err != nil {
+		t.Fatalf("ensure added: %v", err)
+	}
+	fakeDC.Remove(testHash) // simulate it having vanished from Deluge already
+
+	if err := svc.Remove(ctx, tor); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if _, err := db.TorrentByID(ctx, tor.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("torrent by id error = %v, want ErrNotFound", err)
 	}
 }
 

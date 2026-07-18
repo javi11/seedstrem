@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	libdeluge "github.com/autobrr/go-deluge"
 )
@@ -89,14 +90,15 @@ func isNotFound(err error) bool {
 
 func convertTorrent(ts *libdeluge.TorrentStatus) TorrentInfo {
 	return TorrentInfo{
-		Hash:     ts.Hash,
-		Name:     ts.Name,
-		State:    ts.State,
-		Progress: float64(ts.Progress) / 100,
-		Size:     ts.TotalSize,
-		DlSpeed:  ts.DownloadPayloadRate,
-		NumSeeds: ts.NumSeeds,
-		SavePath: ts.SavePath,
+		Hash:        ts.Hash,
+		Name:        ts.Name,
+		State:       ts.State,
+		Progress:    float64(ts.Progress) / 100,
+		Size:        ts.TotalSize,
+		DlSpeed:     ts.DownloadPayloadRate,
+		NumSeeds:    ts.NumSeeds,
+		SavePath:    ts.SavePath,
+		SeedingTime: time.Duration(ts.SeedingTime) * time.Second,
 	}
 }
 

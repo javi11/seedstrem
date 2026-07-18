@@ -1,15 +1,18 @@
 package deluge
 
+import "time"
+
 // TorrentInfo is the subset of Deluge torrent state seedstrem uses.
 type TorrentInfo struct {
-	Hash     string
-	Name     string
-	State    string
-	Progress float64 // 0..1, converted from Deluge's 0..100 percentage
-	Size     int64   // torrent size
-	DlSpeed  int64
-	NumSeeds int64
-	SavePath string
+	Hash        string
+	Name        string
+	State       string
+	Progress    float64 // 0..1, converted from Deluge's 0..100 percentage
+	Size        int64   // torrent size
+	DlSpeed     int64
+	NumSeeds    int64
+	SavePath    string
+	SeedingTime time.Duration // time spent seeding since the torrent finished
 }
 
 // FileInfo describes one file inside a torrent.

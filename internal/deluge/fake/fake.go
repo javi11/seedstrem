@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/javib/seedstrem/internal/deluge"
 	"github.com/javib/seedstrem/internal/metainfo"
@@ -27,14 +28,15 @@ type File struct {
 // Torrent is the mutable state of one fake torrent. Tests adjust fields
 // directly via Server.Update.
 type Torrent struct {
-	Hash     string
-	Name     string
-	State    string
-	Progress float64
-	DlSpeed  int64
-	NumSeeds int64
-	SavePath string
-	Files    []File
+	Hash        string
+	Name        string
+	State       string
+	Progress    float64
+	DlSpeed     int64
+	NumSeeds    int64
+	SavePath    string
+	SeedingTime time.Duration
+	Files       []File
 
 	PieceSize   int64
 	PieceStates []int // deluge.PieceState values
@@ -163,13 +165,14 @@ func (s *Server) Torrent(_ context.Context, hash string) (deluge.TorrentInfo, er
 
 func toTorrentInfo(t *Torrent) deluge.TorrentInfo {
 	return deluge.TorrentInfo{
-		Hash:     t.Hash,
-		Name:     t.Name,
-		State:    t.State,
-		Progress: t.Progress,
-		DlSpeed:  t.DlSpeed,
-		NumSeeds: t.NumSeeds,
-		SavePath: t.SavePath,
+		Hash:        t.Hash,
+		Name:        t.Name,
+		State:       t.State,
+		Progress:    t.Progress,
+		DlSpeed:     t.DlSpeed,
+		NumSeeds:    t.NumSeeds,
+		SavePath:    t.SavePath,
+		SeedingTime: t.SeedingTime,
 	}
 }
 

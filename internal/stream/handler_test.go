@@ -13,7 +13,9 @@ import (
 
 	"github.com/javib/seedstrem/internal/config"
 	"github.com/javib/seedstrem/internal/deluge/fake"
+	"github.com/javib/seedstrem/internal/playsession"
 	"github.com/javib/seedstrem/internal/store"
+	"github.com/javib/seedstrem/internal/torrents"
 )
 
 const (
@@ -69,8 +71,9 @@ func newStreamEnv(t *testing.T, pieceStates []int, fileProgress float64) *stream
 	resolver := NewResolver(f, func() []config.Mapping {
 		return []config.Mapping{{Remote: "/downloads", Local: dir}}
 	})
+	svc := torrents.New(st, f, func() torrents.Settings { return torrents.Settings{} }, nil)
 	settings := func() Settings { return Settings{WaitTimeout: 5 * time.Second, ReadChunk: pieceSize} }
-	h := NewHandler(st, f, resolver, avail, settings, nil)
+	h := NewHandler(st, f, svc, resolver, avail, playsession.New(), settings, nil)
 
 	return &streamEnv{handler: h.Router(), fake: f, avail: avail, content: content, dir: dir}
 }
@@ -219,6 +222,78 @@ func TestServeUnknownToken(t *testing.T) {
 	e.handler.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d; want 404", w.Code)
+	}
+}
+
+// newAbandonEnv builds a minimal Handler (no on-disk files/HTTP needed)
+// for exercising checkAbandoned directly.
+func newAbandonEnv(t *testing.T, progress, minProgressForCancel float64) (*Handler, store.Torrent, *fake.Server) {
+	t.Helper()
+
+	f := fake.New()
+	f.Put(&fake.Torrent{Hash: testHash, State: "downloading", Progress: progress})
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ctx := context.Background()
+	tor := store.Torrent{ID: "ABANDONTEST0", Hash: testHash, AddedAt: 1}
+	if err := st.InsertTorrent(ctx, tor); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := torrents.New(st, f, func() torrents.Settings { return torrents.Settings{DeleteFilesOnRemove: true} }, nil)
+	sessions := playsession.New()
+	settings := func() Settings { return Settings{MinProgressForCancel: minProgressForCancel} }
+	h := NewHandler(st, f, svc, NewResolver(f, func() []config.Mapping { return nil }), NewAvailability(f), sessions, settings, nil)
+
+	return h, tor, f
+}
+
+func TestCheckAbandonedRemovesLowProgressTorrent(t *testing.T) {
+	h, tor, f := newAbandonEnv(t, 0.02, 0.05)
+
+	h.checkAbandoned(tor)
+
+	if f.Get(testHash) != nil {
+		t.Error("expected torrent removed from deluge")
+	}
+	if _, err := h.store.TorrentByID(context.Background(), tor.ID); err == nil {
+		t.Error("expected torrent removed from store")
+	}
+}
+
+func TestCheckAbandonedKeepsTorrentAboveThreshold(t *testing.T) {
+	h, tor, f := newAbandonEnv(t, 0.5, 0.05)
+
+	h.checkAbandoned(tor)
+
+	if f.Get(testHash) == nil {
+		t.Error("expected torrent to remain: progress above threshold")
+	}
+}
+
+func TestCheckAbandonedDisabledWhenThresholdZero(t *testing.T) {
+	h, tor, f := newAbandonEnv(t, 0, 0)
+
+	h.checkAbandoned(tor)
+
+	if f.Get(testHash) == nil {
+		t.Error("expected torrent to remain: cancel-cleanup disabled")
+	}
+}
+
+func TestCheckAbandonedSkipsWhenSomeoneElseIsWatching(t *testing.T) {
+	h, tor, f := newAbandonEnv(t, 0.02, 0.05)
+	end := h.sessions.Begin(tor.Hash) // another viewer started watching
+	defer end()
+
+	h.checkAbandoned(tor)
+
+	if f.Get(testHash) == nil {
+		t.Error("expected torrent to remain: another session is active")
 	}
 }
 

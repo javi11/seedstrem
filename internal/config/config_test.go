@@ -19,6 +19,12 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if cfg.Stream.WaitTimeout != 60*time.Second {
 		t.Errorf("got wait_timeout %v; want 60s", cfg.Stream.WaitTimeout)
 	}
+	if cfg.Cleanup.SeedTime != 72*time.Hour {
+		t.Errorf("got cleanup.seed_time %v; want 72h", cfg.Cleanup.SeedTime)
+	}
+	if cfg.Cleanup.MinProgressForCancel != 0.05 {
+		t.Errorf("got cleanup.min_progress_for_cancel %v; want 0.05", cfg.Cleanup.MinProgressForCancel)
+	}
 }
 
 func TestLoadFile(t *testing.T) {
@@ -63,10 +69,12 @@ paths:
 func TestApplyEnv(t *testing.T) {
 	cfg := Default()
 	env := map[string]string{
-		"SEEDSTREM_DELUGE_HOST":         "other-host",
-		"SEEDSTREM_DELUGE_PORT":         "12345",
-		"SEEDSTREM_STREAM_WAIT_TIMEOUT": "90s",
-		"SEEDSTREM_PATHS_MAPPINGS":      "/a:/b,/c:/d",
+		"SEEDSTREM_DELUGE_HOST":                     "other-host",
+		"SEEDSTREM_DELUGE_PORT":                     "12345",
+		"SEEDSTREM_STREAM_WAIT_TIMEOUT":             "90s",
+		"SEEDSTREM_PATHS_MAPPINGS":                  "/a:/b,/c:/d",
+		"SEEDSTREM_CLEANUP_SEED_TIME":               "48h",
+		"SEEDSTREM_CLEANUP_MIN_PROGRESS_FOR_CANCEL": "0.1",
 	}
 	applyEnv(&cfg, func(k string) string { return env[k] })
 
@@ -78,6 +86,12 @@ func TestApplyEnv(t *testing.T) {
 	}
 	if len(cfg.Paths.Mappings) != 2 || cfg.Paths.Mappings[1].Remote != "/c" {
 		t.Errorf("mappings override failed: %+v", cfg.Paths.Mappings)
+	}
+	if cfg.Cleanup.SeedTime != 48*time.Hour {
+		t.Errorf("seed time override failed: %v", cfg.Cleanup.SeedTime)
+	}
+	if cfg.Cleanup.MinProgressForCancel != 0.1 {
+		t.Errorf("min progress for cancel override failed: %v", cfg.Cleanup.MinProgressForCancel)
 	}
 }
 
@@ -92,6 +106,30 @@ func TestValidateCollectsAllErrors(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("expected error mentioning %q, got: %s", want, msg)
 		}
+	}
+}
+
+func TestValidateCleanup(t *testing.T) {
+	cfg := Default()
+	cfg.Cleanup.SeedTime = -time.Hour
+	cfg.Cleanup.MinProgressForCancel = 1.5
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation errors")
+	}
+	msg := err.Error()
+	for _, want := range []string{"cleanup.seed_time", "cleanup.min_progress_for_cancel"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("expected error mentioning %q, got: %s", want, msg)
+		}
+	}
+}
+
+func TestValidateAllowsZeroSeedTimeToDisableCleanup(t *testing.T) {
+	cfg := Default()
+	cfg.Cleanup.SeedTime = 0
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected seed_time=0 to be valid (disables cleanup), got %v", err)
 	}
 }
 
