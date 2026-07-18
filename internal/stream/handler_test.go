@@ -12,8 +12,7 @@ import (
 	"time"
 
 	"github.com/javib/seedstrem/internal/config"
-	"github.com/javib/seedstrem/internal/qbit"
-	"github.com/javib/seedstrem/internal/qbit/fake"
+	"github.com/javib/seedstrem/internal/deluge/fake"
 	"github.com/javib/seedstrem/internal/store"
 )
 
@@ -46,10 +45,9 @@ func newStreamEnv(t *testing.T, pieceStates []int, fileProgress float64) *stream
 	}
 
 	f := fake.New()
-	t.Cleanup(f.Close)
 	f.Put(&fake.Torrent{
-		Hash: testHash, Name: "movie.mkv", State: "downloading", Category: "seedstrem",
-		SavePath: "/downloads", ContentPath: "/downloads/movie.mkv",
+		Hash: testHash, Name: "movie.mkv", State: "downloading",
+		SavePath:  "/downloads",
 		PieceSize: pieceSize, PieceStates: pieceStates,
 		Files: []fake.File{{Name: "movie.mkv", Size: fileSize, Priority: 1, Progress: fileProgress}},
 	})
@@ -67,13 +65,12 @@ func newStreamEnv(t *testing.T, pieceStates []int, fileProgress float64) *stream
 		t.Fatal(err)
 	}
 
-	qc := qbit.New(f.URL(), "u", "p")
-	avail := NewAvailability(qc)
-	resolver := NewResolver(qc, func() []config.Mapping {
-		return []config.Mapping{{QBit: "/downloads", Local: dir}}
+	avail := NewAvailability(f)
+	resolver := NewResolver(f, func() []config.Mapping {
+		return []config.Mapping{{Remote: "/downloads", Local: dir}}
 	})
 	settings := func() Settings { return Settings{WaitTimeout: 5 * time.Second, ReadChunk: pieceSize} }
-	h := NewHandler(st, qc, resolver, avail, settings, nil)
+	h := NewHandler(st, f, resolver, avail, settings, nil)
 
 	return &streamEnv{handler: h.Router(), fake: f, avail: avail, content: content, dir: dir}
 }
@@ -222,22 +219,6 @@ func TestServeUnknownToken(t *testing.T) {
 	e.handler.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d; want 404", w.Code)
-	}
-}
-
-func TestServeIncompleteFileWithQBExtension(t *testing.T) {
-	// File on disk only as movie.mkv.!qB — must still stream.
-	e := newStreamEnv(t, []int{2, 2, 0, 0}, 0.5)
-	if err := os.Rename(filepath.Join(e.dir, "movie.mkv"), filepath.Join(e.dir, "movie.mkv"+incompleteExt)); err != nil {
-		t.Fatal(err)
-	}
-
-	w := e.get(t, "bytes=0-1023")
-	if w.Code != http.StatusPartialContent {
-		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
-	}
-	if !bytes.Equal(w.Body.Bytes(), e.content[:1024]) {
-		t.Error("body mismatch for .!qB file")
 	}
 }
 

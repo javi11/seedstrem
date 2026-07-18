@@ -11,7 +11,7 @@ import (
 type Link struct {
 	Token     string
 	TorrentID string
-	FileIndex int // qBittorrent 0-based file index
+	FileIndex int // Deluge 0-based file index
 	Path      string
 	Bytes     int64
 }

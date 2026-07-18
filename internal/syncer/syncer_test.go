@@ -6,14 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/javib/seedstrem/internal/qbit"
-	"github.com/javib/seedstrem/internal/qbit/fake"
+	"github.com/javib/seedstrem/internal/deluge/fake"
 	"github.com/javib/seedstrem/internal/store"
 )
 
 func TestReconcile(t *testing.T) {
 	f := fake.New()
-	t.Cleanup(f.Close)
 
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -25,7 +23,7 @@ func TestReconcile(t *testing.T) {
 	hashLive := strings.Repeat("a", 40)
 	hashGone := strings.Repeat("b", 40)
 
-	f.Put(&fake.Torrent{Hash: hashLive, Name: "live torrent", Category: "seedstrem", State: "downloading"})
+	f.Put(&fake.Torrent{Hash: hashLive, Name: "live torrent", State: "downloading"})
 
 	if err := st.InsertTorrent(ctx, store.Torrent{ID: "LIVE0000000000", Hash: hashLive, Phase: store.PhaseAdded, AddedAt: 1}); err != nil {
 		t.Fatal(err)
@@ -34,7 +32,7 @@ func TestReconcile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := New(st, qbit.New(f.URL(), "u", "p"), func() string { return "seedstrem" }, nil, 0)
+	s := New(st, f, nil, 0)
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -53,7 +51,7 @@ func TestReconcile(t *testing.T) {
 	}
 
 	// Torrent comes back: error must clear.
-	f.Put(&fake.Torrent{Hash: hashGone, Name: "returned", Category: "seedstrem", State: "downloading"})
+	f.Put(&fake.Torrent{Hash: hashGone, Name: "returned", State: "downloading"})
 	if err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -37,7 +37,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export interface Mapping {
-  qbit: string;
+  remote: string;
   local: string;
 }
 
@@ -47,11 +47,11 @@ export interface Config {
     external_url: string;
     admin_password: string;
   };
-  qbittorrent: {
-    url: string;
+  deluge: {
+    host: string;
+    port: number;
     username: string;
     password: string;
-    category: string;
   };
   prowlarr: {
     url: string;
@@ -92,7 +92,7 @@ export interface Status {
   version: string;
   external_url: string;
   manifest_url: string;
-  qbittorrent: { connected: boolean; version?: string; error?: string };
+  deluge: { connected: boolean; version?: string; error?: string };
   torrents: Record<string, number>;
 }
 
@@ -123,9 +123,10 @@ export const api = {
   getConfig: () => request<Config>("GET", "/api/config"),
   putConfig: (cfg: Config) =>
     request<{ config: Config; restart_required?: boolean }>("PUT", "/api/config", cfg),
-  testQbit: (url: string, username: string, password: string) =>
-    request<{ ok: boolean; version?: string; error?: string }>("POST", "/api/config/test-qbit", {
-      url,
+  testDeluge: (host: string, port: number, username: string, password: string) =>
+    request<{ ok: boolean; version?: string; error?: string }>("POST", "/api/config/test-deluge", {
+      host,
+      port,
       username,
       password,
     }),

@@ -6,13 +6,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/javib/seedstrem/internal/qbit"
-	"github.com/javib/seedstrem/internal/qbit/fake"
+	"github.com/javib/seedstrem/internal/deluge"
+	"github.com/javib/seedstrem/internal/deluge/fake"
 	"github.com/javib/seedstrem/internal/store"
 )
 
 // 40-char hex infohash → magnet. metainfo.FromMagnet and the fake both
-// lowercase it, so the store mapping and qbit lookups align.
+// lowercase it, so the store mapping and deluge lookups align.
 const testHash = "0123456789abcdef0123456789abcdef01234567"
 
 func testMagnet(name string) string {
@@ -21,8 +21,7 @@ func testMagnet(name string) string {
 
 func newService(t *testing.T) (*Service, *fake.Server, *store.Store) {
 	t.Helper()
-	fakeQB := fake.New()
-	t.Cleanup(fakeQB.Close)
+	fakeDC := fake.New()
 
 	db, err := store.Open(":memory:")
 	if err != nil {
@@ -30,22 +29,21 @@ func newService(t *testing.T) (*Service, *fake.Server, *store.Store) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	qb := qbit.New(fakeQB.URL(), "admin", "adminpass")
-	svc := New(db, qb, func() Settings {
-		return Settings{Category: "seedstrem", MetadataTimeout: 2 * time.Second}
+	svc := New(db, fakeDC, func() Settings {
+		return Settings{MetadataTimeout: 2 * time.Second}
 	}, nil)
-	return svc, fakeQB, db
+	return svc, fakeDC, db
 }
 
 func TestResolveIdempotent(t *testing.T) {
-	svc, fakeQB, db := newService(t)
+	svc, fakeDC, db := newService(t)
 	ctx := context.Background()
 
 	// Pre-seed the fake so metadata is immediately available with a
 	// season pack; add() won't overwrite an existing hash.
-	fakeQB.Put(&fake.Torrent{
+	fakeDC.Put(&fake.Torrent{
 		Hash:  testHash,
-		State: qbit.StateStoppedDL,
+		State: deluge.StatePaused,
 		Files: []fake.File{
 			{Name: "Show.S01E04.1080p.mkv", Size: 500 << 20},
 			{Name: "Show.S01E05.1080p.mkv", Size: 480 << 20},
@@ -71,7 +69,7 @@ func TestResolveIdempotent(t *testing.T) {
 
 	// Torrent added exactly once, stopped, sequential + first/last prio.
 	var addCalls int
-	for _, c := range fakeQB.Calls() {
+	for _, c := range fakeDC.Calls() {
 		if strings.HasPrefix(c, "add magnet=") {
 			addCalls++
 			for _, want := range []string{"stopped=true", "seq=true", "flp=true"} {
@@ -99,9 +97,9 @@ func TestResolveIdempotent(t *testing.T) {
 }
 
 func TestWaitForMetadataTimeout(t *testing.T) {
-	svc, fakeQB, _ := newService(t)
+	svc, fakeDC, _ := newService(t)
 	// Torrent exists but never resolves files.
-	fakeQB.Put(&fake.Torrent{Hash: testHash, State: qbit.StateMetaDL})
+	fakeDC.Put(&fake.Torrent{Hash: testHash, State: deluge.StateDownloading})
 
 	// Speed up the poll loop.
 	svc.sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }

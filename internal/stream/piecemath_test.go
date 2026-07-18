@@ -3,11 +3,11 @@ package stream
 import (
 	"testing"
 
-	"github.com/javib/seedstrem/internal/qbit"
+	"github.com/javib/seedstrem/internal/deluge"
 )
 
 func TestFileOffset(t *testing.T) {
-	files := []qbit.FileInfo{
+	files := []deluge.FileInfo{
 		{Index: 0, Size: 100},
 		{Index: 1, Size: 250},
 		{Index: 2, Size: 0}, // zero-length file
@@ -32,8 +32,8 @@ func TestFileOffset(t *testing.T) {
 }
 
 func TestFileOffsetUnorderedInput(t *testing.T) {
-	// qbit should return files in index order, but don't depend on it.
-	files := []qbit.FileInfo{
+	// deluge should return files in index order, but don't depend on it.
+	files := []deluge.FileInfo{
 		{Index: 2, Size: 30},
 		{Index: 0, Size: 10},
 		{Index: 1, Size: 20},

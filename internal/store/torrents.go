@@ -16,7 +16,7 @@ const (
 // ErrNotFound is returned when a torrent or link does not exist.
 var ErrNotFound = errors.New("not found")
 
-// Torrent is a persisted RD-id ↔ qBittorrent-hash mapping.
+// Torrent is a persisted RD-id ↔ Deluge-hash mapping.
 type Torrent struct {
 	ID      string
 	Hash    string
@@ -123,7 +123,7 @@ func (s *Store) SetTorrentError(ctx context.Context, id, msg string) error {
 	return s.updateTorrentField(ctx, id, `error`, msg)
 }
 
-// SetTorrentName updates the display name (learned from qBittorrent
+// SetTorrentName updates the display name (learned from Deluge
 // after metadata resolves).
 func (s *Store) SetTorrentName(ctx context.Context, id, name string) error {
 	return s.updateTorrentField(ctx, id, `name`, name)

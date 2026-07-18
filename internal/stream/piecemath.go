@@ -1,19 +1,19 @@
 // Package stream serves torrent files over HTTP with Range support
-// while qBittorrent is still downloading them. Byte ranges are mapped
-// to torrent pieces; reads block until the pieces they need exist.
+// while Deluge is still downloading them. Byte ranges are mapped to
+// torrent pieces; reads block until the pieces they need exist.
 package stream
 
 import (
 	"sort"
 
-	"github.com/javib/seedstrem/internal/qbit"
+	"github.com/javib/seedstrem/internal/deluge"
 )
 
 // FileOffset returns the absolute byte offset of the file with the
 // given index inside the torrent's piece space. Piece space covers ALL
 // files (selected or not) in torrent order.
-func FileOffset(files []qbit.FileInfo, index int) int64 {
-	sorted := make([]qbit.FileInfo, len(files))
+func FileOffset(files []deluge.FileInfo, index int) int64 {
+	sorted := make([]deluge.FileInfo, len(files))
 	copy(sorted, files)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Index < sorted[j].Index })
 

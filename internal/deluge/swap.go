@@ -1,4 +1,4 @@
-package qbit
+package deluge
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 )
 
 // Swappable is a Client whose backing client can be replaced at
-// runtime (when the admin UI changes qBittorrent settings).
+// runtime (when the admin UI changes Deluge connection settings).
 type Swappable struct {
 	current atomic.Pointer[Client]
 }
@@ -29,12 +29,8 @@ func (s *Swappable) AddMagnet(ctx context.Context, magnet string, opts AddOption
 	return s.get().AddMagnet(ctx, magnet, opts)
 }
 
-func (s *Swappable) AddTorrentFile(ctx context.Context, raw []byte, opts AddOptions) error {
-	return s.get().AddTorrentFile(ctx, raw, opts)
-}
-
-func (s *Swappable) Torrents(ctx context.Context, category string) ([]TorrentInfo, error) {
-	return s.get().Torrents(ctx, category)
+func (s *Swappable) Torrents(ctx context.Context, hashes []string) ([]TorrentInfo, error) {
+	return s.get().Torrents(ctx, hashes)
 }
 
 func (s *Swappable) Torrent(ctx context.Context, hash string) (TorrentInfo, error) {
@@ -63,10 +59,6 @@ func (s *Swappable) Start(ctx context.Context, hash string) error {
 
 func (s *Swappable) Delete(ctx context.Context, hash string, deleteFiles bool) error {
 	return s.get().Delete(ctx, hash, deleteFiles)
-}
-
-func (s *Swappable) AppPreferences(ctx context.Context) (Prefs, error) {
-	return s.get().AppPreferences(ctx)
 }
 
 func (s *Swappable) Version(ctx context.Context) (string, error) {
