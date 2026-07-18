@@ -60,7 +60,7 @@ func BuildManifest(version string, addon AddonSettings) Manifest {
 
 	return Manifest{
 		ID:          manifestID,
-		Version:     version,
+		Version:     manifestVersion(version),
 		Name:        "seedstrem",
 		Description: "Self-hosted Stremio addon: searches Prowlarr indexers and streams torrents through Deluge while they download.",
 		Resources:   []string{"stream"},
