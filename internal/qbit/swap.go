@@ -65,6 +65,10 @@ func (s *Swappable) Delete(ctx context.Context, hash string, deleteFiles bool) e
 	return s.get().Delete(ctx, hash, deleteFiles)
 }
 
+func (s *Swappable) AppPreferences(ctx context.Context) (Prefs, error) {
+	return s.get().AppPreferences(ctx)
+}
+
 func (s *Swappable) Version(ctx context.Context) (string, error) {
 	return s.get().Version(ctx)
 }

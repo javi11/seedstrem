@@ -65,6 +65,60 @@ func TestFilePathMultiFileTorrent(t *testing.T) {
 	}
 }
 
+func TestFilePathFindsIncompleteExtension(t *testing.T) {
+	// A still-downloading single-file torrent with the ".!qB" suffix.
+	local := t.TempDir()
+	target := filepath.Join(local, "movie.mkv"+incompleteExt)
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, _ := newResolverEnv(t, []config.Mapping{{Remote: "/downloads", Local: local}})
+	info := qbit.TorrentInfo{Hash: testHash, SavePath: "/downloads"}
+	file := qbit.FileInfo{Index: 0, Name: "movie.mkv", Size: 1}
+
+	got, err := r.FilePath(context.Background(), info, file)
+	if err != nil {
+		t.Fatalf("FilePath: %v", err)
+	}
+	if got != target {
+		t.Errorf("path = %q; want incomplete file %q", got, target)
+	}
+}
+
+func TestFilePathFindsViaContentPath(t *testing.T) {
+	// While downloading, qBittorrent keeps content under a temp folder
+	// reported as content_path; save_path points at the (empty) final
+	// location.
+	local := t.TempDir()
+	incompleteDir := filepath.Join(local, "incomplete")
+	if err := os.MkdirAll(incompleteDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(incompleteDir, "movie.mkv")
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, _ := newResolverEnv(t, []config.Mapping{{Remote: "/downloads", Local: local}})
+	// Single-file torrent: content_path IS the file. SavePath (final) has
+	// no file yet.
+	info := qbit.TorrentInfo{
+		Hash:        testHash,
+		SavePath:    "/downloads",
+		ContentPath: "/downloads/incomplete/movie.mkv",
+	}
+	file := qbit.FileInfo{Index: 0, Name: "movie.mkv", Size: 1}
+
+	got, err := r.FilePath(context.Background(), info, file)
+	if err != nil {
+		t.Fatalf("FilePath: %v", err)
+	}
+	if got != target {
+		t.Errorf("path = %q; want content_path file %q", got, target)
+	}
+}
+
 func TestFilePathRejectsTraversal(t *testing.T) {
 	local := t.TempDir()
 	// Plant a file outside the mapped root that a traversal would reach.
@@ -94,9 +148,15 @@ func TestFilePathRejectsEscapeOutsideRoot(t *testing.T) {
 	info := qbit.TorrentInfo{Hash: testHash, SavePath: "/elsewhere"}
 	file := qbit.FileInfo{Index: 0, Name: "movie.mkv", Size: 1}
 
-	_, err := r.FilePath(context.Background(), info, file)
-	if !errors.Is(err, ErrUnsafePath) {
-		t.Errorf("want ErrUnsafePath for unmapped path, got %v", err)
+	// Out-of-root candidates are skipped, so nothing is served: FilePath
+	// returns an error and no path. (The specific sentinel is not part of
+	// the contract — the security guarantee is "not served".)
+	got, err := r.FilePath(context.Background(), info, file)
+	if err == nil {
+		t.Errorf("want error for unmapped path, got path %q", got)
+	}
+	if got != "" {
+		t.Errorf("must not return a path for an out-of-root candidate, got %q", got)
 	}
 }
 

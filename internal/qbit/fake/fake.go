@@ -33,6 +33,7 @@ type Torrent struct {
 	DlSpeed     int64
 	NumSeeds    int64
 	SavePath    string
+	ContentPath string
 	SeedingTime time.Duration
 	Files       []File
 
@@ -52,6 +53,14 @@ type Server struct {
 	mu       sync.Mutex
 	torrents map[string]*Torrent
 	calls    []string
+	prefs    qbit.Prefs
+}
+
+// SetPrefs sets the preferences returned by AppPreferences.
+func (s *Server) SetPrefs(p qbit.Prefs) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prefs = p
 }
 
 var _ qbit.Client = (*Server)(nil)
@@ -199,6 +208,7 @@ func toTorrentInfo(t *Torrent) qbit.TorrentInfo {
 		DlSpeed:     t.DlSpeed,
 		NumSeeds:    t.NumSeeds,
 		SavePath:    t.SavePath,
+		ContentPath: t.ContentPath,
 		SeedingTime: t.SeedingTime,
 	}
 }
@@ -288,6 +298,12 @@ func (s *Server) Delete(_ context.Context, hash string, deleteFiles bool) error 
 	s.record("delete hash=%s deleteFiles=%v", hash, deleteFiles)
 	delete(s.torrents, key)
 	return nil
+}
+
+func (s *Server) AppPreferences(context.Context) (qbit.Prefs, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.prefs, nil
 }
 
 func (s *Server) Version(context.Context) (string, error) {

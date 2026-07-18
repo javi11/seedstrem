@@ -4,14 +4,19 @@ import "time"
 
 // TorrentInfo is the subset of qBittorrent torrent state seedstrem uses.
 type TorrentInfo struct {
-	Hash        string
-	Name        string
-	State       string  // normalized to the canonical StateXxx constants below
-	Progress    float64 // 0..1
-	Size        int64   // wanted (selected) size
-	DlSpeed     int64
-	NumSeeds    int64
-	SavePath    string
+	Hash     string
+	Name     string
+	State    string  // normalized to the canonical StateXxx constants below
+	Progress float64 // 0..1
+	Size     int64   // wanted (selected) size
+	DlSpeed  int64
+	NumSeeds int64
+	SavePath string
+	// ContentPath is qBittorrent's current on-disk location of the
+	// content: the temp/incomplete folder while downloading, the final
+	// path once complete. For single-file torrents it is the file itself.
+	// Essential for locating a file that is still downloading.
+	ContentPath string
 	SeedingTime time.Duration // time spent seeding since the torrent finished
 }
 
@@ -40,6 +45,14 @@ const (
 	PieceDownloading PieceState = 1
 	PieceHave        PieceState = 2
 )
+
+// Prefs is the subset of qBittorrent app preferences seedstrem needs to
+// locate in-progress files on disk.
+type Prefs struct {
+	TempPath           string
+	TempPathEnabled    bool
+	IncompleteFilesExt bool // "Append .!qB extension to incomplete files"
+}
 
 // AddOptions controls how a torrent is added.
 type AddOptions struct {

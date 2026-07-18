@@ -26,6 +26,7 @@ type Client interface {
 	SetFilePriority(ctx context.Context, hash string, indices []int, priority int) error
 	Start(ctx context.Context, hash string) error
 	Delete(ctx context.Context, hash string, deleteFiles bool) error
+	AppPreferences(ctx context.Context) (Prefs, error)
 	Version(ctx context.Context) (string, error)
 }
 
@@ -104,6 +105,7 @@ func convertTorrent(t qbt.Torrent) TorrentInfo {
 		DlSpeed:     t.DlSpeed,
 		NumSeeds:    t.NumSeeds,
 		SavePath:    t.SavePath,
+		ContentPath: t.ContentPath,
 		SeedingTime: time.Duration(t.SeedingTime) * time.Second,
 	}
 }
@@ -209,6 +211,20 @@ func (c *client) Delete(ctx context.Context, hash string, deleteFiles bool) erro
 		return fmt.Errorf("qbit delete %s: %w", hash, err)
 	}
 	return nil
+}
+
+// AppPreferences returns the subset of qBittorrent settings needed to
+// locate in-progress files (temp download folder, .!qB extension).
+func (c *client) AppPreferences(ctx context.Context) (Prefs, error) {
+	p, err := c.qb.GetAppPreferencesCtx(ctx)
+	if err != nil {
+		return Prefs{}, fmt.Errorf("qbit app preferences: %w", err)
+	}
+	return Prefs{
+		TempPath:           p.TempPath,
+		TempPathEnabled:    p.TempPathEnabled,
+		IncompleteFilesExt: p.IncompleteFilesExt,
+	}, nil
 }
 
 func (c *client) Version(ctx context.Context) (string, error) {
