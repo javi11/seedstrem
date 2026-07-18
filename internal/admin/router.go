@@ -120,11 +120,10 @@ type configDTO struct {
 		EnableAnime  bool `json:"enable_anime"`
 	} `json:"addon"`
 	Filters struct {
-		MinSeeders int      `json:"min_seeders"`
-		MinSizeMB  int64    `json:"min_size_mb"`
-		MaxSizeMB  int64    `json:"max_size_mb"`
-		Qualities  []string `json:"qualities"`
-		MaxResults int      `json:"max_results"`
+		MinSeeders int   `json:"min_seeders"`
+		MinSizeMB  int64 `json:"min_size_mb"`
+		MaxSizeMB  int64 `json:"max_size_mb"`
+		MaxResults int   `json:"max_results"`
 	} `json:"filters"`
 	Meta struct {
 		CinemetaURL            string `json:"cinemeta_url"`
@@ -172,7 +171,6 @@ func toDTO(cfg config.Config) configDTO {
 	dto.Filters.MinSeeders = cfg.Filters.MinSeeders
 	dto.Filters.MinSizeMB = cfg.Filters.MinSizeMB
 	dto.Filters.MaxSizeMB = cfg.Filters.MaxSizeMB
-	dto.Filters.Qualities = cfg.Filters.Qualities
 	dto.Filters.MaxResults = cfg.Filters.MaxResults
 	dto.Meta.CinemetaURL = cfg.Meta.CinemetaURL
 	dto.Meta.MetadataTimeoutSeconds = int(cfg.Meta.MetadataTimeout / time.Second)
@@ -216,7 +214,6 @@ func (dto configDTO) apply(cfg config.Config) config.Config {
 	cfg.Filters.MinSeeders = dto.Filters.MinSeeders
 	cfg.Filters.MinSizeMB = dto.Filters.MinSizeMB
 	cfg.Filters.MaxSizeMB = dto.Filters.MaxSizeMB
-	cfg.Filters.Qualities = dto.Filters.Qualities
 	cfg.Filters.MaxResults = dto.Filters.MaxResults
 	cfg.Meta.CinemetaURL = dto.Meta.CinemetaURL
 	if dto.Meta.MetadataTimeoutSeconds > 0 {

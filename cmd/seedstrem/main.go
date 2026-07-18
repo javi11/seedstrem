@@ -113,7 +113,6 @@ func run() error {
 				MinSeeders:   c.Filters.MinSeeders,
 				MinSizeBytes: c.Filters.MinSizeMB << 20,
 				MaxSizeBytes: c.Filters.MaxSizeMB << 20,
-				Qualities:    c.Filters.Qualities,
 			},
 			MaxResults: c.Filters.MaxResults,
 		}

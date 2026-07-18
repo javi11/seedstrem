@@ -10,7 +10,6 @@ type Filters struct {
 	MinSeeders   int
 	MinSizeBytes int64
 	MaxSizeBytes int64 // 0 = unbounded
-	Qualities    []string
 }
 
 // Dedup collapses results sharing an infohash, keeping the one with the
@@ -48,7 +47,7 @@ func Sort(results []Result) []Result {
 	return results
 }
 
-// Filter drops results failing the seeder/size/quality constraints.
+// Filter drops results failing the seeder/size constraints.
 func Filter(results []Result, f Filters) []Result {
 	out := make([]Result, 0, len(results))
 	for _, r := range results {
@@ -61,26 +60,7 @@ func Filter(results []Result, f Filters) []Result {
 		if f.MaxSizeBytes > 0 && r.Size > f.MaxSizeBytes {
 			continue
 		}
-		if !matchesQuality(r.Title, f.Qualities) {
-			continue
-		}
 		out = append(out, r)
 	}
 	return out
-}
-
-// matchesQuality reports whether title contains any of the wanted
-// quality tokens. An empty want list matches everything.
-func matchesQuality(title string, want []string) bool {
-	if len(want) == 0 {
-		return true
-	}
-	lower := strings.ToLower(title)
-	for _, q := range want {
-		q = strings.ToLower(strings.TrimSpace(q))
-		if q != "" && strings.Contains(lower, q) {
-			return true
-		}
-	}
-	return false
 }

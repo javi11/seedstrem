@@ -70,7 +70,6 @@ export interface Config {
     min_seeders: number;
     min_size_mb: number;
     max_size_mb: number;
-    qualities: string[];
     max_results: number;
   };
   meta: {

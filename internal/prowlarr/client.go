@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -54,14 +55,15 @@ func NewWithClient(baseURL, apiKey string, hc *http.Client) *Client {
 // apiResult mirrors the fields we read from Prowlarr's /api/v1/search
 // response. Categories are decoded leniently (see rawCategories).
 type apiResult struct {
-	Title      string          `json:"title"`
-	InfoHash   string          `json:"infoHash"`
-	MagnetURL  string          `json:"magnetUrl"`
-	Size       int64           `json:"size"`
-	Seeders    int             `json:"seeders"`
-	Protocol   string          `json:"protocol"`
-	Indexer    string          `json:"indexer"`
-	Categories json.RawMessage `json:"categories"`
+	Title       string          `json:"title"`
+	InfoHash    string          `json:"infoHash"`
+	MagnetURL   string          `json:"magnetUrl"`
+	DownloadURL string          `json:"downloadUrl"`
+	Size        int64           `json:"size"`
+	Seeders     int             `json:"seeders"`
+	Protocol    string          `json:"protocol"`
+	Indexer     string          `json:"indexer"`
+	Categories  json.RawMessage `json:"categories"`
 }
 
 // Search queries Prowlarr for query across the given newznab categories.
@@ -122,12 +124,67 @@ func (c *Client) Search(ctx context.Context, query, searchType string, categorie
 			continue // usenet or unknown — not resolvable via Deluge
 		}
 		res := normalize(r)
+		if res.MagnetURL == "" && r.DownloadURL != "" {
+			// Some (typically private-tracker) indexers omit magnetUrl and
+			// infoHash and only publish a .torrent download link. Fetch it
+			// and derive the hash ourselves rather than dropping the
+			// release outright.
+			if hash, name, err := c.fetchTorrentHash(ctx, r.DownloadURL); err == nil {
+				res.InfoHash = hash
+				if res.Title == "" {
+					res.Title = name
+				}
+				res.MagnetURL = synthesizeMagnet(hash, res.Title)
+			}
+		}
 		if res.MagnetURL == "" {
 			continue // no magnet and no infohash — cannot resolve-on-play
 		}
 		out = append(out, res)
 	}
 	return out, nil
+}
+
+// maxTorrentFileBytes bounds how much of a .torrent download we'll read;
+// legitimate .torrent files are a few KB to a few hundred KB at most.
+const maxTorrentFileBytes = 2 << 20 // 2 MiB
+
+// fetchTorrentHash downloads a .torrent file from a Prowlarr-provided
+// download link and extracts its v1 infohash and display name.
+func (c *Client) fetchTorrentHash(ctx context.Context, downloadURL string) (hash, name string, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("prowlarr: build torrent request: %w", err)
+	}
+	req.Header.Set("X-Api-Key", c.apiKey)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("prowlarr: fetch torrent: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("prowlarr: fetch torrent returned %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTorrentFileBytes))
+	if err != nil {
+		return "", "", fmt.Errorf("prowlarr: read torrent body: %w", err)
+	}
+	return metainfo.FromTorrent(body)
+}
+
+// synthesizeMagnet builds a minimal magnet URI from an infohash, matching
+// the fallback already used for infoHash-only results.
+func synthesizeMagnet(hash, title string) string {
+	if hash == "" {
+		return ""
+	}
+	v := url.Values{}
+	if title != "" {
+		v.Set("dn", title)
+	}
+	return "magnet:?xt=urn:btih:" + hash + "&" + v.Encode()
 }
 
 // IndexerInfo is a Prowlarr indexer as reported by /api/v1/indexer.
@@ -232,9 +289,7 @@ func normalize(r apiResult) Result {
 		}
 	}
 	if res.MagnetURL == "" && res.InfoHash != "" {
-		v := url.Values{}
-		v.Set("dn", r.Title)
-		res.MagnetURL = "magnet:?xt=urn:btih:" + res.InfoHash + "&" + v.Encode()
+		res.MagnetURL = synthesizeMagnet(res.InfoHash, r.Title)
 	}
 	return res
 }

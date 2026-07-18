@@ -67,11 +67,10 @@ type Addon struct {
 
 // Filters constrains and ranks Prowlarr search results.
 type Filters struct {
-	MinSeeders int      `yaml:"min_seeders"`
-	MinSizeMB  int64    `yaml:"min_size_mb"`
-	MaxSizeMB  int64    `yaml:"max_size_mb"` // 0 = unbounded
-	Qualities  []string `yaml:"qualities"`   // empty = all
-	MaxResults int      `yaml:"max_results"`
+	MinSeeders int   `yaml:"min_seeders"`
+	MinSizeMB  int64 `yaml:"min_size_mb"`
+	MaxSizeMB  int64 `yaml:"max_size_mb"` // 0 = unbounded
+	MaxResults int   `yaml:"max_results"`
 }
 
 // Meta configures metadata resolution (Cinemeta) and the Deluge metadata

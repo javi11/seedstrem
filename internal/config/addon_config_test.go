@@ -92,7 +92,6 @@ func TestSaveRoundTripAddon(t *testing.T) {
 	cfg.Prowlarr.IndexerIDs = []int{4, 8}
 	cfg.Meta.TMDbAPIKey = "tmdb-secret"
 	cfg.Addon.EnableAnime = true
-	cfg.Filters.Qualities = []string{"1080p", "720p"}
 
 	// Round-trip via marshal/unmarshal by re-loading a written file.
 	dir := t.TempDir()
@@ -115,8 +114,5 @@ func TestSaveRoundTripAddon(t *testing.T) {
 	}
 	if !got.Addon.EnableAnime {
 		t.Error("anime toggle round-trip lost")
-	}
-	if len(got.Filters.Qualities) != 2 {
-		t.Errorf("qualities round-trip lost: %v", got.Filters.Qualities)
 	}
 }

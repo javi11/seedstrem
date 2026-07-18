@@ -76,6 +76,41 @@ func TestSearch(t *testing.T) {
 	}
 }
 
+func TestSearchTorrentFileFallback(t *testing.T) {
+	// Minimal valid bencoded .torrent: d4:infod4:name4:testee
+	torrentBytes := []byte("d4:infod4:name4:testee")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/search", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[{"title":"Torrent File Only","downloadUrl":"` + "http://" + r.Host + `/file.torrent` + `","size":30,"seeders":3,"protocol":"torrent"}]`))
+	})
+	mux.HandleFunc("/file.torrent", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Api-Key"); got != "my-key" {
+			t.Errorf("torrent fetch X-Api-Key = %q, want my-key", got)
+		}
+		w.Write(torrentBytes)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := NewWithClient(srv.URL, "my-key", srv.Client())
+	results, err := c.Search(context.Background(), "q", "", nil, nil)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want 1 result recovered via torrent-file fallback, got %d: %+v", len(results), results)
+	}
+	r := results[0]
+	if r.InfoHash == "" {
+		t.Error("expected infohash derived from fetched .torrent file")
+	}
+	if !strings.HasPrefix(r.MagnetURL, "magnet:?xt=urn:btih:"+r.InfoHash) {
+		t.Errorf("expected synthesized magnet, got %q", r.MagnetURL)
+	}
+}
+
 func TestSearchNon200(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

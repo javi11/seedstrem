@@ -352,23 +352,6 @@ export function Settings() {
               />
             </label>
           </div>
-          <label className="form-control">
-            <span className="label-text">Qualities (comma-separated, empty = all)</span>
-            <input
-              className="input input-bordered"
-              placeholder="1080p, 720p"
-              value={config.filters.qualities.join(", ")}
-              onChange={(e) =>
-                update(
-                  (c) =>
-                    (c.filters.qualities = e.target.value
-                      .split(",")
-                      .map((q) => q.trim())
-                      .filter(Boolean)),
-                )
-              }
-            />
-          </label>
         </div>
       </div>
 

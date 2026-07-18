@@ -40,10 +40,9 @@ func TestFilter(t *testing.T) {
 		{Title: "Movie 1080p BluRay", Seeders: 20, Size: 8 * gb},
 		{Title: "Movie 720p WEB", Seeders: 0, Size: 2 * gb},      // too few seeders
 		{Title: "Movie 2160p REMUX", Seeders: 30, Size: 60 * gb}, // too big
-		{Title: "Movie CAM", Seeders: 40, Size: 1 * gb},          // quality excluded
 		{Title: "Movie 1080p WEB", Seeders: 15, Size: 5 * gb},
 	}
-	f := Filters{MinSeeders: 1, MaxSizeBytes: 40 * gb, Qualities: []string{"1080p", "720p"}}
+	f := Filters{MinSeeders: 1, MaxSizeBytes: 40 * gb}
 	out := Filter(in, f)
 	if len(out) != 2 {
 		t.Fatalf("want 2 kept, got %d: %+v", len(out), out)
@@ -52,13 +51,5 @@ func TestFilter(t *testing.T) {
 		if r.Seeders < 1 || r.Size > 40*gb {
 			t.Errorf("filter let through bad result: %+v", r)
 		}
-	}
-}
-
-func TestFilterEmptyQualitiesMatchesAll(t *testing.T) {
-	in := []Result{{Title: "Anything", Seeders: 5, Size: 1}}
-	out := Filter(in, Filters{MinSeeders: 1})
-	if len(out) != 1 {
-		t.Errorf("empty qualities should match all, got %d", len(out))
 	}
 }
