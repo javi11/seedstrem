@@ -28,6 +28,7 @@ type Config struct {
 	Paths    Paths    `yaml:"paths"`
 	Storage  Storage  `yaml:"storage"`
 	Stream   Stream   `yaml:"stream"`
+	Cleanup  Cleanup  `yaml:"cleanup"`
 	Log      Log      `yaml:"log"`
 }
 
@@ -104,6 +105,17 @@ type Stream struct {
 	ReadChunk   int64         `yaml:"read_chunk"`
 }
 
+// Cleanup configures automatic removal of torrents that are no longer
+// worth keeping around.
+type Cleanup struct {
+	// SeedTime is how long a completed torrent may seed before it is
+	// removed. 0 disables seed-time cleanup entirely.
+	SeedTime time.Duration `yaml:"seed_time"`
+	// MinProgressForCancel is the download fraction (0..1) a torrent
+	// must reach to survive an abandoned/canceled playback session.
+	MinProgressForCancel float64 `yaml:"min_progress_for_cancel"`
+}
+
 type Log struct {
 	Level string `yaml:"level"`
 }
@@ -147,6 +159,10 @@ func Default() Config {
 		Stream: Stream{
 			WaitTimeout: 60 * time.Second,
 			ReadChunk:   4 << 20,
+		},
+		Cleanup: Cleanup{
+			SeedTime:             72 * time.Hour,
+			MinProgressForCancel: 0.05,
 		},
 		Log: Log{Level: "info"},
 	}
@@ -212,6 +228,16 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 	if v := getenv("SEEDSTREM_META_METADATA_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Meta.MetadataTimeout = d
+		}
+	}
+	if v := getenv("SEEDSTREM_CLEANUP_SEED_TIME"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Cleanup.SeedTime = d
+		}
+	}
+	if v := getenv("SEEDSTREM_CLEANUP_MIN_PROGRESS_FOR_CANCEL"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Cleanup.MinProgressForCancel = f
 		}
 	}
 	setBool := func(key string, dst *bool) {
@@ -306,6 +332,12 @@ func (c Config) Validate() error {
 	}
 	if c.Stream.ReadChunk <= 0 {
 		errs = append(errs, errors.New("stream.read_chunk must be positive"))
+	}
+	if c.Cleanup.SeedTime < 0 {
+		errs = append(errs, errors.New("cleanup.seed_time must not be negative (0 disables seed-time cleanup)"))
+	}
+	if c.Cleanup.MinProgressForCancel < 0 || c.Cleanup.MinProgressForCancel > 1 {
+		errs = append(errs, errors.New("cleanup.min_progress_for_cancel must be between 0 and 1"))
 	}
 	for i, m := range c.Paths.Mappings {
 		switch {

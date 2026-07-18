@@ -224,6 +224,20 @@ func (s *Service) linkFor(ctx context.Context, torrentID string, fileIndex int) 
 	return store.Link{}, store.ErrNotFound
 }
 
+// Remove deletes a torrent from Deluge and the local store. A torrent
+// already missing on either side is treated as already-removed, not an
+// error.
+func (s *Service) Remove(ctx context.Context, tor store.Torrent) error {
+	deleteFiles := s.settings().DeleteFilesOnRemove
+	if err := s.dc.Delete(ctx, tor.Hash, deleteFiles); err != nil && !errors.Is(err, deluge.ErrTorrentNotFound) {
+		return fmt.Errorf("delete from deluge: %w", err)
+	}
+	if err := s.store.DeleteTorrent(ctx, tor.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("delete from store: %w", err)
+	}
+	return nil
+}
+
 // Resolve is the end-to-end resolve-on-play flow: add the magnet, wait
 // for metadata, pick the file matching sel, and mint a streaming link.
 func (s *Service) Resolve(ctx context.Context, magnet string, sel Selector) (store.Link, error) {

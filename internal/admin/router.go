@@ -140,6 +140,10 @@ type configDTO struct {
 		WaitTimeoutSeconds int   `json:"wait_timeout_seconds"`
 		ReadChunk          int64 `json:"read_chunk"`
 	} `json:"stream"`
+	Cleanup struct {
+		SeedTimeHours               int `json:"seed_time_hours"`
+		MinProgressForCancelPercent int `json:"min_progress_for_cancel_percent"`
+	} `json:"cleanup"`
 }
 
 func toDTO(cfg config.Config) configDTO {
@@ -181,6 +185,8 @@ func toDTO(cfg config.Config) configDTO {
 	dto.Storage.DeleteFilesOnRemove = cfg.Storage.DeleteFilesOnRemove
 	dto.Stream.WaitTimeoutSeconds = int(cfg.Stream.WaitTimeout / time.Second)
 	dto.Stream.ReadChunk = cfg.Stream.ReadChunk
+	dto.Cleanup.SeedTimeHours = int(cfg.Cleanup.SeedTime / time.Hour)
+	dto.Cleanup.MinProgressForCancelPercent = int(cfg.Cleanup.MinProgressForCancel * 100)
 	return dto
 }
 
@@ -231,6 +237,14 @@ func (dto configDTO) apply(cfg config.Config) config.Config {
 	if dto.Stream.ReadChunk > 0 {
 		cfg.Stream.ReadChunk = dto.Stream.ReadChunk
 	}
+	// Unlike other duration fields above, 0 is a meaningful, settable
+	// value here (disables seed-time cleanup), so it is always applied
+	// rather than treated as "keep existing value".
+	if dto.Cleanup.SeedTimeHours >= 0 {
+		cfg.Cleanup.SeedTime = time.Duration(dto.Cleanup.SeedTimeHours) * time.Hour
+	}
+	// Likewise 0 meaningfully disables the abandoned-download check.
+	cfg.Cleanup.MinProgressForCancel = float64(dto.Cleanup.MinProgressForCancelPercent) / 100
 	return cfg
 }
 

@@ -15,9 +15,11 @@ import (
 	"time"
 
 	"github.com/javib/seedstrem/internal/admin"
+	"github.com/javib/seedstrem/internal/cleanup"
 	"github.com/javib/seedstrem/internal/config"
 	"github.com/javib/seedstrem/internal/deluge"
 	"github.com/javib/seedstrem/internal/meta"
+	"github.com/javib/seedstrem/internal/playsession"
 	"github.com/javib/seedstrem/internal/prowlarr"
 	"github.com/javib/seedstrem/internal/server"
 	"github.com/javib/seedstrem/internal/store"
@@ -120,11 +122,13 @@ func run() error {
 
 	resolver := stream.NewResolver(dc, func() []config.Mapping { return cm.Get().Paths.Mappings })
 	avail := stream.NewAvailability(dc)
-	streamHandler := stream.NewHandler(db, dc, resolver, avail, func() stream.Settings {
+	sessions := playsession.New()
+	streamHandler := stream.NewHandler(db, dc, torrentSvc, resolver, avail, sessions, func() stream.Settings {
 		c := cm.Get()
 		return stream.Settings{
-			WaitTimeout: c.Stream.WaitTimeout,
-			ReadChunk:   c.Stream.ReadChunk,
+			WaitTimeout:          c.Stream.WaitTimeout,
+			ReadChunk:            c.Stream.ReadChunk,
+			MinProgressForCancel: c.Cleanup.MinProgressForCancel,
 		}
 	}, logger)
 
@@ -133,6 +137,12 @@ func run() error {
 	syncCtx, stopSync := context.WithCancel(context.Background())
 	defer stopSync()
 	go syncer.New(db, dc, logger, 30*time.Second).Run(syncCtx)
+
+	cleanCtx, stopClean := context.WithCancel(context.Background())
+	defer stopClean()
+	go cleanup.New(db, dc, torrentSvc, sessions, func() cleanup.Settings {
+		return cleanup.Settings{SeedTime: cm.Get().Cleanup.SeedTime}
+	}, logger, 30*time.Minute).Run(cleanCtx)
 
 	handler := server.New(server.Options{
 		Logger:  logger,

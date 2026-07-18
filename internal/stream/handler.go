@@ -15,13 +15,19 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/javib/seedstrem/internal/deluge"
+	"github.com/javib/seedstrem/internal/playsession"
 	"github.com/javib/seedstrem/internal/store"
+	"github.com/javib/seedstrem/internal/torrents"
 )
 
 // Settings is the live configuration slice the streaming handler needs.
 type Settings struct {
 	WaitTimeout time.Duration
 	ReadChunk   int64
+	// MinProgressForCancel is the download fraction (0..1) a torrent
+	// must reach to survive a playback session ending with nobody else
+	// watching. <= 0 disables the check.
+	MinProgressForCancel float64
 }
 
 // Handler serves /dl/{token}/{filename} with Range support over files
@@ -29,18 +35,20 @@ type Settings struct {
 type Handler struct {
 	store    *store.Store
 	dc       deluge.Client
+	svc      *torrents.Service
 	resolver *Resolver
 	avail    *Availability
+	sessions *playsession.Sessions
 	settings func() Settings
 	logger   *slog.Logger
 }
 
 // NewHandler creates the streaming handler.
-func NewHandler(st *store.Store, dc deluge.Client, resolver *Resolver, avail *Availability, settings func() Settings, logger *slog.Logger) *Handler {
+func NewHandler(st *store.Store, dc deluge.Client, svc *torrents.Service, resolver *Resolver, avail *Availability, sessions *playsession.Sessions, settings func() Settings, logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{store: st, dc: dc, resolver: resolver, avail: avail, settings: settings, logger: logger}
+	return &Handler{store: st, dc: dc, svc: svc, resolver: resolver, avail: avail, sessions: sessions, settings: settings, logger: logger}
 }
 
 // Router returns the router to mount at /dl.
@@ -76,6 +84,13 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+
+	endSession := h.sessions.Begin(tor.Hash)
+	defer func() {
+		if endSession() == 0 {
+			go h.checkAbandoned(tor)
+		}
+	}()
 
 	info, err := h.dc.Torrent(ctx, tor.Hash)
 	if err != nil {
@@ -235,4 +250,44 @@ func (h *Handler) retryLater(w http.ResponseWriter, msg string, err error) {
 func (h *Handler) internalError(w http.ResponseWriter, msg string, err error) {
 	h.logger.Error("stream "+msg, "error", err)
 	http.Error(w, "internal error", http.StatusInternalServerError)
+}
+
+// checkAbandoned runs after the last active streaming session for a
+// torrent ends. If the torrent never reached the configured minimum
+// progress and nobody else has started watching it in the meantime, it
+// is removed. Called from a goroutine, so it uses its own context
+// rather than the (by-then-cancelled) request context.
+func (h *Handler) checkAbandoned(tor store.Torrent) {
+	threshold := h.settings().MinProgressForCancel
+	if threshold <= 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	info, err := h.dc.Torrent(ctx, tor.Hash)
+	if err != nil {
+		return
+	}
+	if info.Progress >= threshold {
+		return
+	}
+
+	// BeginRemoval atomically re-checks that nobody has started
+	// watching since the last check and blocks concurrent Begin(hash)
+	// calls until this removal attempt finishes, closing the race where
+	// a new session could open a file being deleted underneath it.
+	done, ok := h.sessions.BeginRemoval(tor.Hash)
+	if !ok {
+		return
+	}
+	defer done()
+
+	if err := h.svc.Remove(ctx, tor); err != nil {
+		h.logger.Warn("stream: remove abandoned torrent", "hash", tor.Hash, "error", err)
+		return
+	}
+	h.logger.Info("stream: removed abandoned torrent below progress threshold",
+		"hash", tor.Hash, "progress", info.Progress, "threshold", threshold)
 }
