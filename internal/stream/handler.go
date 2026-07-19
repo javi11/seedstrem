@@ -181,6 +181,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		pieceSize:  props.PieceSize,
 		hash:       tor.Hash,
 		chunkSize:  chunk,
+		logger:     h.logger,
 		reopen: func() (*os.File, error) {
 			freshInfo, err := h.dc.Torrent(ctx, tor.Hash)
 			if err != nil {
@@ -198,7 +199,24 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	defer pr.Close()
 
+	// Heartbeat: while the partial-file serve runs, log the torrent's
+	// overall download progress and whether the head piece (backing byte 0)
+	// is on disk yet, so we can see whether the torrent is actually pulling
+	// bytes during a first-play stall or sitting idle. Stops when the serve
+	// returns (stopBeat) or the client disconnects (ctx).
+	headFirst, headLast := PiecesForRange(fileOffset, props.PieceSize, 0, 0)
+	stopBeat := make(chan struct{})
+	go h.heartbeat(ctx, stopBeat, tor.Hash, headFirst, headLast)
+
+	serveStart := time.Now()
 	http.ServeContent(w, r, path.Base(file.Name), time.Time{}, pr)
+	close(stopBeat)
+	// ServeContent swallows read errors (headers are already sent), so this
+	// is the only place we learn how a partial-file stream actually ended:
+	// bytes delivered, how long it ran, and whether the client hung up.
+	h.logger.Debug("stream: serve finished",
+		"hash", tor.Hash, "bytesDelivered", pr.offset, "elapsed", time.Since(serveStart).Round(time.Millisecond),
+		"ctxErr", ctx.Err())
 }
 
 // waitForFile polls for the torrent's file to appear on disk, up to
@@ -228,6 +246,31 @@ func (h *Handler) waitForFile(ctx context.Context, hash string, file qbit.FileIn
 		case <-ctx.Done():
 			return "", ctx.Err()
 		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+// heartbeat logs the torrent's download progress and head-piece
+// availability every few seconds until the serve finishes (stop closed)
+// or the client disconnects (ctx). Instrumentation only — no side effects.
+func (h *Handler) heartbeat(ctx context.Context, stop <-chan struct{}, hash string, headFirst, headLast int) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			var progress float64
+			if info, err := h.dc.Torrent(ctx, hash); err == nil {
+				progress = info.Progress
+			}
+			haveHead, _ := h.avail.HaveRange(ctx, hash, headFirst, headLast)
+			h.logger.Debug("stream: download heartbeat",
+				"hash", hash, "progress", progress,
+				"headPieces", [2]int{headFirst, headLast}, "headOnDisk", haveHead)
 		}
 	}
 }

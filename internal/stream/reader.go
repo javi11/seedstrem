@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"time"
 )
 
 // partialReader is an io.ReadSeeker over a file that qBittorrent may
@@ -25,6 +27,9 @@ type partialReader struct {
 	waitFor    waitFunc
 	chunkSize  int64
 	complete   bool // torrent already finished: skip piece checks
+
+	logger    *slog.Logger
+	firstRead bool // instrumentation: first Read of this response not yet logged
 }
 
 type waitFunc func(ctx context.Context, hash string, first, last int) error
@@ -43,8 +48,24 @@ func (pr *partialReader) Read(p []byte) (int, error) {
 
 	if !pr.complete {
 		first, last := PiecesForRange(pr.fileOffset, pr.pieceSize, pr.offset, pr.offset+n-1)
+		waitStart := time.Now()
+		if pr.logger != nil && !pr.firstRead {
+			pr.firstRead = true
+			pr.logger.Debug("stream: first read waiting for head pieces",
+				"hash", pr.hash, "offset", pr.offset, "pieces", [2]int{first, last})
+		}
 		if err := pr.waitFor(pr.ctx, pr.hash, first, last); err != nil {
+			if pr.logger != nil {
+				pr.logger.Debug("stream: piece wait failed",
+					"hash", pr.hash, "offset", pr.offset, "pieces", [2]int{first, last},
+					"waited", time.Since(waitStart).Round(time.Millisecond), "error", err)
+			}
 			return 0, fmt.Errorf("waiting for pieces [%d,%d]: %w", first, last, err)
+		}
+		if pr.logger != nil && time.Since(waitStart) > 250*time.Millisecond {
+			pr.logger.Debug("stream: piece wait satisfied",
+				"hash", pr.hash, "offset", pr.offset, "pieces", [2]int{first, last},
+				"waited", time.Since(waitStart).Round(time.Millisecond))
 		}
 	}
 
