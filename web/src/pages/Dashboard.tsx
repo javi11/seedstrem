@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, Status } from "../api";
+import { api, formatBytes, Status } from "../api";
 
 const STATUS_LABELS: Record<string, string> = {
   magnet_conversion: "Resolving",
@@ -78,6 +78,11 @@ export function Dashboard() {
             <div className="stat-value text-lg">{status.torrents[key] ?? 0}</div>
           </div>
         ))}
+        <div className="stat">
+          <div className="stat-title">Uploaded</div>
+          <div className="stat-value text-lg">{formatBytes(status.total_uploaded ?? 0)}</div>
+          <div className="stat-desc">total seeded</div>
+        </div>
       </div>
 
       {externalHostMismatch && (

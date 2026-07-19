@@ -32,6 +32,8 @@ type Torrent struct {
 	Progress    float64
 	DlSpeed     int64
 	NumSeeds    int64
+	Uploaded    int64
+	Ratio       float64
 	SavePath    string
 	ContentPath string
 	SeedingTime time.Duration
@@ -207,6 +209,8 @@ func toTorrentInfo(t *Torrent) qbit.TorrentInfo {
 		Progress:    t.Progress,
 		DlSpeed:     t.DlSpeed,
 		NumSeeds:    t.NumSeeds,
+		Uploaded:    t.Uploaded,
+		Ratio:       t.Ratio,
 		SavePath:    t.SavePath,
 		ContentPath: t.ContentPath,
 		SeedingTime: t.SeedingTime,

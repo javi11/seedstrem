@@ -79,5 +79,12 @@ stream:
   # Max bytes waited-for/read per read cycle.
   read_chunk: 4194304
 
+seeding:
+  # Download the whole torrent (played file first, the rest afterwards) so
+  # a complete copy is available to seed — better for ratio on private
+  # trackers. Set false to download only the played file (less disk, but
+  # you seed only that file).
+  full: true
+
 log:
   level: "info" # debug | info | warn | error

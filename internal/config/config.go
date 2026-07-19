@@ -29,6 +29,7 @@ type Config struct {
 	Storage     Storage     `yaml:"storage"`
 	Stream      Stream      `yaml:"stream"`
 	Cleanup     Cleanup     `yaml:"cleanup"`
+	Seeding     Seeding     `yaml:"seeding"`
 	Log         Log         `yaml:"log"`
 }
 
@@ -117,6 +118,16 @@ type Cleanup struct {
 	MinProgressForCancel float64 `yaml:"min_progress_for_cancel"`
 }
 
+// Seeding controls download/seed behavior for ratio management.
+type Seeding struct {
+	// Full downloads the entire torrent (not just the played file) so a
+	// complete copy is available to seed — better for ratio on private
+	// trackers. The played file is still prioritized so streaming starts
+	// first; the rest downloads afterwards. When false, only the played
+	// file is downloaded (minimal disk, but you seed only that file).
+	Full bool `yaml:"full"`
+}
+
 type Log struct {
 	Level string `yaml:"level"`
 }
@@ -166,7 +177,8 @@ func Default() Config {
 			SeedTime:             72 * time.Hour,
 			MinProgressForCancel: 0.05,
 		},
-		Log: Log{Level: "info"},
+		Seeding: Seeding{Full: true},
+		Log:     Log{Level: "info"},
 	}
 }
 
@@ -246,6 +258,7 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 	setBool("ADDON_ENABLE_MOVIES", &cfg.Addon.EnableMovies)
 	setBool("ADDON_ENABLE_SERIES", &cfg.Addon.EnableSeries)
 	setBool("ADDON_ENABLE_ANIME", &cfg.Addon.EnableAnime)
+	setBool("SEEDING_FULL", &cfg.Seeding.Full)
 	// Comma-separated int lists, e.g. "2000,2010".
 	setInts := func(key string, dst *[]int) {
 		v := getenv("SEEDSTREM_" + key)

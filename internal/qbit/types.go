@@ -11,6 +11,8 @@ type TorrentInfo struct {
 	Size     int64   // wanted (selected) size
 	DlSpeed  int64
 	NumSeeds int64
+	Uploaded int64   // total bytes uploaded (for ratio tracking)
+	Ratio    float64 // upload/download ratio reported by qBittorrent
 	SavePath string
 	// ContentPath is qBittorrent's current on-disk location of the
 	// content: the temp/incomplete folder while downloading, the final

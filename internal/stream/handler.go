@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -117,13 +115,6 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 
 	complete := file.Progress >= 1
 
-	localPath, err := h.resolver.FilePath(ctx, info, file)
-	if err != nil {
-		// Selected but qBittorrent has not created the file yet.
-		h.retryLater(w, "file not on disk yet", err)
-		return
-	}
-
 	contentType := mime.TypeByExtension(path.Ext(file.Name))
 	if contentType == "" {
 		contentType = "application/octet-stream"
@@ -134,6 +125,11 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		"hash", tor.Hash, "file", file.Name, "complete", complete, "progress", file.Progress)
 
 	if complete {
+		localPath, err := h.resolver.FilePath(ctx, info, file)
+		if err != nil {
+			h.retryLater(w, "file not on disk yet", err)
+			return
+		}
 		f, err := os.Open(localPath)
 		if err != nil {
 			h.internalError(w, "open completed file", err)
@@ -155,31 +151,22 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, "file offset", errors.New("file index not in torrent"))
 		return
 	}
-
-	// Before ServeContent writes headers, make sure the first chunk of
-	// the requested range is on disk; otherwise answer 503 so players
-	// retry rather than hanging on a dead connection.
-	start := requestedStart(r.Header.Get("Range"), file.Size)
 	chunk := settings.ReadChunk
 	if chunk <= 0 {
 		chunk = 4 << 20
 	}
-	end := min(start+chunk-1, file.Size-1)
-	first, last := PiecesForRange(fileOffset, props.PieceSize, start, end)
-	h.logger.Debug("stream: waiting for pieces",
-		"hash", tor.Hash, "start", start, "firstPiece", first, "lastPiece", last)
-	if err := h.avail.WaitForRange(ctx, tor.Hash, first, last, settings.WaitTimeout); err != nil {
-		if errors.Is(err, ErrWaitTimeout) {
-			h.retryLater(w, "pieces not available in time", err)
-			return
-		}
-		if ctx.Err() != nil {
-			return // client went away
-		}
-		h.internalError(w, "wait for pieces", err)
+
+	// Wait only for qBittorrent to create the file on disk (bounded), then
+	// hand off to ServeContent immediately: headers go out right away and
+	// partialReader blocks per-read as pieces arrive, so the player shows
+	// a buffering spinner. A previous pre-flight piece-wait answered 503
+	// *before* any headers on warm-up/forward-seek, which players treat as
+	// a hard "loading failed" rather than buffering.
+	localPath, err := h.waitForFile(ctx, tor.Hash, file, settings.WaitTimeout)
+	if err != nil {
+		h.retryLater(w, "file not on disk yet", err)
 		return
 	}
-
 	f, err := os.Open(localPath)
 	if err != nil {
 		h.retryLater(w, "open partial file", err)
@@ -214,31 +201,35 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, path.Base(file.Name), time.Time{}, pr)
 }
 
-// requestedStart extracts the first byte offset a Range header asks
-// for; 0 when absent or unparseable (ServeContent does full parsing).
-func requestedStart(rangeHeader string, size int64) int64 {
-	spec, ok := strings.CutPrefix(rangeHeader, "bytes=")
-	if !ok {
-		return 0
+// waitForFile polls for the torrent's file to appear on disk, up to
+// timeout. qBittorrent creates the file shortly after a torrent starts;
+// until then FilePath returns not-found. Torrent info is re-fetched each
+// poll so a content-path change (temp → final location) is picked up.
+func (h *Handler) waitForFile(ctx context.Context, hash string, file qbit.FileInfo, timeout time.Duration) (string, error) {
+	if timeout <= 0 {
+		timeout = 60 * time.Second
 	}
-	// Only the first range of a multi-range request matters here.
-	spec, _, _ = strings.Cut(spec, ",")
-	first, rest, ok := strings.Cut(spec, "-")
-	if !ok {
-		return 0
-	}
-	first = strings.TrimSpace(first)
-	if first == "" {
-		// Suffix range "bytes=-N": last N bytes.
-		if n, err := strconv.ParseInt(strings.TrimSpace(rest), 10, 64); err == nil && n > 0 && n <= size {
-			return size - n
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		if info, err := h.dc.Torrent(ctx, hash); err == nil {
+			if p, ferr := h.resolver.FilePath(ctx, info, file); ferr == nil {
+				return p, nil
+			} else {
+				lastErr = ferr
+			}
+		} else {
+			lastErr = err
 		}
-		return 0
+		if !time.Now().Before(deadline) {
+			return "", lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
-	if n, err := strconv.ParseInt(first, 10, 64); err == nil && n >= 0 && n < size {
-		return n
-	}
-	return 0
 }
 
 func (h *Handler) retryLater(w http.ResponseWriter, msg string, err error) {

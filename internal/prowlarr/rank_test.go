@@ -34,6 +34,17 @@ func TestSort(t *testing.T) {
 	}
 }
 
+func TestSortPrefersFreeleech(t *testing.T) {
+	in := []Result{
+		{Title: "popular", Seeders: 100, Size: 100},
+		{Title: "freeleech-fewer-seeds", Seeders: 5, Size: 100, Freeleech: true},
+	}
+	out := Sort(in)
+	if out[0].Title != "freeleech-fewer-seeds" {
+		t.Errorf("want freeleech first regardless of seeders, got %q", out[0].Title)
+	}
+}
+
 func TestFilter(t *testing.T) {
 	gb := int64(1 << 30)
 	in := []Result{

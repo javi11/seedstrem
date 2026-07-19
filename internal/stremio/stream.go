@@ -363,6 +363,9 @@ func (h *Handler) toStreamItem(externalURL string, q meta.Query, res prowlarr.Re
 	playURL := fmt.Sprintf("%s/stremio/play/%s?%s", base, res.InfoHash, v.Encode())
 
 	title := fmt.Sprintf("%s\n👤 %d  💾 %s", res.Title, res.Seeders, humanSize(res.Size))
+	if res.Freeleech {
+		title += "  🆓 FL"
+	}
 	if res.Indexer != "" {
 		title += "  ⚙ " + res.Indexer
 	}

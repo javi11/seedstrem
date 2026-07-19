@@ -104,6 +104,8 @@ func convertTorrent(t qbt.Torrent) TorrentInfo {
 		Size:        t.Size,
 		DlSpeed:     t.DlSpeed,
 		NumSeeds:    t.NumSeeds,
+		Uploaded:    t.Uploaded,
+		Ratio:       t.Ratio,
 		SavePath:    t.SavePath,
 		ContentPath: t.ContentPath,
 		SeedingTime: time.Duration(t.SeedingTime) * time.Second,

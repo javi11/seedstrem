@@ -170,7 +170,12 @@ func TestServeWaitsForPiecesArrivingMidRequest(t *testing.T) {
 	}
 }
 
-func TestServeTimesOutWith503(t *testing.T) {
+func TestServePiecesNeverArriveBuffersThenTruncates(t *testing.T) {
+	// The file exists on disk but no pieces are marked available. The
+	// handler now writes headers immediately (so the player buffers rather
+	// than seeing a hard 503) and the body blocks on the missing pieces;
+	// when they never arrive, the read times out and the body is
+	// truncated (well short of the full file).
 	e := newStreamEnv(t, []int{0, 0, 0, 0}, 0)
 
 	now := time.Unix(1000, 0)
@@ -181,11 +186,11 @@ func TestServeTimesOutWith503(t *testing.T) {
 	}
 
 	w := e.get(t, "")
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d; want 503", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (headers sent, then buffering)", w.Code)
 	}
-	if got := w.Header().Get("Retry-After"); got != "10" {
-		t.Errorf("Retry-After = %q; want 10", got)
+	if int64(w.Body.Len()) >= fileSize {
+		t.Errorf("expected a truncated body when pieces never arrive, got %d bytes", w.Body.Len())
 	}
 }
 
@@ -294,26 +299,5 @@ func TestCheckAbandonedSkipsWhenSomeoneElseIsWatching(t *testing.T) {
 
 	if f.Get(testHash) == nil {
 		t.Error("expected torrent to remain: another session is active")
-	}
-}
-
-func TestRequestedStart(t *testing.T) {
-	tests := []struct {
-		header string
-		want   int64
-	}{
-		{"", 0},
-		{"bytes=100-", 100},
-		{"bytes=100-200", 100},
-		{"bytes=-500", fileSize - 500},
-		{"bytes=0-0", 0},
-		{"bytes=100-200,300-400", 100},
-		{"garbage", 0},
-		{"bytes=99999999-", 0}, // out of range → let ServeContent 416
-	}
-	for _, tt := range tests {
-		if got := requestedStart(tt.header, fileSize); got != tt.want {
-			t.Errorf("requestedStart(%q) = %d; want %d", tt.header, got, tt.want)
-		}
 	}
 }

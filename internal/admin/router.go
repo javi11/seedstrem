@@ -318,21 +318,24 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	}
 
 	counts := map[string]int{}
+	var totalUploaded int64
 	if stored, err := h.store.AllTorrents(ctx); err == nil {
 		live := h.liveByHash(ctx, stored)
 		for _, tor := range stored {
 			info, inQbit := live[tor.Hash]
 			status := torrents.DeriveStatus(tor.Phase, info.State, tor.Error != "" || !inQbit, info.Size > 0, info.Progress)
 			counts[status]++
+			totalUploaded += info.Uploaded
 		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":      h.version,
-		"external_url": cfg.Server.ExternalURL,
-		"manifest_url": strings.TrimSuffix(cfg.Server.ExternalURL, "/") + "/stremio/manifest.json",
-		"qbittorrent":  qbStatus,
-		"torrents":     counts,
+		"version":        h.version,
+		"external_url":   cfg.Server.ExternalURL,
+		"manifest_url":   strings.TrimSuffix(cfg.Server.ExternalURL, "/") + "/stremio/manifest.json",
+		"qbittorrent":    qbStatus,
+		"torrents":       counts,
+		"total_uploaded": totalUploaded,
 	})
 }
 
@@ -365,6 +368,8 @@ type torrentItem struct {
 	Speed    int64      `json:"speed"`
 	Seeders  int64      `json:"seeders"`
 	Size     int64      `json:"size"`
+	Uploaded int64      `json:"uploaded"`
+	Ratio    float64    `json:"ratio"`
 	AddedAt  int64      `json:"added_at"`
 	Error    string     `json:"error,omitempty"`
 	Links    []linkItem `json:"links"`
@@ -414,6 +419,8 @@ func (h *Handler) torrents(w http.ResponseWriter, r *http.Request) {
 			Speed:    info.DlSpeed,
 			Seeders:  info.NumSeeds,
 			Size:     info.Size,
+			Uploaded: info.Uploaded,
+			Ratio:    info.Ratio,
 			AddedAt:  tor.AddedAt,
 			Error:    tor.Error,
 			Links:    linkItems,

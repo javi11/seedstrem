@@ -93,6 +93,7 @@ export interface Status {
   manifest_url: string;
   qbittorrent: { connected: boolean; version?: string; error?: string };
   torrents: Record<string, number>;
+  total_uploaded: number;
 }
 
 export interface TorrentLink {
@@ -110,6 +111,8 @@ export interface Torrent {
   speed: number;
   seeders: number;
   size: number;
+  uploaded: number;
+  ratio: number;
   added_at: number;
   error?: string;
   links: TorrentLink[];

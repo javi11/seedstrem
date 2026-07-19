@@ -35,6 +35,10 @@ type Result struct {
 	Seeders     int
 	Categories  []int
 	Indexer     string
+	// Freeleech is true when downloading the release does not count
+	// against the user's ratio (indexer freeleech flag or a zero
+	// download-volume factor). Preferred during ranking.
+	Freeleech bool
 }
 
 // Client talks to a Prowlarr instance.
@@ -70,6 +74,27 @@ type apiResult struct {
 	Protocol    string          `json:"protocol"`
 	Indexer     string          `json:"indexer"`
 	Categories  json.RawMessage `json:"categories"`
+	// IndexerFlags carries per-release flags like "freeleech".
+	IndexerFlags []string `json:"indexerFlags"`
+	// DownloadVolumeFactor is the ratio multiplier applied to the
+	// download: 0 means freeleech. Pointer so an absent field (nil) is
+	// distinguishable from an explicit 0.
+	DownloadVolumeFactor *float64 `json:"downloadVolumeFactor"`
+}
+
+// isFreeleech reports whether a release counts as freeleech, via either a
+// zero download-volume factor or a "freeleech"/"freeload" indexer flag.
+func isFreeleech(r apiResult) bool {
+	if r.DownloadVolumeFactor != nil && *r.DownloadVolumeFactor == 0 {
+		return true
+	}
+	for _, f := range r.IndexerFlags {
+		lf := strings.ToLower(f)
+		if strings.Contains(lf, "freeleech") || strings.Contains(lf, "freeload") {
+			return true
+		}
+	}
+	return false
 }
 
 // Search queries Prowlarr for query across the given newznab categories.
@@ -301,6 +326,7 @@ func normalize(r apiResult) Result {
 		Seeders:    r.Seeders,
 		Indexer:    r.Indexer,
 		Categories: parseCategories(r.Categories),
+		Freeleech:  isFreeleech(r),
 	}
 	res.InfoHash = strings.ToLower(strings.TrimSpace(r.InfoHash))
 

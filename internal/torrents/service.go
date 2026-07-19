@@ -22,6 +22,10 @@ const metaPollInterval = 1 * time.Second
 type Settings struct {
 	MetadataTimeout     time.Duration
 	DeleteFilesOnRemove bool
+	// SeedFull downloads the whole torrent (the played file first, the
+	// rest at normal priority afterwards) so a complete copy is available
+	// to seed. When false, only the played file is downloaded.
+	SeedFull bool
 }
 
 // Service owns the add → wait → select → link mechanics against qBittorrent
@@ -183,10 +187,19 @@ func (s *Service) SelectAndLink(ctx context.Context, tor store.Torrent, fileInde
 		return store.Link{}, fmt.Errorf("file index %d not in torrent", fileIndex)
 	}
 
-	if err := s.dc.SetFilePriority(ctx, tor.Hash, unselectedIdx, 0); err != nil {
-		return store.Link{}, fmt.Errorf("deselect files: %w", err)
+	// qBittorrent file priorities: 0 = do not download, 1 = normal,
+	// 7 = maximum. In full-seed mode the other files stay at normal so the
+	// whole torrent downloads (for ratio) while the played file is boosted
+	// to maximum so it downloads first for streaming. Otherwise the other
+	// files are skipped entirely and only the played file is fetched.
+	otherPrio, selectedPrio := 0, 1
+	if s.settings().SeedFull {
+		otherPrio, selectedPrio = 1, 7
 	}
-	if err := s.dc.SetFilePriority(ctx, tor.Hash, selectedIdx, 1); err != nil {
+	if err := s.dc.SetFilePriority(ctx, tor.Hash, unselectedIdx, otherPrio); err != nil {
+		return store.Link{}, fmt.Errorf("set other files priority: %w", err)
+	}
+	if err := s.dc.SetFilePriority(ctx, tor.Hash, selectedIdx, selectedPrio); err != nil {
 		return store.Link{}, fmt.Errorf("select file: %w", err)
 	}
 	if err := s.dc.Start(ctx, tor.Hash); err != nil {

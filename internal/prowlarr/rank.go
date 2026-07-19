@@ -24,9 +24,12 @@ func Dedup(results []Result) []Result {
 			continue
 		}
 		if i, ok := best[key]; ok {
+			// Keep the freeleech flag if any duplicate carries it.
+			freeleech := out[i].Freeleech || r.Freeleech
 			if r.Seeders > out[i].Seeders {
 				out[i] = r
 			}
+			out[i].Freeleech = freeleech
 			continue
 		}
 		best[key] = len(out)
@@ -35,10 +38,14 @@ func Dedup(results []Result) []Result {
 	return out
 }
 
-// Sort orders results by seeders (desc), then size (desc). It sorts in
-// place and returns the slice for chaining.
+// Sort orders results by freeleech (preferred, to protect ratio), then
+// seeders (desc), then size (desc). It sorts in place and returns the
+// slice for chaining.
 func Sort(results []Result) []Result {
 	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].Freeleech != results[j].Freeleech {
+			return results[i].Freeleech // freeleech first
+		}
 		if results[i].Seeders != results[j].Seeders {
 			return results[i].Seeders > results[j].Seeders
 		}

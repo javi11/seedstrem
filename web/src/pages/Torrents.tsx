@@ -71,6 +71,8 @@ export function Torrents() {
             <th>Speed</th>
             <th>Seeds</th>
             <th>Size</th>
+            <th>Uploaded</th>
+            <th>Ratio</th>
           </tr>
         </thead>
         <tbody>
@@ -94,10 +96,14 @@ export function Torrents() {
                 <td>{t.status === "downloading" ? `${formatBytes(t.speed)}/s` : "—"}</td>
                 <td>{t.status === "downloading" ? t.seeders : "—"}</td>
                 <td>{formatBytes(t.size)}</td>
+                <td>{formatBytes(t.uploaded)}</td>
+                <td>
+                  <span className={t.ratio >= 1 ? "text-success" : ""}>{t.ratio.toFixed(2)}</span>
+                </td>
               </tr>
               {expanded === t.id && (
                 <tr>
-                  <td colSpan={6} className="bg-base-200">
+                  <td colSpan={8} className="bg-base-200">
                     {t.error && <div className="alert alert-error mb-2 py-2">{t.error}</div>}
                     {t.links.length === 0 ? (
                       <span className="text-sm opacity-70">

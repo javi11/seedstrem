@@ -90,6 +90,7 @@ func run() error {
 		return torrents.Settings{
 			MetadataTimeout:     c.Meta.MetadataTimeout,
 			DeleteFilesOnRemove: c.Storage.DeleteFilesOnRemove,
+			SeedFull:            c.Seeding.Full,
 		}
 	}, logger)
 
