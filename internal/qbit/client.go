@@ -6,6 +6,7 @@ package qbit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -13,6 +14,17 @@ import (
 
 	qbt "github.com/autobrr/go-qbittorrent"
 )
+
+// isNotFound reports whether err is qBittorrent signalling that the hash
+// is unknown. This happens for a brief window right after adding a
+// torrent (the add is accepted asynchronously, before the torrent is
+// queryable) and while a magnet's metadata has not resolved yet. Callers
+// map it to ErrTorrentNotFound so WaitForMetadata polls instead of
+// failing hard.
+func isNotFound(err error) bool {
+	return errors.Is(err, qbt.ErrTorrentNotFound) ||
+		errors.Is(err, qbt.ErrTorrentMetadataNotDownloadedYet)
+}
 
 // Client is the qBittorrent surface used by seedstrem.
 type Client interface {
@@ -145,6 +157,9 @@ func (c *client) Torrent(ctx context.Context, hash string) (TorrentInfo, error) 
 func (c *client) Files(ctx context.Context, hash string) ([]FileInfo, error) {
 	files, err := c.qb.GetFilesInformationCtx(ctx, hash)
 	if err != nil {
+		if isNotFound(err) {
+			return nil, ErrTorrentNotFound
+		}
 		return nil, fmt.Errorf("qbit files %s: %w", hash, err)
 	}
 	if files == nil {
@@ -166,6 +181,9 @@ func (c *client) Files(ctx context.Context, hash string) ([]FileInfo, error) {
 func (c *client) Properties(ctx context.Context, hash string) (Properties, error) {
 	p, err := c.qb.GetTorrentPropertiesCtx(ctx, hash)
 	if err != nil {
+		if isNotFound(err) {
+			return Properties{}, ErrTorrentNotFound
+		}
 		return Properties{}, fmt.Errorf("qbit properties %s: %w", hash, err)
 	}
 	return Properties{
@@ -178,6 +196,9 @@ func (c *client) Properties(ctx context.Context, hash string) (Properties, error
 func (c *client) PieceStates(ctx context.Context, hash string) ([]PieceState, error) {
 	states, err := c.qb.GetTorrentPieceStatesCtx(ctx, hash)
 	if err != nil {
+		if isNotFound(err) {
+			return nil, ErrTorrentNotFound
+		}
 		return nil, fmt.Errorf("qbit piece states %s: %w", hash, err)
 	}
 	out := make([]PieceState, len(states))
@@ -196,6 +217,9 @@ func (c *client) SetFilePriority(ctx context.Context, hash string, indices []int
 		ids[i] = strconv.Itoa(idx)
 	}
 	if err := c.qb.SetFilePriorityCtx(ctx, hash, strings.Join(ids, "|"), priority); err != nil {
+		if isNotFound(err) {
+			return ErrTorrentNotFound
+		}
 		return fmt.Errorf("qbit set file priority %s: %w", hash, err)
 	}
 	return nil

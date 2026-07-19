@@ -1,11 +1,33 @@
 package qbit
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	qbt "github.com/autobrr/go-qbittorrent"
+	pkgerrors "github.com/pkg/errors"
 )
+
+func TestIsNotFound(t *testing.T) {
+	if !isNotFound(qbt.ErrTorrentNotFound) {
+		t.Error("bare ErrTorrentNotFound should be not-found")
+	}
+	// The library wraps the sentinel with github.com/pkg/errors.Wrap
+	// (as GetFilesInformationCtx does on a 404) — isNotFound must see
+	// through it, which is the whole point of this fix.
+	wrapped := pkgerrors.Wrap(qbt.ErrTorrentNotFound, "could not get files info; torrent hash not found")
+	if !isNotFound(wrapped) {
+		t.Error("pkg/errors-wrapped ErrTorrentNotFound should be not-found")
+	}
+	if !isNotFound(fmt.Errorf("ctx: %w", qbt.ErrTorrentMetadataNotDownloadedYet)) {
+		t.Error("metadata-not-ready should be treated as not-found (keep polling)")
+	}
+	if isNotFound(errors.New("some other error")) {
+		t.Error("unrelated error must not be not-found")
+	}
+}
 
 func TestConvertTorrent(t *testing.T) {
 	info := convertTorrent(qbt.Torrent{
