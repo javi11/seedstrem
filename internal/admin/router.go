@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/javib/seedstrem/internal/config"
+	"github.com/javib/seedstrem/internal/deluge"
 	"github.com/javib/seedstrem/internal/downloader"
 	"github.com/javib/seedstrem/internal/prowlarr"
 	"github.com/javib/seedstrem/internal/qbit"
@@ -25,20 +27,22 @@ const passwordMask = "••••••••"
 
 // Handler serves the admin API.
 type Handler struct {
-	config  *config.Manager
-	store   *store.Store
-	dc      *downloader.Swappable
-	logger  *slog.Logger
-	version string
+	config    *config.Manager
+	store     *store.Store
+	dc        *downloader.Swappable
+	newClient func(config.Config) downloader.Client
+	logger    *slog.Logger
+	version   string
 }
 
 // New creates the admin handler. dc must be the swappable client so
-// qBittorrent connection settings apply live.
-func New(cm *config.Manager, st *store.Store, dc *downloader.Swappable, version string, logger *slog.Logger) *Handler {
+// download-client connection settings apply live; newClient builds a
+// client for a given config (injected so main owns backend selection).
+func New(cm *config.Manager, st *store.Store, dc *downloader.Swappable, newClient func(config.Config) downloader.Client, version string, logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{config: cm, store: st, dc: dc, logger: logger, version: version}
+	return &Handler{config: cm, store: st, dc: dc, newClient: newClient, logger: logger, version: version}
 }
 
 // Router returns the router to mount at /api.
@@ -57,6 +61,7 @@ func (h *Handler) Router() http.Handler {
 		r.Get("/config", h.getConfig)
 		r.Put("/config", h.putConfig)
 		r.Post("/config/test-qbittorrent", h.testQbittorrent)
+		r.Post("/config/test-deluge", h.testDeluge)
 		r.Post("/config/test-prowlarr", h.testProwlarr)
 		r.Post("/config/prowlarr-indexers", h.prowlarrIndexers)
 		r.Get("/status", h.status)
@@ -101,12 +106,22 @@ type configDTO struct {
 		ExternalURL   string `json:"external_url"`
 		AdminPassword string `json:"admin_password"`
 	} `json:"server"`
+	Downloader struct {
+		Type string `json:"type"`
+	} `json:"downloader"`
 	QBittorrent struct {
 		URL      string `json:"url"`
 		Username string `json:"username"`
 		Password string `json:"password"`
 		Category string `json:"category"`
 	} `json:"qbittorrent"`
+	Deluge struct {
+		Host     string `json:"host"`
+		Port     int    `json:"port"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Label    string `json:"label"`
+	} `json:"deluge"`
 	Prowlarr struct {
 		URL             string `json:"url"`
 		APIKey          string `json:"api_key"`
@@ -152,11 +167,19 @@ func toDTO(cfg config.Config) configDTO {
 	dto.Server.Listen = cfg.Server.Listen
 	dto.Server.ExternalURL = cfg.Server.ExternalURL
 	dto.Server.AdminPassword = passwordMask
+	dto.Downloader.Type = effectiveType(cfg)
 	dto.QBittorrent.URL = cfg.QBittorrent.URL
 	dto.QBittorrent.Username = cfg.QBittorrent.Username
 	dto.QBittorrent.Category = cfg.QBittorrent.Category
 	if cfg.QBittorrent.Password != "" {
 		dto.QBittorrent.Password = passwordMask
+	}
+	dto.Deluge.Host = cfg.Deluge.Host
+	dto.Deluge.Port = cfg.Deluge.Port
+	dto.Deluge.Username = cfg.Deluge.Username
+	dto.Deluge.Label = cfg.Deluge.Label
+	if cfg.Deluge.Password != "" {
+		dto.Deluge.Password = passwordMask
 	}
 	dto.Prowlarr.URL = cfg.Prowlarr.URL
 	if cfg.Prowlarr.APIKey != "" {
@@ -199,12 +222,34 @@ func (dto configDTO) apply(cfg config.Config) config.Config {
 	if pw := dto.Server.AdminPassword; pw != "" && pw != passwordMask {
 		cfg.Server.AdminPassword = pw
 	}
+	// An absent/empty type (older UI payloads) keeps the stored value.
+	if dto.Downloader.Type != "" {
+		cfg.Downloader.Type = dto.Downloader.Type
+	}
 	cfg.QBittorrent.URL = dto.QBittorrent.URL
 	cfg.QBittorrent.Username = dto.QBittorrent.Username
 	cfg.QBittorrent.Category = dto.QBittorrent.Category
 	// Empty or masked = keep the stored password.
 	if pw := dto.QBittorrent.Password; pw != "" && pw != passwordMask {
 		cfg.QBittorrent.Password = pw
+	}
+	if dto.Deluge.Host != "" {
+		cfg.Deluge.Host = dto.Deluge.Host
+	}
+	if dto.Deluge.Port > 0 {
+		cfg.Deluge.Port = dto.Deluge.Port
+	}
+	if dto.Deluge.Username != "" {
+		cfg.Deluge.Username = dto.Deluge.Username
+	}
+	// Empty keeps the stored label too, so payloads from UIs predating
+	// the Deluge section don't wipe it (and don't trigger a client swap).
+	if dto.Deluge.Label != "" {
+		cfg.Deluge.Label = dto.Deluge.Label
+	}
+	// Empty or masked = keep the stored password.
+	if pw := dto.Deluge.Password; pw != "" && pw != passwordMask {
+		cfg.Deluge.Password = pw
 	}
 	cfg.Prowlarr.URL = dto.Prowlarr.URL
 	// Empty or masked API key = keep the stored key.
@@ -267,10 +312,16 @@ func (h *Handler) putConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Hot-apply the qBittorrent client if its settings changed.
-	if next.QBittorrent != current.QBittorrent {
-		h.dc.Swap(qbit.New(next.QBittorrent.URL, next.QBittorrent.Username, next.QBittorrent.Password, next.QBittorrent.Category))
-		h.logger.Info("qbittorrent client reconfigured", "url", next.QBittorrent.URL)
+	// Hot-apply the download client if its settings changed. Backends
+	// holding a live connection (Deluge) are closed after the swap; a
+	// torrent library moved between backends stays in the old client —
+	// the syncer will flag it as gone.
+	if next.Downloader != current.Downloader || next.QBittorrent != current.QBittorrent || next.Deluge != current.Deluge {
+		old := h.dc.SwapAndReturn(h.newClient(next))
+		if closer, ok := old.(io.Closer); ok {
+			go closer.Close()
+		}
+		h.logger.Info("download client reconfigured", "type", effectiveType(next))
 	}
 
 	resp := map[string]any{"config": toDTO(next)}
@@ -305,6 +356,48 @@ func (h *Handler) testQbittorrent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": version})
 }
 
+// testDeluge probes a Deluge daemon with a version call so the UI can
+// validate the connection settings before saving.
+func (h *Handler) testDeluge(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Host     string `json:"host"`
+		Port     int    `json:"port"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if body.Password == passwordMask {
+		body.Password = h.config.Get().Deluge.Password
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	client := deluge.New(body.Host, body.Port, body.Username, body.Password, "")
+	defer func() {
+		if closer, ok := client.(io.Closer); ok {
+			closer.Close()
+		}
+	}()
+	version, err := client.Version(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": version})
+}
+
+// effectiveType normalizes the configured downloader type (empty means
+// qBittorrent, for configs predating the downloader section).
+func effectiveType(cfg config.Config) string {
+	if cfg.Downloader.Type == config.DownloaderDeluge {
+		return config.DownloaderDeluge
+	}
+	return config.DownloaderQBittorrent
+}
+
 func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	cfg := h.config.Get()
 
@@ -316,6 +409,10 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 		qbStatus = map[string]any{"connected": true, "version": version}
 	} else {
 		qbStatus["error"] = err.Error()
+	}
+	dlStatus := map[string]any{"type": effectiveType(cfg)}
+	for k, v := range qbStatus {
+		dlStatus[k] = v
 	}
 
 	counts := map[string]int{}
@@ -331,10 +428,13 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":        h.version,
-		"external_url":   cfg.Server.ExternalURL,
-		"manifest_url":   strings.TrimSuffix(cfg.Server.ExternalURL, "/") + "/stremio/manifest.json",
+		"version":      h.version,
+		"external_url": cfg.Server.ExternalURL,
+		"manifest_url": strings.TrimSuffix(cfg.Server.ExternalURL, "/") + "/stremio/manifest.json",
+		// "qbittorrent" is kept one release for older UIs; "downloader"
+		// is the same connection status plus the backend type.
 		"qbittorrent":    qbStatus,
+		"downloader":     dlStatus,
 		"torrents":       counts,
 		"total_uploaded": totalUploaded,
 	})

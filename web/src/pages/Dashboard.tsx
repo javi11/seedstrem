@@ -59,17 +59,21 @@ export function Dashboard() {
 
   // stremio:// deep link installs the addon directly in the Stremio app.
   const stremioDeepLink = status.manifest_url.replace(/^https?:\/\//, "stremio://");
+  // Older backends only report the qbittorrent key.
+  const downloaderStatus = status.downloader ?? status.qbittorrent;
 
   return (
     <div className="flex flex-col gap-4">
       <div className="stats stats-vertical shadow sm:stats-horizontal">
         <div className="stat">
-          <div className="stat-title">qBittorrent</div>
-          <div className={`stat-value text-lg ${status.qbittorrent.connected ? "text-success" : "text-error"}`}>
-            {status.qbittorrent.connected ? `Connected (${status.qbittorrent.version})` : "Disconnected"}
+          <div className="stat-title">
+            {status.downloader?.type === "deluge" ? "Deluge" : "qBittorrent"}
           </div>
-          {status.qbittorrent.error && (
-            <div className="stat-desc text-error">{status.qbittorrent.error}</div>
+          <div className={`stat-value text-lg ${downloaderStatus.connected ? "text-success" : "text-error"}`}>
+            {downloaderStatus.connected ? `Connected (${downloaderStatus.version})` : "Disconnected"}
+          </div>
+          {downloaderStatus.error && (
+            <div className="stat-desc text-error">{downloaderStatus.error}</div>
           )}
         </div>
         {Object.entries(STATUS_LABELS).map(([key, label]) => (
@@ -100,7 +104,7 @@ export function Dashboard() {
           <h2 className="card-title">Stremio addon</h2>
           <p className="text-sm opacity-70">
             Install this addon in Stremio, then search for movies or shows — seedstrem finds
-            torrents via Prowlarr and streams them through qBittorrent. Manifest URL:
+            torrents via Prowlarr and streams them through your download client. Manifest URL:
           </p>
           <div className="flex items-center gap-2">
             <input
