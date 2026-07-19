@@ -134,7 +134,8 @@ type configDTO struct {
 		Mappings []config.Mapping `json:"mappings"`
 	} `json:"paths"`
 	Storage struct {
-		DeleteFilesOnRemove bool `json:"delete_files_on_remove"`
+		Database            string `json:"database"`
+		DeleteFilesOnRemove bool   `json:"delete_files_on_remove"`
 	} `json:"storage"`
 	Stream struct {
 		WaitTimeoutSeconds int   `json:"wait_timeout_seconds"`
@@ -144,6 +145,12 @@ type configDTO struct {
 		SeedTimeHours               int `json:"seed_time_hours"`
 		MinProgressForCancelPercent int `json:"min_progress_for_cancel_percent"`
 	} `json:"cleanup"`
+	Seeding struct {
+		Full bool `json:"full"`
+	} `json:"seeding"`
+	Log struct {
+		Level string `json:"level"`
+	} `json:"log"`
 }
 
 func toDTO(cfg config.Config) configDTO {
@@ -182,11 +189,14 @@ func toDTO(cfg config.Config) configDTO {
 		dto.Meta.TMDbAPIKey = passwordMask
 	}
 	dto.Paths.Mappings = cfg.Paths.Mappings
+	dto.Storage.Database = cfg.Storage.Database
 	dto.Storage.DeleteFilesOnRemove = cfg.Storage.DeleteFilesOnRemove
 	dto.Stream.WaitTimeoutSeconds = int(cfg.Stream.WaitTimeout / time.Second)
 	dto.Stream.ReadChunk = cfg.Stream.ReadChunk
 	dto.Cleanup.SeedTimeHours = int(cfg.Cleanup.SeedTime / time.Hour)
 	dto.Cleanup.MinProgressForCancelPercent = int(cfg.Cleanup.MinProgressForCancel * 100)
+	dto.Seeding.Full = cfg.Seeding.Full
+	dto.Log.Level = cfg.Log.Level
 	return dto
 }
 
@@ -230,6 +240,11 @@ func (dto configDTO) apply(cfg config.Config) config.Config {
 		cfg.Meta.TMDbAPIKey = k
 	}
 	cfg.Paths.Mappings = dto.Paths.Mappings
+	// Empty = keep the stored path, so older clients that don't send the
+	// field can't blank it (validation rejects an empty database anyway).
+	if dto.Storage.Database != "" {
+		cfg.Storage.Database = dto.Storage.Database
+	}
 	cfg.Storage.DeleteFilesOnRemove = dto.Storage.DeleteFilesOnRemove
 	if dto.Stream.WaitTimeoutSeconds > 0 {
 		cfg.Stream.WaitTimeout = time.Duration(dto.Stream.WaitTimeoutSeconds) * time.Second
@@ -245,6 +260,11 @@ func (dto configDTO) apply(cfg config.Config) config.Config {
 	}
 	// Likewise 0 meaningfully disables the abandoned-download check.
 	cfg.Cleanup.MinProgressForCancel = float64(dto.Cleanup.MinProgressForCancelPercent) / 100
+	cfg.Seeding.Full = dto.Seeding.Full
+	// Empty = keep the stored level (older clients don't send the field).
+	if dto.Log.Level != "" {
+		cfg.Log.Level = dto.Log.Level
+	}
 	return cfg
 }
 
@@ -273,7 +293,13 @@ func (h *Handler) putConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{"config": toDTO(next)}
-	if next.Server.Listen != current.Server.Listen {
+	// These settings are read once at startup (listener, database handle,
+	// logger, Cinemeta/TMDb client), so changes only apply after a restart.
+	if next.Server.Listen != current.Server.Listen ||
+		next.Storage.Database != current.Storage.Database ||
+		next.Log.Level != current.Log.Level ||
+		next.Meta.CinemetaURL != current.Meta.CinemetaURL ||
+		next.Meta.TMDbAPIKey != current.Meta.TMDbAPIKey {
 		resp["restart_required"] = true
 	}
 	writeJSON(w, http.StatusOK, resp)

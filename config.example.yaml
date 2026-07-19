@@ -79,6 +79,14 @@ stream:
   # Max bytes waited-for/read per read cycle.
   read_chunk: 4194304
 
+cleanup:
+  # How long a completed torrent may seed before it is removed.
+  # 0 disables seed-time cleanup.
+  seed_time: 72h
+  # Download fraction (0..1) a torrent must reach to survive an
+  # abandoned/canceled playback session.
+  min_progress_for_cancel: 0.05
+
 seeding:
   # Download the whole torrent (played file first, the rest afterwards) so
   # a complete copy is available to seed — better for ratio on private
