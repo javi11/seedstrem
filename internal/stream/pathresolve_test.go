@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/javib/seedstrem/internal/config"
-	"github.com/javib/seedstrem/internal/qbit"
-	"github.com/javib/seedstrem/internal/qbit/fake"
+	"github.com/javib/seedstrem/internal/downloader"
+	"github.com/javib/seedstrem/internal/downloader/fake"
 )
 
 func TestRemap(t *testing.T) {
@@ -53,8 +53,8 @@ func TestFilePathMultiFileTorrent(t *testing.T) {
 
 	r, _ := newResolverEnv(t, []config.Mapping{{Remote: "/downloads", Local: local}})
 
-	info := qbit.TorrentInfo{Hash: testHash, SavePath: "/downloads"}
-	file := qbit.FileInfo{Index: 0, Name: "Movie/movie.mkv", Size: 1}
+	info := downloader.TorrentInfo{Hash: testHash, SavePath: "/downloads"}
+	file := downloader.FileInfo{Index: 0, Name: "Movie/movie.mkv", Size: 1}
 
 	got, err := r.FilePath(context.Background(), info, file)
 	if err != nil {
@@ -68,14 +68,15 @@ func TestFilePathMultiFileTorrent(t *testing.T) {
 func TestFilePathFindsIncompleteExtension(t *testing.T) {
 	// A still-downloading single-file torrent with the ".!qB" suffix.
 	local := t.TempDir()
-	target := filepath.Join(local, "movie.mkv"+incompleteExt)
+	target := filepath.Join(local, "movie.mkv.!qB")
 	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	r, _ := newResolverEnv(t, []config.Mapping{{Remote: "/downloads", Local: local}})
-	info := qbit.TorrentInfo{Hash: testHash, SavePath: "/downloads"}
-	file := qbit.FileInfo{Index: 0, Name: "movie.mkv", Size: 1}
+	r, f := newResolverEnv(t, []config.Mapping{{Remote: "/downloads", Local: local}})
+	f.SetHints(downloader.IncompleteHints{IncompleteExt: ".!qB"})
+	info := downloader.TorrentInfo{Hash: testHash, SavePath: "/downloads"}
+	file := downloader.FileInfo{Index: 0, Name: "movie.mkv", Size: 1}
 
 	got, err := r.FilePath(context.Background(), info, file)
 	if err != nil {
@@ -103,12 +104,12 @@ func TestFilePathFindsViaContentPath(t *testing.T) {
 	r, _ := newResolverEnv(t, []config.Mapping{{Remote: "/downloads", Local: local}})
 	// Single-file torrent: content_path IS the file. SavePath (final) has
 	// no file yet.
-	info := qbit.TorrentInfo{
+	info := downloader.TorrentInfo{
 		Hash:        testHash,
 		SavePath:    "/downloads",
 		ContentPath: "/downloads/incomplete/movie.mkv",
 	}
-	file := qbit.FileInfo{Index: 0, Name: "movie.mkv", Size: 1}
+	file := downloader.FileInfo{Index: 0, Name: "movie.mkv", Size: 1}
 
 	got, err := r.FilePath(context.Background(), info, file)
 	if err != nil {
@@ -129,8 +130,8 @@ func TestFilePathRejectsTraversal(t *testing.T) {
 	t.Cleanup(func() { os.Remove(outside) })
 
 	r, _ := newResolverEnv(t, []config.Mapping{{Remote: "/downloads", Local: local}})
-	info := qbit.TorrentInfo{Hash: testHash, SavePath: "/downloads"}
-	file := qbit.FileInfo{Index: 0, Name: "../secret.txt", Size: 6}
+	info := downloader.TorrentInfo{Hash: testHash, SavePath: "/downloads"}
+	file := downloader.FileInfo{Index: 0, Name: "../secret.txt", Size: 6}
 
 	_, err := r.FilePath(context.Background(), info, file)
 	if !errors.Is(err, ErrUnsafePath) {
@@ -145,8 +146,8 @@ func TestFilePathRejectsEscapeOutsideRoot(t *testing.T) {
 	r, _ := newResolverEnv(t, []config.Mapping{{Remote: "/downloads", Local: local}})
 	// SavePath points somewhere unmapped; the remap leaves it as-is, so
 	// it lands outside local and must be rejected.
-	info := qbit.TorrentInfo{Hash: testHash, SavePath: "/elsewhere"}
-	file := qbit.FileInfo{Index: 0, Name: "movie.mkv", Size: 1}
+	info := downloader.TorrentInfo{Hash: testHash, SavePath: "/elsewhere"}
+	file := downloader.FileInfo{Index: 0, Name: "movie.mkv", Size: 1}
 
 	// Out-of-root candidates are skipped, so nothing is served: FilePath
 	// returns an error and no path. (The specific sentinel is not part of
@@ -183,8 +184,8 @@ func TestWithinAnyRoot(t *testing.T) {
 
 func TestFilePathNotFound(t *testing.T) {
 	r, _ := newResolverEnv(t, []config.Mapping{{Remote: "/downloads", Local: t.TempDir()}})
-	info := qbit.TorrentInfo{Hash: testHash, SavePath: "/downloads"}
-	file := qbit.FileInfo{Index: 0, Name: "missing.mkv", Size: 1}
+	info := downloader.TorrentInfo{Hash: testHash, SavePath: "/downloads"}
+	file := downloader.FileInfo{Index: 0, Name: "missing.mkv", Size: 1}
 
 	_, err := r.FilePath(context.Background(), info, file)
 	if !errors.Is(err, os.ErrNotExist) {

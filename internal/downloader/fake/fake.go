@@ -1,7 +1,7 @@
-// Package fake provides an in-memory fake implementing qbit.Client
-// directly. Every consumer depends on the qbit.Client Go interface, not
-// the concrete qBittorrent WebUI transport, so faking at that boundary is
-// sufficient and far simpler than standing up an httptest WebUI server.
+// Package fake provides an in-memory fake implementing downloader.Client
+// directly. Every consumer depends on the downloader.Client Go interface,
+// not a concrete backend transport, so faking at that boundary is
+// sufficient and far simpler than standing up a fake WebUI/RPC server.
 package fake
 
 import (
@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/javib/seedstrem/internal/downloader"
 	"github.com/javib/seedstrem/internal/metainfo"
-	"github.com/javib/seedstrem/internal/qbit"
 )
 
 // File is one file of a fake torrent.
@@ -40,7 +40,7 @@ type Torrent struct {
 	Files       []File
 
 	PieceSize   int64
-	PieceStates []int // qbit.PieceState values
+	PieceStates []int // downloader.PieceState values
 
 	Category           string
 	Stopped            bool
@@ -48,28 +48,43 @@ type Torrent struct {
 	FirstLastPiecePrio bool
 }
 
-// Server is an in-memory fake qbit.Client. Tests construct one directly
-// and pass it wherever a qbit.Client is expected — no separate
-// adapter/URL is needed since it already satisfies the interface.
+// Server is an in-memory fake downloader.Client. Tests construct one
+// directly and pass it wherever a downloader.Client is expected — no
+// separate adapter/URL is needed since it already satisfies the
+// interface.
 type Server struct {
 	mu       sync.Mutex
 	torrents map[string]*Torrent
 	calls    []string
-	prefs    qbit.Prefs
+	hints    downloader.IncompleteHints
+	// prioritizeErr is returned by PrioritizePieces; defaults to
+	// downloader.ErrNotSupported like the qBittorrent backend.
+	prioritizeErr error
 }
 
-// SetPrefs sets the preferences returned by AppPreferences.
-func (s *Server) SetPrefs(p qbit.Prefs) {
+// SetHints sets the value returned by IncompleteFileHints.
+func (s *Server) SetHints(h downloader.IncompleteHints) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.prefs = p
+	s.hints = h
 }
 
-var _ qbit.Client = (*Server)(nil)
+// SetPrioritizeErr sets the error returned by PrioritizePieces (nil makes
+// the fake accept prioritization like a capable backend).
+func (s *Server) SetPrioritizeErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prioritizeErr = err
+}
+
+var _ downloader.Client = (*Server)(nil)
 
 // New creates an empty fake.
 func New() *Server {
-	return &Server{torrents: map[string]*Torrent{}}
+	return &Server{
+		torrents:      map[string]*Torrent{},
+		prioritizeErr: downloader.ErrNotSupported,
+	}
 }
 
 // Put inserts or replaces a torrent.
@@ -116,9 +131,9 @@ func (s *Server) record(format string, args ...any) {
 	s.calls = append(s.calls, fmt.Sprintf(format, args...))
 }
 
-// --- qbit.Client ---
+// --- downloader.Client ---
 
-func (s *Server) AddMagnet(_ context.Context, magnet string, opts qbit.AddOptions) error {
+func (s *Server) AddMagnet(_ context.Context, magnet string, opts downloader.AddOptions) error {
 	hash, name, err := metainfo.FromMagnet(magnet)
 	if err != nil {
 		return fmt.Errorf("fake: invalid magnet: %w", err)
@@ -129,9 +144,9 @@ func (s *Server) AddMagnet(_ context.Context, magnet string, opts qbit.AddOption
 	s.record("add magnet=%s category=%s stopped=%v seq=%v flp=%v",
 		hash, opts.Category, opts.Stopped, opts.SequentialDownload, opts.FirstLastPiecePrio)
 	if _, exists := s.torrents[hash]; !exists {
-		state := qbit.StateDownloading
+		state := downloader.StateDownloading
 		if opts.Stopped {
-			state = qbit.StatePaused
+			state = downloader.StatePaused
 		}
 		s.torrents[hash] = &Torrent{
 			Hash:               hash,
@@ -146,7 +161,7 @@ func (s *Server) AddMagnet(_ context.Context, magnet string, opts qbit.AddOption
 	return nil
 }
 
-func (s *Server) AddTorrentFile(_ context.Context, raw []byte, opts qbit.AddOptions) error {
+func (s *Server) AddTorrentFile(_ context.Context, raw []byte, opts downloader.AddOptions) error {
 	hash, name, _, err := metainfo.FromTorrent(raw)
 	if err != nil {
 		return fmt.Errorf("fake: invalid torrent file: %w", err)
@@ -157,9 +172,9 @@ func (s *Server) AddTorrentFile(_ context.Context, raw []byte, opts qbit.AddOpti
 	s.record("add torrentfile=%s category=%s stopped=%v seq=%v flp=%v",
 		hash, opts.Category, opts.Stopped, opts.SequentialDownload, opts.FirstLastPiecePrio)
 	if _, exists := s.torrents[hash]; !exists {
-		state := qbit.StateDownloading
+		state := downloader.StateDownloading
 		if opts.Stopped {
-			state = qbit.StatePaused
+			state = downloader.StatePaused
 		}
 		s.torrents[hash] = &Torrent{
 			Hash:               hash,
@@ -174,14 +189,14 @@ func (s *Server) AddTorrentFile(_ context.Context, raw []byte, opts qbit.AddOpti
 	return nil
 }
 
-func (s *Server) Torrents(_ context.Context, hashes []string) ([]qbit.TorrentInfo, error) {
+func (s *Server) Torrents(_ context.Context, hashes []string) ([]downloader.TorrentInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	want := map[string]bool{}
 	for _, h := range hashes {
 		want[strings.ToLower(h)] = true
 	}
-	out := make([]qbit.TorrentInfo, 0, len(hashes))
+	out := make([]downloader.TorrentInfo, 0, len(hashes))
 	for hash, t := range s.torrents {
 		if !want[hash] {
 			continue
@@ -191,18 +206,18 @@ func (s *Server) Torrents(_ context.Context, hashes []string) ([]qbit.TorrentInf
 	return out, nil
 }
 
-func (s *Server) Torrent(_ context.Context, hash string) (qbit.TorrentInfo, error) {
+func (s *Server) Torrent(_ context.Context, hash string) (downloader.TorrentInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.torrents[strings.ToLower(hash)]
 	if !ok {
-		return qbit.TorrentInfo{}, qbit.ErrTorrentNotFound
+		return downloader.TorrentInfo{}, downloader.ErrTorrentNotFound
 	}
 	return toTorrentInfo(t), nil
 }
 
-func toTorrentInfo(t *Torrent) qbit.TorrentInfo {
-	return qbit.TorrentInfo{
+func toTorrentInfo(t *Torrent) downloader.TorrentInfo {
+	return downloader.TorrentInfo{
 		Hash:        t.Hash,
 		Name:        t.Name,
 		State:       t.State,
@@ -220,45 +235,45 @@ func toTorrentInfo(t *Torrent) qbit.TorrentInfo {
 	}
 }
 
-func (s *Server) Files(_ context.Context, hash string) ([]qbit.FileInfo, error) {
+func (s *Server) Files(_ context.Context, hash string) ([]downloader.FileInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.torrents[strings.ToLower(hash)]
 	if !ok {
-		return nil, qbit.ErrTorrentNotFound
+		return nil, downloader.ErrTorrentNotFound
 	}
-	out := make([]qbit.FileInfo, len(t.Files))
+	out := make([]downloader.FileInfo, len(t.Files))
 	for i, f := range t.Files {
-		out[i] = qbit.FileInfo{Index: i, Name: f.Name, Size: f.Size, Progress: f.Progress, Priority: f.Priority}
+		out[i] = downloader.FileInfo{Index: i, Name: f.Name, Size: f.Size, Progress: f.Progress, Priority: f.Priority}
 	}
 	return out, nil
 }
 
-func (s *Server) Properties(_ context.Context, hash string) (qbit.Properties, error) {
+func (s *Server) Properties(_ context.Context, hash string) (downloader.Properties, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.torrents[strings.ToLower(hash)]
 	if !ok {
-		return qbit.Properties{}, qbit.ErrTorrentNotFound
+		return downloader.Properties{}, downloader.ErrTorrentNotFound
 	}
-	return qbit.Properties{PieceSize: t.PieceSize, SavePath: t.SavePath}, nil
+	return downloader.Properties{PieceSize: t.PieceSize, SavePath: t.SavePath}, nil
 }
 
-func (s *Server) PieceStates(_ context.Context, hash string) ([]qbit.PieceState, error) {
+func (s *Server) PieceStates(_ context.Context, hash string) ([]downloader.PieceState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.torrents[strings.ToLower(hash)]
 	if !ok {
-		return nil, qbit.ErrTorrentNotFound
+		return nil, downloader.ErrTorrentNotFound
 	}
-	out := make([]qbit.PieceState, len(t.PieceStates))
+	out := make([]downloader.PieceState, len(t.PieceStates))
 	for i, v := range t.PieceStates {
-		out[i] = qbit.PieceState(v)
+		out[i] = downloader.PieceState(v)
 	}
 	return out, nil
 }
 
-// Remove deletes a torrent entirely, as if qBittorrent forgot it.
+// Remove deletes a torrent entirely, as if the download client forgot it.
 func (s *Server) Remove(hash string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -270,7 +285,7 @@ func (s *Server) SetFilePriority(_ context.Context, hash string, indices []int, 
 	defer s.mu.Unlock()
 	t, ok := s.torrents[strings.ToLower(hash)]
 	if !ok {
-		return qbit.ErrTorrentNotFound
+		return downloader.ErrTorrentNotFound
 	}
 	s.record("filePrio hash=%s indices=%v priority=%d", hash, indices, priority)
 	for _, idx := range indices {
@@ -282,27 +297,27 @@ func (s *Server) SetFilePriority(_ context.Context, hash string, indices []int, 
 	return nil
 }
 
-func (s *Server) ToggleFirstLastPiecePrio(_ context.Context, hash string) error {
+func (s *Server) SetSequentialDownload(_ context.Context, hash string, on bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.torrents[strings.ToLower(hash)]
 	if !ok {
-		return qbit.ErrTorrentNotFound
+		return downloader.ErrTorrentNotFound
 	}
-	t.FirstLastPiecePrio = !t.FirstLastPiecePrio
-	s.record("toggleFirstLastPiecePrio hash=%s now=%v", hash, t.FirstLastPiecePrio)
+	t.SequentialDownload = on
+	s.record("setSequentialDownload hash=%s on=%v", hash, on)
 	return nil
 }
 
-func (s *Server) ToggleSequentialDownload(_ context.Context, hash string) error {
+func (s *Server) SetFirstLastPiecePrio(_ context.Context, hash string, on bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.torrents[strings.ToLower(hash)]
 	if !ok {
-		return qbit.ErrTorrentNotFound
+		return downloader.ErrTorrentNotFound
 	}
-	t.SequentialDownload = !t.SequentialDownload
-	s.record("toggleSequentialDownload hash=%s now=%v", hash, t.SequentialDownload)
+	t.FirstLastPiecePrio = on
+	s.record("setFirstLastPiecePrio hash=%s on=%v", hash, on)
 	return nil
 }
 
@@ -311,11 +326,11 @@ func (s *Server) Start(_ context.Context, hash string) error {
 	defer s.mu.Unlock()
 	t, ok := s.torrents[strings.ToLower(hash)]
 	if !ok {
-		return qbit.ErrTorrentNotFound
+		return downloader.ErrTorrentNotFound
 	}
 	s.record("start hash=%s", hash)
 	t.Stopped = false
-	t.State = qbit.StateDownloading
+	t.State = downloader.StateDownloading
 	return nil
 }
 
@@ -324,17 +339,24 @@ func (s *Server) Delete(_ context.Context, hash string, deleteFiles bool) error 
 	defer s.mu.Unlock()
 	key := strings.ToLower(hash)
 	if _, ok := s.torrents[key]; !ok {
-		return qbit.ErrTorrentNotFound
+		return downloader.ErrTorrentNotFound
 	}
 	s.record("delete hash=%s deleteFiles=%v", hash, deleteFiles)
 	delete(s.torrents, key)
 	return nil
 }
 
-func (s *Server) AppPreferences(context.Context) (qbit.Prefs, error) {
+func (s *Server) IncompleteFileHints(context.Context) (downloader.IncompleteHints, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.prefs, nil
+	return s.hints, nil
+}
+
+func (s *Server) PrioritizePieces(_ context.Context, hash string, first, last int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.record("prioritizePieces hash=%s first=%d last=%d", hash, first, last)
+	return s.prioritizeErr
 }
 
 func (s *Server) Version(context.Context) (string, error) {

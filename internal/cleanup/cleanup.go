@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/javib/seedstrem/internal/downloader"
 	"github.com/javib/seedstrem/internal/playsession"
-	"github.com/javib/seedstrem/internal/qbit"
 	"github.com/javib/seedstrem/internal/store"
 	"github.com/javib/seedstrem/internal/torrents"
 )
@@ -25,7 +25,7 @@ type Settings struct {
 // that have seeded past Settings.SeedTime.
 type Cleanup struct {
 	store    *store.Store
-	dc       qbit.Client
+	dc       downloader.Client
 	svc      *torrents.Service
 	sessions *playsession.Sessions
 	settings func() Settings
@@ -36,7 +36,7 @@ type Cleanup struct {
 // New creates a Cleanup. sessions is consulted before removing a
 // torrent so an actively-streamed torrent is never deleted out from
 // under a viewer just because it has seeded past its time limit.
-func New(st *store.Store, dc qbit.Client, svc *torrents.Service, sessions *playsession.Sessions, settings func() Settings, logger *slog.Logger, interval time.Duration) *Cleanup {
+func New(st *store.Store, dc downloader.Client, svc *torrents.Service, sessions *playsession.Sessions, settings func() Settings, logger *slog.Logger, interval time.Duration) *Cleanup {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -86,7 +86,7 @@ func (c *Cleanup) Sweep(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	live := make(map[string]qbit.TorrentInfo, len(dcTorrents))
+	live := make(map[string]downloader.TorrentInfo, len(dcTorrents))
 	for _, t := range dcTorrents {
 		live[strings.ToLower(t.Hash)] = t
 	}

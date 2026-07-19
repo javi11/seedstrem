@@ -17,6 +17,7 @@ import (
 	"github.com/javib/seedstrem/internal/admin"
 	"github.com/javib/seedstrem/internal/cleanup"
 	"github.com/javib/seedstrem/internal/config"
+	"github.com/javib/seedstrem/internal/downloader"
 	"github.com/javib/seedstrem/internal/meta"
 	"github.com/javib/seedstrem/internal/playsession"
 	"github.com/javib/seedstrem/internal/prowlarr"
@@ -83,7 +84,7 @@ func run() error {
 	defer db.Close()
 
 	cm := config.NewManager(cfg, *configPath)
-	dc := qbit.NewSwappable(qbit.New(cfg.QBittorrent.URL, cfg.QBittorrent.Username, cfg.QBittorrent.Password, cfg.QBittorrent.Category))
+	dc := downloader.NewSwappable(qbit.New(cfg.QBittorrent.URL, cfg.QBittorrent.Username, cfg.QBittorrent.Password, cfg.QBittorrent.Category))
 
 	torrentSvc := torrents.New(db, dc, func() torrents.Settings {
 		c := cm.Get()

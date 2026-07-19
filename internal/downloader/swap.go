@@ -1,4 +1,4 @@
-package qbit
+package downloader
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 )
 
 // Swappable is a Client whose backing client can be replaced at runtime
-// (when the admin UI changes qBittorrent connection settings).
+// (when the admin UI changes download-client connection settings).
 type Swappable struct {
 	current atomic.Pointer[Client]
 }
@@ -21,6 +21,12 @@ func NewSwappable(c Client) *Swappable {
 // Swap replaces the backing client.
 func (s *Swappable) Swap(c Client) {
 	s.current.Store(&c)
+}
+
+// SwapAndReturn replaces the backing client and returns the previous one,
+// so callers can close backends that hold connections (Deluge).
+func (s *Swappable) SwapAndReturn(c Client) Client {
+	return *s.current.Swap(&c)
 }
 
 func (s *Swappable) get() Client { return *s.current.Load() }
@@ -57,12 +63,12 @@ func (s *Swappable) SetFilePriority(ctx context.Context, hash string, indices []
 	return s.get().SetFilePriority(ctx, hash, indices, priority)
 }
 
-func (s *Swappable) ToggleFirstLastPiecePrio(ctx context.Context, hash string) error {
-	return s.get().ToggleFirstLastPiecePrio(ctx, hash)
+func (s *Swappable) SetSequentialDownload(ctx context.Context, hash string, on bool) error {
+	return s.get().SetSequentialDownload(ctx, hash, on)
 }
 
-func (s *Swappable) ToggleSequentialDownload(ctx context.Context, hash string) error {
-	return s.get().ToggleSequentialDownload(ctx, hash)
+func (s *Swappable) SetFirstLastPiecePrio(ctx context.Context, hash string, on bool) error {
+	return s.get().SetFirstLastPiecePrio(ctx, hash, on)
 }
 
 func (s *Swappable) Start(ctx context.Context, hash string) error {
@@ -73,8 +79,12 @@ func (s *Swappable) Delete(ctx context.Context, hash string, deleteFiles bool) e
 	return s.get().Delete(ctx, hash, deleteFiles)
 }
 
-func (s *Swappable) AppPreferences(ctx context.Context) (Prefs, error) {
-	return s.get().AppPreferences(ctx)
+func (s *Swappable) IncompleteFileHints(ctx context.Context) (IncompleteHints, error) {
+	return s.get().IncompleteFileHints(ctx)
+}
+
+func (s *Swappable) PrioritizePieces(ctx context.Context, hash string, first, last int) error {
+	return s.get().PrioritizePieces(ctx, hash, first, last)
 }
 
 func (s *Swappable) Version(ctx context.Context) (string, error) {

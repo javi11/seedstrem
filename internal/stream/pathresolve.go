@@ -9,23 +9,19 @@ import (
 	"strings"
 
 	"github.com/javib/seedstrem/internal/config"
-	"github.com/javib/seedstrem/internal/qbit"
+	"github.com/javib/seedstrem/internal/downloader"
 )
 
-// incompleteExt is appended by qBittorrent when "Append .!qB extension
-// to incomplete files" is enabled.
-const incompleteExt = ".!qB"
-
 // Resolver locates a torrent file on the local filesystem, translating
-// qBittorrent's view of paths through the configured mappings.
+// the download client's view of paths through the configured mappings.
 type Resolver struct {
-	dc       qbit.Client
+	dc       downloader.Client
 	mappings func() []config.Mapping
 }
 
 // NewResolver creates a Resolver. mappings is fetched per call so
 // config changes apply live.
-func NewResolver(dc qbit.Client, mappings func() []config.Mapping) *Resolver {
+func NewResolver(dc downloader.Client, mappings func() []config.Mapping) *Resolver {
 	return &Resolver{dc: dc, mappings: mappings}
 }
 
@@ -54,11 +50,12 @@ func Remap(mappings []config.Mapping, remotePath string) string {
 var ErrUnsafePath = errors.New("resolved path escapes configured mapping root")
 
 // FilePath returns the local path of the given file of a torrent,
-// probing completed and in-progress locations (qBittorrent keeps
-// still-downloading content under a temp/incomplete folder and/or with a
-// .!qB suffix). The returned path exists at the time of return and is
-// contained within a configured local mapping root.
-func (r *Resolver) FilePath(ctx context.Context, info qbit.TorrentInfo, file qbit.FileInfo) (string, error) {
+// probing completed and in-progress locations (some clients keep
+// still-downloading content under a temp/incomplete folder and/or with
+// an extension suffix, e.g. qBittorrent's .!qB). The returned path
+// exists at the time of return and is contained within a configured
+// local mapping root.
+func (r *Resolver) FilePath(ctx context.Context, info downloader.TorrentInfo, file downloader.FileInfo) (string, error) {
 	mappings := r.mappings()
 
 	// Reject traversal in the torrent-supplied file name outright; a
@@ -90,9 +87,14 @@ func (r *Resolver) FilePath(ctx context.Context, info qbit.TorrentInfo, file qbi
 		}
 	}
 
-	// Incomplete-downloads temp folder, if enabled.
-	if prefs, err := r.dc.AppPreferences(ctx); err == nil && prefs.TempPathEnabled && prefs.TempPath != "" {
-		add(filepath.Join(prefs.TempPath, file.Name))
+	// Incomplete-downloads temp folder and in-progress extension, per the
+	// backend's settings.
+	hints, err := r.dc.IncompleteFileHints(ctx)
+	if err != nil {
+		hints = downloader.IncompleteHints{}
+	}
+	if hints.TempDir != "" {
+		add(filepath.Join(hints.TempDir, file.Name))
 	}
 
 	roots := mappingRoots(mappings)
@@ -102,7 +104,11 @@ func (r *Resolver) FilePath(ctx context.Context, info qbit.TorrentInfo, file qbi
 			// a traversal can never be served even if it exists on disk.
 			continue
 		}
-		for _, p := range []string{c, c + incompleteExt} {
+		probes := []string{c}
+		if hints.IncompleteExt != "" {
+			probes = append(probes, c+hints.IncompleteExt)
+		}
+		for _, p := range probes {
 			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
 				return p, nil
 			}

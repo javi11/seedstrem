@@ -9,20 +9,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/javib/seedstrem/internal/qbit"
+	"github.com/javib/seedstrem/internal/downloader"
 	"github.com/javib/seedstrem/internal/store"
 )
 
 // Syncer periodically reconciles store state against qBittorrent.
 type Syncer struct {
 	store    *store.Store
-	dc       qbit.Client
+	dc       downloader.Client
 	logger   *slog.Logger
 	interval time.Duration
 }
 
 // New creates a Syncer.
-func New(st *store.Store, dc qbit.Client, logger *slog.Logger, interval time.Duration) *Syncer {
+func New(st *store.Store, dc downloader.Client, logger *slog.Logger, interval time.Duration) *Syncer {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -69,7 +69,7 @@ func (s *Syncer) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	live := make(map[string]qbit.TorrentInfo, len(dcTorrents))
+	live := make(map[string]downloader.TorrentInfo, len(dcTorrents))
 	for _, t := range dcTorrents {
 		live[strings.ToLower(t.Hash)] = t
 	}

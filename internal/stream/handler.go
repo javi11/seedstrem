@@ -12,8 +12,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/javib/seedstrem/internal/downloader"
 	"github.com/javib/seedstrem/internal/playsession"
-	"github.com/javib/seedstrem/internal/qbit"
 	"github.com/javib/seedstrem/internal/store"
 	"github.com/javib/seedstrem/internal/torrents"
 )
@@ -32,7 +32,7 @@ type Settings struct {
 // qBittorrent may still be downloading.
 type Handler struct {
 	store    *store.Store
-	dc       qbit.Client
+	dc       downloader.Client
 	svc      *torrents.Service
 	resolver *Resolver
 	avail    *Availability
@@ -42,7 +42,7 @@ type Handler struct {
 }
 
 // NewHandler creates the streaming handler.
-func NewHandler(st *store.Store, dc qbit.Client, svc *torrents.Service, resolver *Resolver, avail *Availability, sessions *playsession.Sessions, settings func() Settings, logger *slog.Logger) *Handler {
+func NewHandler(st *store.Store, dc downloader.Client, svc *torrents.Service, resolver *Resolver, avail *Availability, sessions *playsession.Sessions, settings func() Settings, logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -104,7 +104,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, "qbittorrent files", err)
 		return
 	}
-	var file qbit.FileInfo
+	var file downloader.FileInfo
 	found := false
 	for _, f := range files {
 		if f.Index == link.FileIndex {
@@ -276,7 +276,7 @@ func (h *Handler) waitStreamReady(ctx context.Context, hash string, headFirst, h
 // timeout. qBittorrent creates the file shortly after a torrent starts;
 // until then FilePath returns not-found. Torrent info is re-fetched each
 // poll so a content-path change (temp → final location) is picked up.
-func (h *Handler) waitForFile(ctx context.Context, hash string, file qbit.FileInfo, timeout time.Duration) (string, error) {
+func (h *Handler) waitForFile(ctx context.Context, hash string, file downloader.FileInfo, timeout time.Duration) (string, error) {
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
@@ -338,7 +338,7 @@ func (h *Handler) heartbeat(ctx context.Context, stop <-chan struct{}, hash stri
 				}
 			}
 			sum, sumErr := h.avail.Summary(ctx, hash, headFirst, headLast)
-			haveHead := sumErr == nil && sum.HeadState == qbit.PieceHave
+			haveHead := sumErr == nil && sum.HeadState == downloader.PieceHave
 			h.logger.Debug("stream: download heartbeat",
 				"hash", hash, "progress", progress, "fileProgress", fileProgress,
 				"headPieces", [2]int{headFirst, headLast}, "headOnDisk", haveHead,
@@ -361,12 +361,12 @@ func (h *Handler) heartbeat(ctx context.Context, stop <-chan struct{}, hash stri
 	}
 }
 
-// pieceStateName renders a qbit.PieceState for logs.
-func pieceStateName(s qbit.PieceState) string {
+// pieceStateName renders a downloader.PieceState for logs.
+func pieceStateName(s downloader.PieceState) string {
 	switch s {
-	case qbit.PieceHave:
+	case downloader.PieceHave:
 		return "have"
-	case qbit.PieceDownloading:
+	case downloader.PieceDownloading:
 		return "downloading"
 	default:
 		return "missing"

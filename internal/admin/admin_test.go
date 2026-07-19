@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/javib/seedstrem/internal/config"
-	"github.com/javib/seedstrem/internal/qbit"
-	"github.com/javib/seedstrem/internal/qbit/fake"
+	"github.com/javib/seedstrem/internal/downloader"
+	"github.com/javib/seedstrem/internal/downloader/fake"
 	"github.com/javib/seedstrem/internal/store"
 )
 
@@ -41,7 +41,7 @@ func newEnv(t *testing.T) *env {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	dc := qbit.NewSwappable(f)
+	dc := downloader.NewSwappable(f)
 	h := New(cm, st, dc, "test", nil)
 	return &env{handler: h.Router(), config: cm, fake: f, t: t}
 }

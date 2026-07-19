@@ -6,14 +6,14 @@ package stream
 import (
 	"sort"
 
-	"github.com/javib/seedstrem/internal/qbit"
+	"github.com/javib/seedstrem/internal/downloader"
 )
 
 // FileOffset returns the absolute byte offset of the file with the
 // given index inside the torrent's piece space. Piece space covers ALL
 // files (selected or not) in torrent order.
-func FileOffset(files []qbit.FileInfo, index int) int64 {
-	sorted := make([]qbit.FileInfo, len(files))
+func FileOffset(files []downloader.FileInfo, index int) int64 {
+	sorted := make([]downloader.FileInfo, len(files))
 	copy(sorted, files)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Index < sorted[j].Index })
 

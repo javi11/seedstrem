@@ -8,6 +8,8 @@ import (
 
 	qbt "github.com/autobrr/go-qbittorrent"
 	pkgerrors "github.com/pkg/errors"
+
+	"github.com/javib/seedstrem/internal/downloader"
 )
 
 func TestIsNotFound(t *testing.T) {
@@ -44,8 +46,8 @@ func TestConvertTorrent(t *testing.T) {
 	if info.Hash != "abc123" || info.Name != "Movie" {
 		t.Errorf("basic fields lost: %+v", info)
 	}
-	if info.State != StateDownloading {
-		t.Errorf("state = %q, want %q", info.State, StateDownloading)
+	if info.State != downloader.StateDownloading {
+		t.Errorf("state = %q, want %q", info.State, downloader.StateDownloading)
 	}
 	if info.Progress != 0.42 || info.Size != 1000 || info.DlSpeed != 500 || info.NumSeeds != 7 || info.SavePath != "/downloads" {
 		t.Errorf("fields lost: %+v", info)
@@ -60,28 +62,28 @@ func TestNormalizeState(t *testing.T) {
 		raw  string
 		want string
 	}{
-		{"error", StateError},
-		{"missingFiles", StateError},
-		{"downloading", StateDownloading},
-		{"forcedDL", StateDownloading},
-		{"metaDL", StateDownloading},
-		{"stalledDL", StateDownloading},
-		{"uploading", StateSeeding},
-		{"stalledUP", StateSeeding},
-		{"forcedUP", StateSeeding},
-		{"pausedDL", StatePaused},
-		{"pausedUP", StatePaused},
-		{"stoppedDL", StatePaused},
-		{"stoppedUP", StatePaused},
-		{"queuedDL", StateQueued},
-		{"queuedUP", StateQueued},
-		{"checkingDL", StateChecking},
-		{"checkingUP", StateChecking},
-		{"checkingResumeData", StateChecking},
-		{"allocating", StateAllocating},
-		{"moving", StateMoving},
-		{"unknown", StateDownloading},
-		{"something-new", StateDownloading},
+		{"error", downloader.StateError},
+		{"missingFiles", downloader.StateError},
+		{"downloading", downloader.StateDownloading},
+		{"forcedDL", downloader.StateDownloading},
+		{"metaDL", downloader.StateDownloading},
+		{"stalledDL", downloader.StateDownloading},
+		{"uploading", downloader.StateSeeding},
+		{"stalledUP", downloader.StateSeeding},
+		{"forcedUP", downloader.StateSeeding},
+		{"pausedDL", downloader.StatePaused},
+		{"pausedUP", downloader.StatePaused},
+		{"stoppedDL", downloader.StatePaused},
+		{"stoppedUP", downloader.StatePaused},
+		{"queuedDL", downloader.StateQueued},
+		{"queuedUP", downloader.StateQueued},
+		{"checkingDL", downloader.StateChecking},
+		{"checkingUP", downloader.StateChecking},
+		{"checkingResumeData", downloader.StateChecking},
+		{"allocating", downloader.StateAllocating},
+		{"moving", downloader.StateMoving},
+		{"unknown", downloader.StateDownloading},
+		{"something-new", downloader.StateDownloading},
 	}
 	for _, tt := range tests {
 		t.Run(tt.raw, func(t *testing.T) {
@@ -96,7 +98,7 @@ func TestAddOptionsMap(t *testing.T) {
 	c := &client{category: "default-cat"}
 
 	// Client's configured category is used when opts.Category is empty.
-	m := c.addOptionsMap(AddOptions{Stopped: true, SequentialDownload: true, FirstLastPiecePrio: true})
+	m := c.addOptionsMap(downloader.AddOptions{Stopped: true, SequentialDownload: true, FirstLastPiecePrio: true})
 	if m["category"] != "default-cat" {
 		t.Errorf("category = %q, want default-cat", m["category"])
 	}
@@ -108,7 +110,7 @@ func TestAddOptionsMap(t *testing.T) {
 	}
 
 	// Explicit opts.Category overrides the client default.
-	m = c.addOptionsMap(AddOptions{Category: "explicit"})
+	m = c.addOptionsMap(downloader.AddOptions{Category: "explicit"})
 	if m["category"] != "explicit" {
 		t.Errorf("category = %q, want explicit", m["category"])
 	}

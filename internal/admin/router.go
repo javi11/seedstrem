@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/javib/seedstrem/internal/config"
+	"github.com/javib/seedstrem/internal/downloader"
 	"github.com/javib/seedstrem/internal/prowlarr"
 	"github.com/javib/seedstrem/internal/qbit"
 	"github.com/javib/seedstrem/internal/store"
@@ -26,14 +27,14 @@ const passwordMask = "••••••••"
 type Handler struct {
 	config  *config.Manager
 	store   *store.Store
-	dc      *qbit.Swappable
+	dc      *downloader.Swappable
 	logger  *slog.Logger
 	version string
 }
 
 // New creates the admin handler. dc must be the swappable client so
 // qBittorrent connection settings apply live.
-func New(cm *config.Manager, st *store.Store, dc *qbit.Swappable, version string, logger *slog.Logger) *Handler {
+func New(cm *config.Manager, st *store.Store, dc *downloader.Swappable, version string, logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -341,8 +342,8 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 
 // liveByHash fetches live qBittorrent state for exactly the hashes
 // seedstrem already tracks in the store.
-func (h *Handler) liveByHash(ctx context.Context, stored []store.Torrent) map[string]qbit.TorrentInfo {
-	live := map[string]qbit.TorrentInfo{}
+func (h *Handler) liveByHash(ctx context.Context, stored []store.Torrent) map[string]downloader.TorrentInfo {
+	live := map[string]downloader.TorrentInfo{}
 	if len(stored) == 0 {
 		return live
 	}
