@@ -83,9 +83,13 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A serve that only delivered the "still downloading" placeholder is
+	// not a playback session the viewer abandoned: they were explicitly
+	// told to come back later, so the torrent must survive them leaving.
+	servedPlaceholder := false
 	endSession := h.sessions.Begin(tor.Hash)
 	defer func() {
-		if endSession() == 0 {
+		if endSession() == 0 && !servedPlaceholder {
 			go h.checkAbandoned(tor)
 		}
 	}()
@@ -157,6 +161,28 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		chunk = 4 << 20
 	}
 
+	// Playability gate: a player needs the file's head (container header)
+	// and tail (MKV cues/seek index) before it can start at all. Give
+	// them a short grace to arrive; when they don't — typically a
+	// super-seeding initial seeder handing out pieces in its own order,
+	// which no client-side flag can override — serve the bundled
+	// "still downloading, come back later" clip instead of leaving the
+	// player spinning until it times out.
+	headFirst, headLast := PiecesForRange(fileOffset, props.PieceSize, 0, 0)
+	tailFirst, tailLast := PiecesForRange(fileOffset, props.PieceSize, file.Size-1, file.Size-1)
+	grace := readyGrace
+	if r.Method == http.MethodHead {
+		grace = 0 // answer probes instantly with the current state
+	}
+	if !h.waitStreamReady(ctx, tor.Hash, headFirst, headLast, tailFirst, tailLast, grace) {
+		servedPlaceholder = true
+		h.logger.Info("stream: head/tail pieces not available, serving downloading placeholder",
+			"hash", tor.Hash, "progress", file.Progress,
+			"headPieces", [2]int{headFirst, headLast}, "tailPieces", [2]int{tailFirst, tailLast})
+		servePlaceholder(w, r, file.Progress)
+		return
+	}
+
 	// Wait only for qBittorrent to create the file on disk (bounded), then
 	// hand off to ServeContent immediately: headers go out right away and
 	// partialReader blocks per-read as pieces arrive, so the player shows
@@ -205,7 +231,6 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	// is on disk yet, so we can see whether the torrent is actually pulling
 	// bytes during a first-play stall or sitting idle. Stops when the serve
 	// returns (stopBeat) or the client disconnects (ctx).
-	headFirst, headLast := PiecesForRange(fileOffset, props.PieceSize, 0, 0)
 	stopBeat := make(chan struct{})
 	go h.heartbeat(ctx, stopBeat, tor.Hash, file.Index, headFirst, headLast)
 
@@ -218,6 +243,33 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	h.logger.Debug("stream: serve finished",
 		"hash", tor.Hash, "bytesDelivered", pr.delivered, "elapsed", time.Since(serveStart).Round(time.Millisecond),
 		"ctxErr", ctx.Err())
+}
+
+// readyGrace is how long a play request may wait for the file's head
+// and tail pieces before the "still downloading" placeholder is served
+// instead. Long enough for a healthy sequential swarm to deliver both
+// (first/last-piece priority makes them the first requests), short
+// enough that the viewer sees the placeholder before the player's own
+// request timeout turns the wait into a hard error.
+const readyGrace = 12 * time.Second
+
+// waitStreamReady reports whether the file's head and tail pieces are
+// on disk, waiting up to grace for them to arrive (grace 0 = check the
+// current state only).
+func (h *Handler) waitStreamReady(ctx context.Context, hash string, headFirst, headLast, tailFirst, tailLast int, grace time.Duration) bool {
+	if grace <= 0 {
+		haveHead, _ := h.avail.HaveRange(ctx, hash, headFirst, headLast)
+		if !haveHead {
+			return false
+		}
+		haveTail, _ := h.avail.HaveRange(ctx, hash, tailFirst, tailLast)
+		return haveTail
+	}
+	deadline := time.Now().Add(grace)
+	if err := h.avail.WaitForRange(ctx, hash, headFirst, headLast, grace); err != nil {
+		return false
+	}
+	return h.avail.WaitForRange(ctx, hash, tailFirst, tailLast, time.Until(deadline)) == nil
 }
 
 // waitForFile polls for the torrent's file to appear on disk, up to

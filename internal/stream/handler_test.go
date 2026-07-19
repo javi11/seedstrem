@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -123,8 +124,9 @@ func TestServeRangeOnCompletedFile(t *testing.T) {
 }
 
 func TestServeRangeOnPartialFileWithAvailablePieces(t *testing.T) {
-	// Pieces 0 and 1 downloaded; request stays inside them.
-	e := newStreamEnv(t, []int{2, 2, 0, 0}, 0.5)
+	// Head and tail downloaded (playability gate passes); request stays
+	// inside the available head pieces.
+	e := newStreamEnv(t, []int{2, 2, 0, 2}, 0.5)
 
 	w := e.get(t, "bytes=0-2047")
 	if w.Code != http.StatusPartialContent {
@@ -170,12 +172,10 @@ func TestServeWaitsForPiecesArrivingMidRequest(t *testing.T) {
 	}
 }
 
-func TestServePiecesNeverArriveBuffersThenTruncates(t *testing.T) {
-	// The file exists on disk but no pieces are marked available. The
-	// handler now writes headers immediately (so the player buffers rather
-	// than seeing a hard 503) and the body blocks on the missing pieces;
-	// when they never arrive, the read times out and the body is
-	// truncated (well short of the full file).
+func TestServePiecesNeverArriveServesPlaceholder(t *testing.T) {
+	// No pieces ever arrive: the playability gate (head+tail) times out
+	// and the bundled "still downloading" clip is served instead of
+	// leaving the player buffering until it errors out.
 	e := newStreamEnv(t, []int{0, 0, 0, 0}, 0)
 
 	now := time.Unix(1000, 0)
@@ -187,17 +187,57 @@ func TestServePiecesNeverArriveBuffersThenTruncates(t *testing.T) {
 
 	w := e.get(t, "")
 	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200 (headers sent, then buffering)", w.Code)
+		t.Fatalf("status = %d; want 200 (placeholder)", w.Code)
 	}
-	if int64(w.Body.Len()) >= fileSize {
-		t.Errorf("expected a truncated body when pieces never arrive, got %d bytes", w.Body.Len())
+	if got := w.Header().Get("Content-Type"); got != "video/mp4" {
+		t.Errorf("content type = %q, want video/mp4", got)
+	}
+	if want := placeholderFor(0); !bytes.Equal(w.Body.Bytes(), want) {
+		t.Errorf("body = %d bytes, want the %d-byte 0%% downloading placeholder", w.Body.Len(), len(want))
+	}
+}
+
+func TestServeTailMissingServesPlaceholder(t *testing.T) {
+	// Head available but the tail (MKV cues) never arrives — the
+	// super-seeding scenario. The placeholder must be served rather than
+	// a stream the player cannot start.
+	e := newStreamEnv(t, []int{2, 2, 2, 0}, 0.75)
+
+	now := time.Unix(1000, 0)
+	e.avail.now = func() time.Time { return now }
+	e.avail.sleep = func(_ context.Context, d time.Duration) error {
+		now = now.Add(d)
+		return nil
+	}
+
+	w := e.get(t, "")
+	if want := placeholderFor(0.75); !bytes.Equal(w.Body.Bytes(), want) {
+		t.Errorf("body = %d bytes, want the 70%% downloading placeholder", w.Body.Len())
+	}
+}
+
+func TestPlaceholderForBuckets(t *testing.T) {
+	cases := []struct {
+		progress float64
+		pct      int
+	}{
+		{-0.1, 0}, {0, 0}, {0.05, 0}, {0.1, 10}, {0.29, 20}, {0.75, 70}, {0.99, 90}, {1.5, 90},
+	}
+	for _, tc := range cases {
+		want, err := placeholderFS.ReadFile(fmt.Sprintf("assets/downloading_%d.mp4", tc.pct))
+		if err != nil {
+			t.Fatalf("bucket %d missing from embed: %v", tc.pct, err)
+		}
+		if got := placeholderFor(tc.progress); !bytes.Equal(got, want) {
+			t.Errorf("placeholderFor(%v) picked wrong bucket, want %d%%", tc.progress, tc.pct)
+		}
 	}
 }
 
 func TestServeSeekAheadWaitsOnlyForRequestedPieces(t *testing.T) {
-	// Last piece available, everything before missing: a request for the
-	// file tail must succeed without waiting for earlier pieces.
-	e := newStreamEnv(t, []int{0, 0, 0, 2}, 0.25)
+	// Head and tail available (gate passes), middle missing: a request
+	// for the file tail must succeed without waiting for middle pieces.
+	e := newStreamEnv(t, []int{2, 0, 0, 2}, 0.5)
 
 	w := e.get(t, "bytes=3072-4095")
 	if w.Code != http.StatusPartialContent {
@@ -209,7 +249,7 @@ func TestServeSeekAheadWaitsOnlyForRequestedPieces(t *testing.T) {
 }
 
 func TestServeSuffixRange(t *testing.T) {
-	e := newStreamEnv(t, []int{0, 0, 0, 2}, 0.25)
+	e := newStreamEnv(t, []int{2, 0, 0, 2}, 0.5)
 
 	w := e.get(t, "bytes=-1024")
 	if w.Code != http.StatusPartialContent {
