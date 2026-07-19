@@ -21,6 +21,7 @@ type partialReader struct {
 
 	size       int64 // final size of the file
 	offset     int64
+	delivered  int64 // total bytes read out (offset moves on Seek, this doesn't)
 	fileOffset int64 // absolute offset of this file in torrent piece space
 	pieceSize  int64
 	hash       string
@@ -80,6 +81,7 @@ func (pr *partialReader) Read(p []byte) (int, error) {
 		}
 	}
 	pr.offset += int64(read)
+	pr.delivered += int64(read)
 	if err == io.EOF && read > 0 {
 		err = nil // partial tail read of a still-growing file
 	}
