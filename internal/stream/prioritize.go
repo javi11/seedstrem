@@ -90,15 +90,17 @@ func (p *prioritizer) request(ctx context.Context, hash string, first, last int)
 }
 
 // readaheadPieces is how many pieces past the requested range get
-// prioritized along with it (~8 MiB), so playback keeps flowing while
-// the next deadline batch is requested.
+// prioritized along with it (~32 MiB, at least 8 pieces), so a seek
+// lands with enough deadline-fetched runway that playback keeps flowing
+// while the next hint batch is requested. Deadlines are staggered
+// plugin-side, so a wide window still delivers the awaited piece first.
 func readaheadPieces(pieceSize int64) int {
 	if pieceSize <= 0 {
-		return 4
+		return 8
 	}
-	n := int((8 << 20) / pieceSize)
-	if n < 4 {
-		n = 4
+	n := int((32 << 20) / pieceSize)
+	if n < 8 {
+		n = 8
 	}
 	return n
 }

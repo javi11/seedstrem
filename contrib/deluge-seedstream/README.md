@@ -15,12 +15,23 @@ seek prioritization is skipped.
 
 | Method | Purpose |
 | --- | --- |
-| `seedstream.api_version()` | returns `1`; used for detection |
+| `seedstream.api_version()` | returns `2`; used for detection |
 | `seedstream.prioritize_range(torrent_id, first, last, deadline_ms=3000, step_ms=50)` | staggered `set_piece_deadline` on pieces `[first, last]` (clamped) |
-| `seedstream.clear_range(torrent_id, first, last)` | `reset_piece_deadline` on the range |
+| `seedstream.clear_range(torrent_id, first, last)` | `reset_piece_deadline` on the range, ends focus mode |
 
 Methods never raise across RPC; failures return `False` and are logged
 by the daemon.
+
+### Focus mode (api_version 2)
+
+When `prioritize_range` targets a window starting more than 16 pieces
+ahead of the sequential frontier — a player seek, not a playback stall —
+the plugin temporarily unsets the torrent's `sequential_download` flag
+so the deadline window gets the swarm's full bandwidth instead of
+competing with the sequential flood's inflight backlog. Every
+`prioritize_range` call re-arms a 15s timer; sequential download is
+restored when the timer fires (playback stopped blocking) or on
+`clear_range`/plugin disable.
 
 ## Download a prebuilt egg
 

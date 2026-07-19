@@ -27,6 +27,16 @@ const (
 	// blocking seek gets to make into a silent no-op, so enabling the
 	// plugin must be noticed while such a wait is still running.
 	pluginProbeNegTTL = 10 * time.Second
+
+	// prioritizeDeadlineMS is the deadline requested for the first piece
+	// of a prioritized window, with prioritizeStepMS added per subsequent
+	// piece so they arrive in playback order. Tighter than the plugin's
+	// 3s default: a seek window must cut ahead of the sequential flood's
+	// inflight backlog, and libtorrent orders its time-critical queue by
+	// deadline. Accepted by plugin api_version >= 1 (extra positional
+	// args map onto the exported method's defaults).
+	prioritizeDeadlineMS = 500
+	prioritizeStepMS     = 50
 )
 
 // pluginAvailable reports whether the Seedstream plugin is enabled and
@@ -102,7 +112,7 @@ func (c *client) PrioritizePieces(ctx context.Context, hash string, first, last 
 		if !c.pluginAvailable(ctx) {
 			return downloader.ErrNotSupported
 		}
-		args := rencode.NewList(strings.ToLower(hash), first, last)
+		args := rencode.NewList(strings.ToLower(hash), first, last, prioritizeDeadlineMS, prioritizeStepMS)
 		if _, err := c.rpc.RPC(ctx, "seedstream.prioritize_range", args, rencode.Dictionary{}); err != nil {
 			if errors.As(err, new(delugerpc.RPCError)) {
 				// The daemon answered but the call failed — most likely

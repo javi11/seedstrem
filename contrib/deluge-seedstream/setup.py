@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 __plugin_name__ = 'Seedstream'
 __author__ = 'seedstrem'
-__version__ = '1.0'
+__version__ = '1.1'
 __url__ = 'https://github.com/javib/seedstrem'
 __license__ = 'GPLv3'
 __description__ = 'Piece-deadline streaming primitives for seedstrem (fast seeking).'

@@ -16,16 +16,18 @@ import (
 // pluginAPI extends fakeAPI with scriptable RPC responses.
 type pluginAPI struct {
 	*fakeAPI
-	apiVersion    int
-	prioritizeErr error
+	apiVersion     int
+	prioritizeErr  error
+	prioritizeArgs []any // args of the last prioritize_range call
 }
 
-func (p *pluginAPI) RPC(_ context.Context, method string, _ rencode.List, _ rencode.Dictionary) (rencode.List, error) {
+func (p *pluginAPI) RPC(_ context.Context, method string, args rencode.List, _ rencode.Dictionary) (rencode.List, error) {
 	p.record("rpc %s", method)
 	switch method {
 	case "seedstream.api_version":
 		return rencode.NewList(int64(p.apiVersion)), nil
 	case "seedstream.prioritize_range":
+		p.prioritizeArgs = args.Values()
 		if p.prioritizeErr != nil {
 			return rencode.List{}, p.prioritizeErr
 		}
@@ -79,6 +81,34 @@ func TestPrioritizePiecesWithoutPlugin(t *testing.T) {
 	if n := countRPC(p.fakeAPI, "prioritize_range"); n != 1 {
 		t.Errorf("prioritize_range called %d times, want 1", n)
 	}
+}
+
+func TestPrioritizePiecesPassesDeadlineParams(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	p := &pluginAPI{fakeAPI: newFakeAPI(), apiVersion: 1}
+	p.plugins = []string{"Seedstream"}
+	c := newPluginClient(p, &now)
+
+	if err := c.PrioritizePieces(context.Background(), "ABC123", 10, 20); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(p.prioritizeArgs); n != 5 {
+		t.Fatalf("prioritize_range got %d args (%v), want 5 (hash, first, last, deadline_ms, step_ms)", n, p.prioritizeArgs)
+	}
+	if got := p.prioritizeArgs[0]; got != "abc123" {
+		t.Errorf("hash arg = %v, want lowercased abc123", got)
+	}
+	assertArg := func(i, want int) {
+		t.Helper()
+		got, err := toInt(p.prioritizeArgs[i])
+		if err != nil || got != want {
+			t.Errorf("arg[%d] = %v (%v), want %d", i, p.prioritizeArgs[i], err, want)
+		}
+	}
+	assertArg(1, 10)
+	assertArg(2, 20)
+	assertArg(3, prioritizeDeadlineMS)
+	assertArg(4, prioritizeStepMS)
 }
 
 func TestPrioritizePiecesNegativeProbeExpiresSooner(t *testing.T) {

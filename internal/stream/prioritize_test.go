@@ -114,16 +114,16 @@ func TestPrioritizerSwallowsOtherErrors(t *testing.T) {
 }
 
 func TestReadaheadPieces(t *testing.T) {
-	if got := readaheadPieces(2 << 20); got != 4 {
-		t.Errorf("2MiB pieces → %d, want 4 (8MiB window)", got)
+	if got := readaheadPieces(2 << 20); got != 16 {
+		t.Errorf("2MiB pieces → %d, want 16 (32MiB window)", got)
 	}
-	if got := readaheadPieces(16 << 20); got != 4 {
-		t.Errorf("16MiB pieces → %d, want 4 (floor)", got)
+	if got := readaheadPieces(16 << 20); got != 8 {
+		t.Errorf("16MiB pieces → %d, want 8 (floor)", got)
 	}
-	if got := readaheadPieces(1 << 20); got != 8 {
-		t.Errorf("1MiB pieces → %d, want 8", got)
+	if got := readaheadPieces(1 << 20); got != 32 {
+		t.Errorf("1MiB pieces → %d, want 32", got)
 	}
-	if got := readaheadPieces(0); got != 4 {
-		t.Errorf("unknown piece size → %d, want 4", got)
+	if got := readaheadPieces(0); got != 8 {
+		t.Errorf("unknown piece size → %d, want 8", got)
 	}
 }
