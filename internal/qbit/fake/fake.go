@@ -279,6 +279,18 @@ func (s *Server) SetFilePriority(_ context.Context, hash string, indices []int, 
 	return nil
 }
 
+func (s *Server) ToggleFirstLastPiecePrio(_ context.Context, hash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.torrents[strings.ToLower(hash)]
+	if !ok {
+		return qbit.ErrTorrentNotFound
+	}
+	t.FirstLastPiecePrio = !t.FirstLastPiecePrio
+	s.record("toggleFirstLastPiecePrio hash=%s now=%v", hash, t.FirstLastPiecePrio)
+	return nil
+}
+
 func (s *Server) Start(_ context.Context, hash string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

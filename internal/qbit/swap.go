@@ -57,6 +57,10 @@ func (s *Swappable) SetFilePriority(ctx context.Context, hash string, indices []
 	return s.get().SetFilePriority(ctx, hash, indices, priority)
 }
 
+func (s *Swappable) ToggleFirstLastPiecePrio(ctx context.Context, hash string) error {
+	return s.get().ToggleFirstLastPiecePrio(ctx, hash)
+}
+
 func (s *Swappable) Start(ctx context.Context, hash string) error {
 	return s.get().Start(ctx, hash)
 }

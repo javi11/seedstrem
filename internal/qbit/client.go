@@ -36,6 +36,7 @@ type Client interface {
 	Properties(ctx context.Context, hash string) (Properties, error)
 	PieceStates(ctx context.Context, hash string) ([]PieceState, error)
 	SetFilePriority(ctx context.Context, hash string, indices []int, priority int) error
+	ToggleFirstLastPiecePrio(ctx context.Context, hash string) error
 	Start(ctx context.Context, hash string) error
 	Delete(ctx context.Context, hash string, deleteFiles bool) error
 	AppPreferences(ctx context.Context) (Prefs, error)
@@ -221,6 +222,16 @@ func (c *client) SetFilePriority(ctx context.Context, hash string, indices []int
 			return ErrTorrentNotFound
 		}
 		return fmt.Errorf("qbit set file priority %s: %w", hash, err)
+	}
+	return nil
+}
+
+func (c *client) ToggleFirstLastPiecePrio(ctx context.Context, hash string) error {
+	if err := c.qb.ToggleFirstLastPiecePrioCtx(ctx, []string{hash}); err != nil {
+		if isNotFound(err) {
+			return ErrTorrentNotFound
+		}
+		return fmt.Errorf("qbit toggle first/last piece prio %s: %w", hash, err)
 	}
 	return nil
 }

@@ -215,7 +215,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	// is the only place we learn how a partial-file stream actually ended:
 	// bytes delivered, how long it ran, and whether the client hung up.
 	h.logger.Debug("stream: serve finished",
-		"hash", tor.Hash, "bytesDelivered", pr.offset, "elapsed", time.Since(serveStart).Round(time.Millisecond),
+		"hash", tor.Hash, "bytesDelivered", pr.delivered, "elapsed", time.Since(serveStart).Round(time.Millisecond),
 		"ctxErr", ctx.Err())
 }
 

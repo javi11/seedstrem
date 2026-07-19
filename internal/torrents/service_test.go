@@ -98,6 +98,48 @@ func TestResolveIdempotent(t *testing.T) {
 	}
 }
 
+// Changing file priorities makes qBittorrent recompute piece priorities,
+// which on several versions silently drops the first/last-piece boost even
+// though the torrent's flag stays on. SelectAndLink must re-assert it
+// (toggle off+on) after the SetFilePriority calls so the file's tail piece
+// (MKV index) is fetched up front instead of in sequential order.
+func TestSelectAndLinkReassertsFirstLastPiecePrio(t *testing.T) {
+	svc, fakeDC, _ := newService(t)
+	ctx := context.Background()
+
+	fakeDC.Put(&fake.Torrent{
+		Hash:               testHash,
+		State:              qbit.StatePaused,
+		FirstLastPiecePrio: true,
+		Files: []fake.File{
+			{Name: "Movie.2026.1080p.mkv", Size: 8 << 30},
+		},
+	})
+
+	if _, err := svc.Resolve(ctx, testMagnet("Movie"), nil, Selector{}); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	var lastFilePrio, toggles []int
+	for i, c := range fakeDC.Calls() {
+		if strings.HasPrefix(c, "filePrio ") {
+			lastFilePrio = append(lastFilePrio, i)
+		}
+		if strings.HasPrefix(c, "toggleFirstLastPiecePrio ") {
+			toggles = append(toggles, i)
+		}
+	}
+	if len(toggles) != 2 {
+		t.Fatalf("toggleFirstLastPiecePrio called %d times, want 2 (off+on): calls=%v", len(toggles), fakeDC.Calls())
+	}
+	if len(lastFilePrio) == 0 || toggles[0] < lastFilePrio[len(lastFilePrio)-1] {
+		t.Errorf("toggle must happen after the file-priority rewrite: calls=%v", fakeDC.Calls())
+	}
+	if tor := fakeDC.Get(testHash); !tor.FirstLastPiecePrio {
+		t.Error("first/last piece priority must end enabled")
+	}
+}
+
 func TestRemove(t *testing.T) {
 	svc, fakeDC, db := newService(t)
 	ctx := context.Background()

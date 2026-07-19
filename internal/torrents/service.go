@@ -202,6 +202,19 @@ func (s *Service) SelectAndLink(ctx context.Context, tor store.Torrent, fileInde
 	if err := s.dc.SetFilePriority(ctx, tor.Hash, selectedIdx, selectedPrio); err != nil {
 		return store.Link{}, fmt.Errorf("select file: %w", err)
 	}
+	// Rewriting file priorities makes qBittorrent recompute piece
+	// priorities, which can silently drop the first/last-piece boost the
+	// torrent was added with (the flag stays on, but the tail piece falls
+	// back to sequential order — the player then can't read the MKV index
+	// until most of the file has downloaded). Toggle the flag off and back
+	// on to force qBittorrent to re-apply the boost over the final file
+	// priorities. Best-effort: a failure only costs startup latency.
+	for range 2 {
+		if err := s.dc.ToggleFirstLastPiecePrio(ctx, tor.Hash); err != nil {
+			s.logger.Warn("torrents: re-assert first/last piece priority", "hash", tor.Hash, "error", err)
+			break
+		}
+	}
 	if err := s.dc.Start(ctx, tor.Hash); err != nil {
 		return store.Link{}, fmt.Errorf("start torrent: %w", err)
 	}
