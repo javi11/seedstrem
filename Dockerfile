@@ -19,17 +19,43 @@ ARG VERSION=docker
 ARG TARGETOS
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /seedstrem ./cmd/seedstrem \
-    && mkdir /empty
+    go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /seedstrem ./cmd/seedstrem
 
-# --- Runtime ---
-FROM gcr.io/distroless/static:nonroot
+# --- Runtime (LinuxServer.io base: s6-overlay + PUID/PGID user mapping so
+# bind-mounted /config and /data adopt the host user's ownership, matching
+# the rest of a Saltbox/LinuxServer stack. The app runs unprivileged as the
+# mapped "abc" user, not root.) ---
+FROM lscr.io/linuxserver/baseimage-ubuntu:jammy
+
+ARG DEBIAN_FRONTEND="noninteractive"
+ARG PUID=1000
+ARG PGID=1000
+ENV PUID=${PUID}
+ENV PGID=${PGID}
+
+# Persist the SQLite DB on the writable /config volume. The app default is a
+# relative path (seedstrem.db), which would land in the s6 service CWD (/),
+# unwritable by the mapped user. An absolute path under /config keeps it on a
+# persisted volume owned by PUID/PGID.
+ENV SEEDSTREM_STORAGE_DATABASE=/config/seedstrem.db
+
+# ca-certificates for outbound HTTPS (Prowlarr/indexers); mime-support so
+# streamed media gets correct Content-Type headers for Stremio playback.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates mime-support && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /seedstrem /seedstrem
-# Writable config dir for the nonroot user (uid 65532).
-COPY --from=build --chown=nonroot:nonroot /empty /config
-COPY --from=build --chown=nonroot:nonroot /empty /data
+
+# s6-overlay service definition (runs seedstrem as the mapped user).
+COPY docker/root/ /
+RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-seedstrem/run
+
 VOLUME ["/config", "/data"]
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
   CMD ["/seedstrem", "--healthcheck"]
-ENTRYPOINT ["/seedstrem"]
+
+# NOTE: no ENTRYPOINT/CMD — the LinuxServer base image's /init (s6-overlay)
+# is the entrypoint. It runs init-adduser (PUID/PGID mapping) then starts the
+# svc-seedstrem service defined under docker/root/.

@@ -1,0 +1,6 @@
+#!/usr/bin/with-contenv bash
+
+# Run seedstrem as the mapped user (PUID/PGID -> abc) set up by the
+# LinuxServer base image's init-adduser step. The config lives on the
+# /config volume, which init-adduser owns via the mapped user.
+exec s6-setuidgid abc /seedstrem --config=/config/config.yaml

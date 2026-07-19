@@ -44,6 +44,12 @@ services:
     # image: seedstrem:latest
     container_name: seedstrem
     environment:
+      # PUID/PGID map the in-container user to your host user so the
+      # bind-mounted ./seedstrem-config and ./downloads dirs are readable/
+      # writable. Match these to the owner of those host dirs (`id <user>`).
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
       - SEEDSTREM_QBITTORRENT_URL=http://qbittorrent:8080
       - SEEDSTREM_QBITTORRENT_USERNAME=admin
       # See the note above on obtaining/setting the qBittorrent WebUI
