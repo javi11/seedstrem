@@ -38,6 +38,7 @@ type Handler struct {
 	avail    *Availability
 	sessions *playsession.Sessions
 	settings func() Settings
+	prio     *prioritizer
 	logger   *slog.Logger
 }
 
@@ -46,7 +47,7 @@ func NewHandler(st *store.Store, dc downloader.Client, svc *torrents.Service, re
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{store: st, dc: dc, svc: svc, resolver: resolver, avail: avail, sessions: sessions, settings: settings, logger: logger}
+	return &Handler{store: st, dc: dc, svc: svc, resolver: resolver, avail: avail, sessions: sessions, settings: settings, prio: newPrioritizer(dc, logger), logger: logger}
 }
 
 // Router returns the router to mount at /dl.
@@ -221,6 +222,11 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 			return os.Open(p)
 		},
 		waitFor: func(ctx context.Context, hash string, first, last int) error {
+			// Every blocking read — first play and each seek's first read
+			// into a missing region — passes through here: ask capable
+			// backends (Deluge + Seedstream plugin) to deadline-fetch the
+			// awaited window plus readahead before settling in to wait.
+			h.prio.request(ctx, hash, first, last+readaheadPieces(props.PieceSize))
 			return h.avail.WaitForRange(ctx, hash, first, last, settings.WaitTimeout)
 		},
 	}
@@ -265,6 +271,11 @@ func (h *Handler) waitStreamReady(ctx context.Context, hash string, headFirst, h
 		haveTail, _ := h.avail.HaveRange(ctx, hash, tailFirst, tailLast)
 		return haveTail
 	}
+	// Deadline-fetch the head and tail up front on capable backends:
+	// first/last-piece priority covers them eventually, but an explicit
+	// deadline makes the MKV cues arrive deterministically fast.
+	h.prio.request(ctx, hash, headFirst, headLast)
+	h.prio.request(ctx, hash, tailFirst, tailLast)
 	deadline := time.Now().Add(grace)
 	if err := h.avail.WaitForRange(ctx, hash, headFirst, headLast, grace); err != nil {
 		return false
@@ -351,6 +362,10 @@ func (h *Handler) heartbeat(ctx context.Context, stop <-chan struct{}, hash stri
 				continue
 			}
 			stalledBeats++
+			// A piece deadline is a far more surgical unstick than the
+			// picker reset below; the kick stays as the fallback for
+			// backends without piece prioritization.
+			h.prio.request(ctx, hash, headFirst, headLast)
 			if stalledBeats >= headStallBeats && h.svc.KickStreamingPrioThrottled(ctx, hash) {
 				h.logger.Warn("stream: head stalled, kicking piece picker",
 					"hash", hash, "headPieces", [2]int{headFirst, headLast},

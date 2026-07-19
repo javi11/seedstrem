@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gdm85/go-rencode"
 
@@ -55,6 +56,14 @@ type client struct {
 	// seedstrem only logs since the move to absolute setters).
 	flagMu    sync.Mutex
 	flagCache map[string]flags
+
+	// Seedstream-plugin probe cache (see plugin.go).
+	pluginMu      sync.Mutex
+	pluginOK      bool
+	pluginChecked time.Time
+
+	// now is injectable for tests.
+	now func() time.Time
 }
 
 // New creates a downloader.Client for the Deluge 2 daemon at host:port.
@@ -72,6 +81,7 @@ func New(host string, port int, username, password, label string) downloader.Cli
 		}),
 		label:     label,
 		flagCache: map[string]flags{},
+		now:       time.Now,
 	}
 }
 
@@ -444,12 +454,6 @@ func (c *client) Delete(ctx context.Context, hash string, deleteFiles bool) erro
 // their final names — no temp dir, no extension.
 func (c *client) IncompleteFileHints(context.Context) (downloader.IncompleteHints, error) {
 	return downloader.IncompleteHints{}, nil
-}
-
-// PrioritizePieces is unsupported without the Seedstream plugin (wired
-// in a later phase); Deluge core exposes no per-piece primitive.
-func (c *client) PrioritizePieces(context.Context, string, int, int) error {
-	return downloader.ErrNotSupported
 }
 
 func (c *client) Version(ctx context.Context) (string, error) {
