@@ -17,9 +17,15 @@ const (
 	prioMinInterval = 2 * time.Second
 	// prioUnsupportedBackoff silences the prioritizer after the backend
 	// reported ErrNotSupported. Long enough to stop hammering a backend
-	// that can't do it, short enough to pick up a hot-swap to one that
-	// can (or the Seedstream plugin being enabled).
-	prioUnsupportedBackoff = 60 * time.Second
+	// that can't do it, short enough that enabling the Seedstream plugin
+	// (or hot-swapping backends) is picked up while a seek's piece wait
+	// is still running — a 60s mute here once turned an entire 60s wait
+	// into a silent no-prioritization death.
+	prioUnsupportedBackoff = 10 * time.Second
+	// prioRefreshInterval is how often a blocking piece wait re-sends its
+	// deadline hint (WaitForRangeHint), so a hint lost to a stale plugin
+	// probe or transient RPC failure is recovered mid-wait.
+	prioRefreshInterval = 5 * time.Second
 )
 
 type prioCall struct {

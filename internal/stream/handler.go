@@ -225,9 +225,11 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 			// Every blocking read — first play and each seek's first read
 			// into a missing region — passes through here: ask capable
 			// backends (Deluge + Seedstream plugin) to deadline-fetch the
-			// awaited window plus readahead before settling in to wait.
-			h.prio.request(ctx, hash, first, last+readaheadPieces(props.PieceSize))
-			return h.avail.WaitForRange(ctx, hash, first, last, settings.WaitTimeout)
+			// awaited window plus readahead, re-hinting periodically while
+			// the wait lasts. Reads of pieces already on disk never hint.
+			return h.avail.WaitForRangeHint(ctx, hash, first, last, settings.WaitTimeout, prioRefreshInterval, func() {
+				h.prio.request(ctx, hash, first, last+readaheadPieces(props.PieceSize))
+			})
 		},
 	}
 	defer pr.Close()
@@ -271,16 +273,19 @@ func (h *Handler) waitStreamReady(ctx context.Context, hash string, headFirst, h
 		haveTail, _ := h.avail.HaveRange(ctx, hash, tailFirst, tailLast)
 		return haveTail
 	}
-	// Deadline-fetch the head and tail up front on capable backends:
-	// first/last-piece priority covers them eventually, but an explicit
-	// deadline makes the MKV cues arrive deterministically fast.
-	h.prio.request(ctx, hash, headFirst, headLast)
-	h.prio.request(ctx, hash, tailFirst, tailLast)
+	// Deadline-fetch the head and tail on capable backends when they are
+	// missing: first/last-piece priority covers them eventually, but an
+	// explicit deadline makes the MKV cues arrive deterministically fast.
 	deadline := time.Now().Add(grace)
-	if err := h.avail.WaitForRange(ctx, hash, headFirst, headLast, grace); err != nil {
+	err := h.avail.WaitForRangeHint(ctx, hash, headFirst, headLast, grace, prioRefreshInterval, func() {
+		h.prio.request(ctx, hash, headFirst, headLast)
+	})
+	if err != nil {
 		return false
 	}
-	return h.avail.WaitForRange(ctx, hash, tailFirst, tailLast, time.Until(deadline)) == nil
+	return h.avail.WaitForRangeHint(ctx, hash, tailFirst, tailLast, time.Until(deadline), prioRefreshInterval, func() {
+		h.prio.request(ctx, hash, tailFirst, tailLast)
+	}) == nil
 }
 
 // waitForFile polls for the torrent's file to appear on disk, up to

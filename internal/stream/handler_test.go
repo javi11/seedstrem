@@ -343,18 +343,38 @@ func TestCheckAbandonedSkipsWhenSomeoneElseIsWatching(t *testing.T) {
 	}
 }
 
+// arrivingPieces wires fake time into avail and flips one missing piece
+// to downloaded per availability poll, simulating download progress.
+func arrivingPieces(e *streamEnv) {
+	now := time.Unix(1000, 0)
+	e.avail.now = func() time.Time { return now }
+	e.avail.sleep = func(_ context.Context, d time.Duration) error {
+		now = now.Add(d)
+		e.fake.Update(testHash, func(tor *fake.Torrent) {
+			for i, st := range tor.PieceStates {
+				if st != 2 {
+					tor.PieceStates[i] = 2
+					break
+				}
+			}
+		})
+		return nil
+	}
+}
+
 func TestServeRequestsPiecePrioritization(t *testing.T) {
-	// Head and tail available, middle missing. A range request must ask a
-	// capable backend to prioritize the awaited pieces (+readahead)
-	// before waiting on them.
+	// Head and tail available, middle missing. A request that blocks on a
+	// missing piece must ask a capable backend to prioritize the awaited
+	// pieces (+readahead) before settling in to wait.
 	e := newStreamEnv(t, []int{2, 0, 0, 2}, 0.5)
 	e.fake.SetPrioritizeErr(nil) // capable backend
+	arrivingPieces(e)
 
-	w := e.get(t, "bytes=3072-4095")
+	w := e.get(t, "bytes=1024-2047")
 	if w.Code != http.StatusPartialContent {
 		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
 	}
-	want := fmt.Sprintf("prioritizePieces hash=%s first=3 last=%d", testHash, 3+readaheadPieces(pieceSize))
+	want := fmt.Sprintf("prioritizePieces hash=%s first=1 last=%d", testHash, 1+readaheadPieces(pieceSize))
 	found := false
 	for _, c := range e.fake.Calls() {
 		if c == want {
@@ -367,15 +387,35 @@ func TestServeRequestsPiecePrioritization(t *testing.T) {
 	}
 }
 
+func TestServeSkipsPrioritizationForAvailablePieces(t *testing.T) {
+	// A request entirely inside already-downloaded pieces must not send
+	// any deadline hint: re-deadlining pieces on disk floods the daemon's
+	// request queue (observed as libtorrent's
+	// outstanding_request_limit_reached warning storm).
+	e := newStreamEnv(t, []int{2, 2, 0, 2}, 0.5)
+	e.fake.SetPrioritizeErr(nil) // capable backend — a hint would go through
+
+	w := e.get(t, "bytes=0-2047")
+	if w.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	for _, c := range e.fake.Calls() {
+		if strings.HasPrefix(c, "prioritizePieces ") {
+			t.Errorf("unexpected prioritization of available pieces: %v", c)
+		}
+	}
+}
+
 func TestServeSilencesPrioritizationWhenUnsupported(t *testing.T) {
 	// Default fake behavior is ErrNotSupported (like qBittorrent): after
 	// the first attempt the prioritizer must back off — one call total.
 	e := newStreamEnv(t, []int{2, 0, 0, 2}, 0.5)
+	arrivingPieces(e)
 
-	if w := e.get(t, "bytes=3072-4095"); w.Code != http.StatusPartialContent {
+	if w := e.get(t, "bytes=1024-2047"); w.Code != http.StatusPartialContent {
 		t.Fatalf("status = %d", w.Code)
 	}
-	if w := e.get(t, "bytes=0-1023"); w.Code != http.StatusPartialContent {
+	if w := e.get(t, "bytes=2048-3071"); w.Code != http.StatusPartialContent {
 		t.Fatalf("status = %d", w.Code)
 	}
 	count := 0

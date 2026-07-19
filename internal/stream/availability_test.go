@@ -99,6 +99,42 @@ func TestWaitForRangeTimesOut(t *testing.T) {
 	}
 }
 
+func TestWaitForRangeHintRehintsWhileWaiting(t *testing.T) {
+	a, f := newAvail(t)
+	f.Put(&fake.Torrent{Hash: testHash, PieceStates: []int{0}})
+
+	now := time.Unix(1000, 0)
+	a.now = func() time.Time { return now }
+	a.sleep = func(_ context.Context, d time.Duration) error {
+		now = now.Add(d)
+		return nil
+	}
+
+	hints := 0
+	err := a.WaitForRangeHint(context.Background(), testHash, 0, 0, 12*time.Second, 5*time.Second, func() { hints++ })
+	if !errors.Is(err, ErrWaitTimeout) {
+		t.Fatalf("want ErrWaitTimeout, got %v", err)
+	}
+	// Hinted immediately, then again at ~5s and ~10s of waiting: a hint
+	// dropped by a stale plugin probe or backoff is recovered mid-wait.
+	if hints != 3 {
+		t.Errorf("hints = %d, want 3 (initial + refresh every 5s over 12s)", hints)
+	}
+}
+
+func TestWaitForRangeHintSkipsAvailableRange(t *testing.T) {
+	a, f := newAvail(t)
+	f.Put(&fake.Torrent{Hash: testHash, PieceStates: []int{2, 2}})
+
+	hints := 0
+	if err := a.WaitForRangeHint(context.Background(), testHash, 0, 1, time.Second, 5*time.Second, func() { hints++ }); err != nil {
+		t.Fatalf("WaitForRangeHint: %v", err)
+	}
+	if hints != 0 {
+		t.Errorf("hints = %d, want 0 (range already on disk)", hints)
+	}
+}
+
 func TestWaitForRangeContextCancelled(t *testing.T) {
 	a, f := newAvail(t)
 	f.Put(&fake.Torrent{Hash: testHash, PieceStates: []int{0}})

@@ -81,6 +81,29 @@ func TestPrioritizePiecesWithoutPlugin(t *testing.T) {
 	}
 }
 
+func TestPrioritizePiecesNegativeProbeExpiresSooner(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	p := &pluginAPI{fakeAPI: newFakeAPI()} // no plugins enabled
+	c := newPluginClient(p, &now)
+
+	if err := c.PrioritizePieces(context.Background(), "abc123", 0, 5); !errors.Is(err, downloader.ErrNotSupported) {
+		t.Fatalf("err = %v, want ErrNotSupported", err)
+	}
+
+	// The plugin is enabled while a piece wait is running: the negative
+	// probe must expire on its shorter TTL — well before the positive
+	// pluginProbeTTL — so the wait's periodic re-hint gets through.
+	p.plugins = []string{"Seedstream"}
+	p.apiVersion = 1
+	now = now.Add(pluginProbeNegTTL + time.Second)
+	if err := c.PrioritizePieces(context.Background(), "abc123", 0, 5); err != nil {
+		t.Fatalf("err = %v after enabling plugin inside pluginProbeTTL", err)
+	}
+	if n := countRPC(p.fakeAPI, "prioritize_range"); n != 1 {
+		t.Errorf("prioritize_range called %d times, want 1", n)
+	}
+}
+
 func TestPrioritizePiecesCachesPositiveProbe(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	p := &pluginAPI{fakeAPI: newFakeAPI(), apiVersion: 1}

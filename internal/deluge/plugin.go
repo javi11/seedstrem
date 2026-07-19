@@ -18,10 +18,15 @@ const (
 	// pluginName is the Seedstream plugin's name in Deluge's plugin list;
 	// its RPC methods live under the lowercased prefix "seedstream.".
 	pluginName = "Seedstream"
-	// pluginProbeTTL is how long a probe result is trusted before the
-	// plugin list is re-checked, so enabling/disabling the plugin is
+	// pluginProbeTTL is how long a positive probe result is trusted
+	// before the plugin list is re-checked, so disabling the plugin is
 	// picked up without restarting seedstrem.
 	pluginProbeTTL = 60 * time.Second
+	// pluginProbeNegTTL is the (shorter) trust window for a negative
+	// probe: a stale "no plugin" answer turns the one prioritize call a
+	// blocking seek gets to make into a silent no-op, so enabling the
+	// plugin must be noticed while such a wait is still running.
+	pluginProbeNegTTL = 10 * time.Second
 )
 
 // pluginAvailable reports whether the Seedstream plugin is enabled and
@@ -30,7 +35,11 @@ const (
 // performs RPC calls on the shared connection).
 func (c *client) pluginAvailable(ctx context.Context) bool {
 	c.pluginMu.Lock()
-	if !c.pluginChecked.IsZero() && c.now().Sub(c.pluginChecked) < pluginProbeTTL {
+	ttl := pluginProbeTTL
+	if !c.pluginOK {
+		ttl = pluginProbeNegTTL
+	}
+	if !c.pluginChecked.IsZero() && c.now().Sub(c.pluginChecked) < ttl {
 		ok := c.pluginOK
 		c.pluginMu.Unlock()
 		return ok

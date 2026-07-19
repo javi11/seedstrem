@@ -184,7 +184,21 @@ func (a *Availability) Summary(ctx context.Context, hash string, headFirst, head
 // WaitForRange blocks until pieces [first, last] are downloaded, the
 // timeout elapses (ErrWaitTimeout), or ctx is cancelled.
 func (a *Availability) WaitForRange(ctx context.Context, hash string, first, last int, timeout time.Duration) error {
+	return a.WaitForRangeHint(ctx, hash, first, last, timeout, 0, nil)
+}
+
+// WaitForRangeHint is WaitForRange with a piece-deadline hint: when the
+// range is found missing, hint is invoked before the first sleep and
+// again every refreshEvery of waiting. Re-hinting matters because a
+// single hint can be silently dropped (stale plugin probe, transient
+// RPC failure, prioritizer backoff) and a blocking wait can outlive all
+// of those — one lost hint must cost seconds, not the whole wait. A
+// range that is already available returns without hinting at all:
+// re-deadlining pieces already on disk floods the daemon's request
+// queue for nothing.
+func (a *Availability) WaitForRangeHint(ctx context.Context, hash string, first, last int, timeout, refreshEvery time.Duration, hint func()) error {
 	deadline := a.now().Add(timeout)
+	var lastHint time.Time
 	for {
 		have, err := a.HaveRange(ctx, hash, first, last)
 		if err != nil {
@@ -192,6 +206,10 @@ func (a *Availability) WaitForRange(ctx context.Context, hash string, first, las
 		}
 		if have {
 			return nil
+		}
+		if hint != nil && (lastHint.IsZero() || a.now().Sub(lastHint) >= refreshEvery) {
+			lastHint = a.now()
+			hint()
 		}
 		if !a.now().Before(deadline) {
 			return ErrWaitTimeout
