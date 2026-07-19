@@ -100,43 +100,132 @@ func TestResolveIdempotent(t *testing.T) {
 
 // Changing file priorities makes qBittorrent recompute piece priorities,
 // which on several versions silently drops the first/last-piece boost even
-// though the torrent's flag stays on. SelectAndLink must re-assert it
-// (toggle off+on) after the SetFilePriority calls so the file's tail piece
-// (MKV index) is fetched up front instead of in sequential order.
+// though the torrent's flag stays on — and the add-time flags may never
+// stick at all. SelectAndLink must read back the actual state and leave
+// sequential download and the first/last boost enabled, after the
+// SetFilePriority calls, so the file's tail piece (MKV index) is fetched
+// up front instead of in sequential order.
 func TestSelectAndLinkReassertsFirstLastPiecePrio(t *testing.T) {
+	cases := []struct {
+		name        string
+		flPiecePrio bool
+		seqDl       bool
+	}{
+		{"flags initially on", true, true},
+		{"flags initially off", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, fakeDC, _ := newService(t)
+			ctx := context.Background()
+
+			fakeDC.Put(&fake.Torrent{
+				Hash:               testHash,
+				State:              qbit.StatePaused,
+				SequentialDownload: tc.seqDl,
+				FirstLastPiecePrio: tc.flPiecePrio,
+				Files: []fake.File{
+					{Name: "Movie.2026.1080p.mkv", Size: 8 << 30},
+				},
+			})
+
+			if _, err := svc.Resolve(ctx, testMagnet("Movie"), nil, Selector{}); err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+
+			var lastFilePrio, toggles []int
+			for i, c := range fakeDC.Calls() {
+				if strings.HasPrefix(c, "filePrio ") {
+					lastFilePrio = append(lastFilePrio, i)
+				}
+				if strings.HasPrefix(c, "toggleFirstLastPiecePrio ") {
+					toggles = append(toggles, i)
+				}
+			}
+			if len(toggles) == 0 {
+				t.Fatalf("toggleFirstLastPiecePrio never called: calls=%v", fakeDC.Calls())
+			}
+			if len(lastFilePrio) == 0 || toggles[0] < lastFilePrio[len(lastFilePrio)-1] {
+				t.Errorf("toggle must happen after the file-priority rewrite: calls=%v", fakeDC.Calls())
+			}
+			tor := fakeDC.Get(testHash)
+			if !tor.FirstLastPiecePrio {
+				t.Error("first/last piece priority must end enabled")
+			}
+			if !tor.SequentialDownload {
+				t.Error("sequential download must end enabled")
+			}
+		})
+	}
+}
+
+// A repeat play of an already-linked, still-downloading file must
+// re-assert the streaming flags (qBittorrent can drop the boost at any
+// point mid-download), but back-to-back resolves within the throttle
+// window must not hammer qBittorrent with toggle calls.
+func TestRepeatResolveReassertsStreamingPrio(t *testing.T) {
 	svc, fakeDC, _ := newService(t)
 	ctx := context.Background()
 
+	clock := int64(1_000_000)
+	svc.now = func() int64 { return clock }
+
 	fakeDC.Put(&fake.Torrent{
-		Hash:               testHash,
-		State:              qbit.StatePaused,
-		FirstLastPiecePrio: true,
+		Hash:  testHash,
+		State: qbit.StatePaused,
 		Files: []fake.File{
 			{Name: "Movie.2026.1080p.mkv", Size: 8 << 30},
 		},
 	})
 
 	if _, err := svc.Resolve(ctx, testMagnet("Movie"), nil, Selector{}); err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-
-	var lastFilePrio, toggles []int
-	for i, c := range fakeDC.Calls() {
-		if strings.HasPrefix(c, "filePrio ") {
-			lastFilePrio = append(lastFilePrio, i)
-		}
-		if strings.HasPrefix(c, "toggleFirstLastPiecePrio ") {
-			toggles = append(toggles, i)
-		}
-	}
-	if len(toggles) != 2 {
-		t.Fatalf("toggleFirstLastPiecePrio called %d times, want 2 (off+on): calls=%v", len(toggles), fakeDC.Calls())
-	}
-	if len(lastFilePrio) == 0 || toggles[0] < lastFilePrio[len(lastFilePrio)-1] {
-		t.Errorf("toggle must happen after the file-priority rewrite: calls=%v", fakeDC.Calls())
+		t.Fatalf("first resolve: %v", err)
 	}
 	if tor := fakeDC.Get(testHash); !tor.FirstLastPiecePrio {
-		t.Error("first/last piece priority must end enabled")
+		t.Fatal("first resolve must leave first/last piece priority enabled")
+	}
+
+	// Simulate qBittorrent dropping the boost mid-download.
+	fakeDC.Update(testHash, func(tor *fake.Torrent) { tor.FirstLastPiecePrio = false })
+
+	// Within the throttle window: no re-assert, flag stays dropped.
+	if _, err := svc.Resolve(ctx, testMagnet("Movie"), nil, Selector{}); err != nil {
+		t.Fatalf("second resolve: %v", err)
+	}
+	if tor := fakeDC.Get(testHash); tor.FirstLastPiecePrio {
+		t.Error("resolve inside throttle window must not toggle")
+	}
+
+	// Past the throttle window: the repeat play restores the boost.
+	clock += streamingPrioReassertInterval
+	if _, err := svc.Resolve(ctx, testMagnet("Movie"), nil, Selector{}); err != nil {
+		t.Fatalf("third resolve: %v", err)
+	}
+	if tor := fakeDC.Get(testHash); !tor.FirstLastPiecePrio {
+		t.Error("repeat resolve must re-assert first/last piece priority")
+	}
+}
+
+// EnsureStreamingPrio is a no-op once the download is complete: toggling
+// flags on a finished torrent is pointless qBittorrent churn.
+func TestEnsureStreamingPrioSkipsCompleted(t *testing.T) {
+	svc, fakeDC, _ := newService(t)
+	ctx := context.Background()
+
+	fakeDC.Put(&fake.Torrent{
+		Hash:     testHash,
+		State:    qbit.StateSeeding,
+		Progress: 1,
+		Files:    []fake.File{{Name: "Movie.mkv", Size: 8 << 30, Progress: 1}},
+	})
+
+	if err := svc.EnsureStreamingPrio(ctx, testHash); err != nil {
+		t.Fatalf("ensure streaming prio: %v", err)
+	}
+	for _, c := range fakeDC.Calls() {
+		if strings.HasPrefix(c, "toggle") {
+			t.Errorf("completed torrent must not be toggled: %v", fakeDC.Calls())
+		}
 	}
 }
 

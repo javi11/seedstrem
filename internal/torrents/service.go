@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/javib/seedstrem/internal/metainfo"
@@ -36,6 +37,12 @@ type Service struct {
 	settings func() Settings
 	logger   *slog.Logger
 
+	// prioAsserted tracks (unix seconds) when streaming priorities were
+	// last re-asserted per hash, so repeat play resolves don't hammer
+	// qBittorrent with toggle calls.
+	prioMu       sync.Mutex
+	prioAsserted map[string]int64
+
 	// injectable for tests
 	now   func() int64
 	sleep func(ctx context.Context, d time.Duration) error
@@ -47,12 +54,13 @@ func New(st *store.Store, dc qbit.Client, settings func() Settings, logger *slog
 		logger = slog.Default()
 	}
 	return &Service{
-		store:    st,
-		dc:       dc,
-		settings: settings,
-		logger:   logger,
-		now:      func() int64 { return time.Now().Unix() },
-		sleep:    sleepCtx,
+		store:        st,
+		dc:           dc,
+		settings:     settings,
+		logger:       logger,
+		prioAsserted: map[string]int64{},
+		now:          func() int64 { return time.Now().Unix() },
+		sleep:        sleepCtx,
 	}
 }
 
@@ -170,6 +178,11 @@ var ErrMetadataTimeout = errors.New("timed out waiting for torrent metadata")
 // (torrentID, fileIndex): a repeat call returns the existing link.
 func (s *Service) SelectAndLink(ctx context.Context, tor store.Torrent, fileIndex int, files []qbit.FileInfo) (store.Link, error) {
 	if existing, err := s.linkFor(ctx, tor.ID, fileIndex); err == nil {
+		// Repeat play of an already-linked file: the first/last-piece
+		// boost may have been dropped since the first select (qBittorrent
+		// recomputes piece priorities on its own schedule), so re-assert
+		// it while the download is still in flight.
+		s.ensureStreamingPrioThrottled(ctx, tor.Hash)
 		return existing, nil
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return store.Link{}, err
@@ -202,22 +215,14 @@ func (s *Service) SelectAndLink(ctx context.Context, tor store.Torrent, fileInde
 	if err := s.dc.SetFilePriority(ctx, tor.Hash, selectedIdx, selectedPrio); err != nil {
 		return store.Link{}, fmt.Errorf("select file: %w", err)
 	}
-	// Rewriting file priorities makes qBittorrent recompute piece
-	// priorities, which can silently drop the first/last-piece boost the
-	// torrent was added with (the flag stays on, but the tail piece falls
-	// back to sequential order — the player then can't read the MKV index
-	// until most of the file has downloaded). Toggle the flag off and back
-	// on to force qBittorrent to re-apply the boost over the final file
-	// priorities. Best-effort: a failure only costs startup latency.
-	for range 2 {
-		if err := s.dc.ToggleFirstLastPiecePrio(ctx, tor.Hash); err != nil {
-			s.logger.Warn("torrents: re-assert first/last piece priority", "hash", tor.Hash, "error", err)
-			break
-		}
-	}
 	if err := s.dc.Start(ctx, tor.Hash); err != nil {
 		return store.Link{}, fmt.Errorf("start torrent: %w", err)
 	}
+	// After Start, not before: qBittorrent applies the SetFilePriority
+	// rewrite above asynchronously, and its recompute can drop the
+	// first/last-piece boost. Re-asserting here sits behind that
+	// recompute instead of racing it.
+	s.ensureStreamingPrioThrottled(ctx, tor.Hash)
 
 	token, err := NewLinkToken()
 	if err != nil {
@@ -253,6 +258,62 @@ func (s *Service) SelectAndLink(ctx context.Context, tor store.Torrent, fileInde
 	s.logger.Debug("torrents: file selected and linked",
 		"hash", tor.Hash, "fileIndex", fileIndex, "path", picked.Name, "token", token)
 	return link, nil
+}
+
+// streamingPrioReassertInterval rate-limits per-hash streaming-priority
+// re-assertion (seconds): a player hammering the play endpoint re-asserts
+// at most once per interval.
+const streamingPrioReassertInterval = 30
+
+// EnsureStreamingPrio makes sure the torrent downloads in an order fit
+// for streaming: sequential download ON and the first/last-piece boost
+// ON. The actual flag state is read back from qBittorrent and corrected
+// rather than assumed — the add-time flags may never have stuck, and
+// qBittorrent silently drops the first/last boost when it recomputes
+// piece priorities after a file-priority rewrite. When the boost flag is
+// already on it is still toggled off and back on to force a recompute
+// over the current file priorities. No-op once the download is complete.
+func (s *Service) EnsureStreamingPrio(ctx context.Context, hash string) error {
+	info, err := s.dc.Torrent(ctx, hash)
+	if err != nil {
+		return fmt.Errorf("read torrent flags: %w", err)
+	}
+	if info.Progress >= 1 {
+		return nil
+	}
+	if !info.SequentialDownload {
+		if err := s.dc.ToggleSequentialDownload(ctx, hash); err != nil {
+			return fmt.Errorf("enable sequential download: %w", err)
+		}
+	}
+	toggles := 1 // off → on
+	if info.FirstLastPiecePrio {
+		toggles = 2 // on → off → on, forcing a piece-priority recompute
+	}
+	for range toggles {
+		if err := s.dc.ToggleFirstLastPiecePrio(ctx, hash); err != nil {
+			return fmt.Errorf("re-assert first/last piece prio: %w", err)
+		}
+	}
+	return nil
+}
+
+// ensureStreamingPrioThrottled runs EnsureStreamingPrio at most once per
+// streamingPrioReassertInterval per hash. Best-effort: a failure only
+// costs playback-startup latency, so it is logged rather than returned.
+func (s *Service) ensureStreamingPrioThrottled(ctx context.Context, hash string) {
+	now := s.now()
+	s.prioMu.Lock()
+	if last, ok := s.prioAsserted[hash]; ok && now-last < streamingPrioReassertInterval {
+		s.prioMu.Unlock()
+		return
+	}
+	s.prioAsserted[hash] = now
+	s.prioMu.Unlock()
+
+	if err := s.EnsureStreamingPrio(ctx, hash); err != nil {
+		s.logger.Warn("torrents: ensure streaming priorities", "hash", hash, "error", err)
+	}
 }
 
 // linkFor returns the existing link for a torrent's file index, or
@@ -302,6 +363,9 @@ func (s *Service) Remove(ctx context.Context, tor store.Torrent) error {
 	if err := s.store.DeleteTorrent(ctx, tor.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("delete from store: %w", err)
 	}
+	s.prioMu.Lock()
+	delete(s.prioAsserted, tor.Hash)
+	s.prioMu.Unlock()
 	return nil
 }
 

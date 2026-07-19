@@ -61,6 +61,10 @@ func (s *Swappable) ToggleFirstLastPiecePrio(ctx context.Context, hash string) e
 	return s.get().ToggleFirstLastPiecePrio(ctx, hash)
 }
 
+func (s *Swappable) ToggleSequentialDownload(ctx context.Context, hash string) error {
+	return s.get().ToggleSequentialDownload(ctx, hash)
+}
+
 func (s *Swappable) Start(ctx context.Context, hash string) error {
 	return s.get().Start(ctx, hash)
 }

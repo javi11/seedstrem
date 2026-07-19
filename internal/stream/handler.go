@@ -122,7 +122,8 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", contentType)
 
 	h.logger.Debug("stream: serving file",
-		"hash", tor.Hash, "file", file.Name, "complete", complete, "progress", file.Progress)
+		"hash", tor.Hash, "file", file.Name, "complete", complete, "progress", file.Progress,
+		"seqDl", info.SequentialDownload, "flPiecePrio", info.FirstLastPiecePrio)
 
 	if complete {
 		localPath, err := h.resolver.FilePath(ctx, info, file)

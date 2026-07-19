@@ -214,6 +214,9 @@ func toTorrentInfo(t *Torrent) qbit.TorrentInfo {
 		SavePath:    t.SavePath,
 		ContentPath: t.ContentPath,
 		SeedingTime: t.SeedingTime,
+
+		SequentialDownload: t.SequentialDownload,
+		FirstLastPiecePrio: t.FirstLastPiecePrio,
 	}
 }
 
@@ -288,6 +291,18 @@ func (s *Server) ToggleFirstLastPiecePrio(_ context.Context, hash string) error 
 	}
 	t.FirstLastPiecePrio = !t.FirstLastPiecePrio
 	s.record("toggleFirstLastPiecePrio hash=%s now=%v", hash, t.FirstLastPiecePrio)
+	return nil
+}
+
+func (s *Server) ToggleSequentialDownload(_ context.Context, hash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.torrents[strings.ToLower(hash)]
+	if !ok {
+		return qbit.ErrTorrentNotFound
+	}
+	t.SequentialDownload = !t.SequentialDownload
+	s.record("toggleSequentialDownload hash=%s now=%v", hash, t.SequentialDownload)
 	return nil
 }
 

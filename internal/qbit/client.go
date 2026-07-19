@@ -37,6 +37,7 @@ type Client interface {
 	PieceStates(ctx context.Context, hash string) ([]PieceState, error)
 	SetFilePriority(ctx context.Context, hash string, indices []int, priority int) error
 	ToggleFirstLastPiecePrio(ctx context.Context, hash string) error
+	ToggleSequentialDownload(ctx context.Context, hash string) error
 	Start(ctx context.Context, hash string) error
 	Delete(ctx context.Context, hash string, deleteFiles bool) error
 	AppPreferences(ctx context.Context) (Prefs, error)
@@ -122,6 +123,9 @@ func convertTorrent(t qbt.Torrent) TorrentInfo {
 		SavePath:    t.SavePath,
 		ContentPath: t.ContentPath,
 		SeedingTime: time.Duration(t.SeedingTime) * time.Second,
+
+		SequentialDownload: t.SequentialDownload,
+		FirstLastPiecePrio: t.FirstLastPiecePrio,
 	}
 }
 
@@ -232,6 +236,16 @@ func (c *client) ToggleFirstLastPiecePrio(ctx context.Context, hash string) erro
 			return ErrTorrentNotFound
 		}
 		return fmt.Errorf("qbit toggle first/last piece prio %s: %w", hash, err)
+	}
+	return nil
+}
+
+func (c *client) ToggleSequentialDownload(ctx context.Context, hash string) error {
+	if err := c.qb.ToggleTorrentSequentialDownloadCtx(ctx, []string{hash}); err != nil {
+		if isNotFound(err) {
+			return ErrTorrentNotFound
+		}
+		return fmt.Errorf("qbit toggle sequential download %s: %w", hash, err)
 	}
 	return nil
 }

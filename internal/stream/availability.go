@@ -13,9 +13,13 @@ import (
 // ErrWaitTimeout is returned when pieces did not arrive in time.
 var ErrWaitTimeout = errors.New("timed out waiting for pieces")
 
+// Kept short: cache TTL + poll interval bound how stale a "piece not
+// here yet" answer can be, and that staleness is added on top of every
+// piece wait during playback startup (head, MKV tail index, seeks).
+// pieceStates is a cheap WebUI call, so poll aggressively.
 const (
-	pieceCacheTTL = 1 * time.Second
-	pollInterval  = 1 * time.Second
+	pieceCacheTTL = 300 * time.Millisecond
+	pollInterval  = 300 * time.Millisecond
 )
 
 // Availability answers "are these pieces on disk yet?" with a short-TTL

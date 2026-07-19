@@ -20,6 +20,11 @@ type TorrentInfo struct {
 	// Essential for locating a file that is still downloading.
 	ContentPath string
 	SeedingTime time.Duration // time spent seeding since the torrent finished
+	// Streaming flags as currently in effect in qBittorrent (WebUI
+	// fields seq_dl / f_l_piece_prio). Read back so seedstrem can
+	// re-assert them when they were dropped or never stuck.
+	SequentialDownload bool
+	FirstLastPiecePrio bool
 }
 
 // FileInfo describes one file inside a torrent.
