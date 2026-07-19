@@ -22,6 +22,17 @@ seek prioritization is skipped.
 Methods never raise across RPC; failures return `False` and are logged
 by the daemon.
 
+## Download a prebuilt egg
+
+CI builds the egg for Python 3.9–3.13 on every change to this directory
+(the **Deluge plugin** workflow under the repo's Actions tab — grab the
+artifact matching your daemon's Python major.minor). On `v*` release
+tags the same eggs are attached to the GitHub Release.
+
+Check the daemon's Python with:
+`docker exec deluge python3 --version` (or `python3 --version` on the
+host running deluged).
+
 ## Build
 
 The egg must be built with the **same Python major.minor as the Deluge

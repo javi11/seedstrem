@@ -1,0 +1,67 @@
+name: Deluge plugin
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "contrib/deluge-seedstream/**"
+      - ".github/workflows/deluge-plugin.yml"
+  pull_request:
+    paths:
+      - "contrib/deluge-seedstream/**"
+      - ".github/workflows/deluge-plugin.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Deluge only loads eggs whose py3.X suffix matches the daemon's
+  # interpreter, so build one egg per Python version users may run.
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Build egg
+        working-directory: contrib/deluge-seedstream
+        run: |
+          python -m pip install --upgrade setuptools
+          python setup.py bdist_egg
+          ls -l dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deluge-seedstream-py${{ matrix.python-version }}
+          path: contrib/deluge-seedstream/dist/*.egg
+          if-no-files-found: error
+
+  # On version tags, attach all eggs to the GitHub Release so users can
+  # download the one matching their daemon's Python without digging
+  # through workflow-run artifacts.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deluge-seedstream-py*
+          path: eggs
+          merge-multiple: true
+      - name: Upload eggs to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: eggs/*.egg
