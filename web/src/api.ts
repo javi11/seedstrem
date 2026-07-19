@@ -78,8 +78,11 @@ export interface Config {
     tmdb_api_key: string;
   };
   paths: { mappings: Mapping[] };
-  storage: { delete_files_on_remove: boolean };
+  storage: { database: string; delete_files_on_remove: boolean };
   stream: { wait_timeout_seconds: number; read_chunk: number };
+  cleanup: { seed_time_hours: number; min_progress_for_cancel_percent: number };
+  seeding: { full: boolean };
+  log: { level: string };
 }
 
 export interface ProwlarrIndexer {
