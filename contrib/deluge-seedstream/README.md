@@ -16,7 +16,7 @@ seek prioritization is skipped.
 | Method | Purpose |
 | --- | --- |
 | `seedstream.api_version()` | returns `2`; used for detection |
-| `seedstream.prioritize_range(torrent_id, first, last, deadline_ms=3000, step_ms=50)` | staggered `set_piece_deadline` on pieces `[first, last]` (clamped) |
+| `seedstream.prioritize_range(torrent_id, first, last, deadline_ms=3000, step_ms=50)` | staggered `set_piece_deadline` on the first ~8 MiB of `[first, last]`, top piece priority on the rest (clamped) |
 | `seedstream.clear_range(torrent_id, first, last)` | `reset_piece_deadline` on the range, ends focus mode |
 
 Methods never raise across RPC; failures return `False` and are logged

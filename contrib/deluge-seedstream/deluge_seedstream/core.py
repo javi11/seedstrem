@@ -40,6 +40,18 @@ DEFAULT_STEP_MS = 50
 FOCUS_SECS = 15
 FOCUS_MARGIN_PIECES = 16
 
+# Only the first ~DEADLINE_BYTES of a window get set_piece_deadline;
+# the rest get top piece priority instead. Deadline (time-critical)
+# pieces that miss their deadline are re-requested redundantly from
+# multiple peers — deadlining a whole 32 MiB window put dozens of
+# permanently-late pieces in that mode, flooding the daemon with
+# outstanding_request_limit_reached alerts hard enough to stall the RPC
+# thread. Priorities order the picker with none of that urgency.
+DEADLINE_BYTES = 8 * 1024 * 1024
+DEADLINE_MIN_PIECES = 2
+DEADLINE_MAX_PIECES = 8
+TOP_PRIORITY = 7
+
 
 class Core(CorePluginBase):
     def enable(self):
@@ -108,6 +120,21 @@ class Core(CorePluginBase):
             log.exception('seedstream: restoring sequential download failed for %s', torrent_id)
 
     @staticmethod
+    def _deadline_pieces(handle):
+        """How many leading window pieces get a hard deadline (~8 MiB)."""
+        piece_len = 0
+        try:
+            tf = handle.torrent_file()
+            if tf is not None:
+                piece_len = int(tf.piece_length())
+        except Exception:
+            piece_len = 0
+        if piece_len <= 0:
+            return DEADLINE_MAX_PIECES
+        k = DEADLINE_BYTES // piece_len
+        return max(DEADLINE_MIN_PIECES, min(DEADLINE_MAX_PIECES, k))
+
+    @staticmethod
     def _frontier(status):
         """Index of the first piece not yet downloaded, or None."""
         try:
@@ -157,23 +184,28 @@ class Core(CorePluginBase):
         if frontier is not None and first - frontier > FOCUS_MARGIN_PIECES:
             self._focus_window(torrent_id, handle)
 
+        deadline_pieces = self._deadline_pieces(handle)
         for i, piece in enumerate(range(first, last + 1)):
             try:
-                handle.set_piece_deadline(piece, deadline_ms + i * step_ms)
+                if i < deadline_pieces:
+                    handle.set_piece_deadline(piece, deadline_ms + i * step_ms)
+                else:
+                    handle.piece_priority(piece, TOP_PRIORITY)
             except Exception:
                 log.exception(
-                    'seedstream.prioritize_range: set_piece_deadline(%d) failed for %s',
+                    'seedstream.prioritize_range: prioritizing piece %d failed for %s',
                     piece,
                     torrent_id,
                 )
                 return False
         log.debug(
-            'seedstream: prioritized pieces %d-%d of %s (deadline=%dms step=%dms)',
+            'seedstream: prioritized pieces %d-%d of %s (deadline=%dms step=%dms deadline_pieces=%d)',
             first,
             last,
             torrent_id,
             deadline_ms,
             step_ms,
+            deadline_pieces,
         )
         return True
 
@@ -194,6 +226,7 @@ class Core(CorePluginBase):
         for piece in range(first, last + 1):
             try:
                 handle.reset_piece_deadline(piece)
+                handle.piece_priority(piece, 4)  # back to normal priority
             except Exception:
                 log.exception(
                     'seedstream.clear_range: reset_piece_deadline(%d) failed for %s',
