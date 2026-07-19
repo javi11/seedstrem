@@ -35,6 +35,13 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 	s := h.settings()
 	typ := chi.URLParam(r, "type")
 	id := strings.TrimSuffix(chi.URLParam(r, "id"), ".json")
+	// chi returns the raw (still percent-encoded) path segment when it
+	// differs from the decoded path — Stremio encodes the colons in
+	// series ids (tt123%3A1%3A2), which would break the ":" split in
+	// meta.ParseID and leak the blob into the Prowlarr query.
+	if decoded, err := url.PathUnescape(id); err == nil {
+		id = decoded
+	}
 
 	empty := streamResponse{Streams: []streamItem{}}
 

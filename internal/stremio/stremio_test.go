@@ -424,6 +424,67 @@ func TestStreamTmdbOnlyFallsBackToText(t *testing.T) {
 	}
 }
 
+// TestStreamDecodesEncodedSeriesID verifies that a series id arriving
+// with percent-encoded colons (Stremio sends tt31849235%3A1%3A2) is
+// decoded before parsing, so season/episode survive into the Prowlarr
+// id-token query instead of the raw encoded blob.
+func TestStreamDecodesEncodedSeriesID(t *testing.T) {
+	var gotQuery string
+
+	prow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/indexer":
+			w.Write([]byte(`[
+				{"id":1,"name":"Capable","protocol":"torrent","enable":true,
+				 "capabilities":{"tvSearchParams":["Q","ImdbId"]}}
+			]`))
+		case "/api/v1/search":
+			q := r.URL.Query()
+			if q.Get("type") == "tvsearch" {
+				gotQuery = q.Get("query")
+			}
+			w.Write([]byte(`[{"title":"Series Hit S01E02","magnetUrl":"` + testMagnet() + `","size":100,"seeders":10,"protocol":"torrent","indexer":"Capable"}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer prow.Close()
+
+	metaClient := meta.New("http://cinemeta.invalid", "")
+	h := New(nil, metaClient, func() Settings {
+		return Settings{
+			Prowlarr:   ProwlarrSettings{URL: prow.URL, APIKey: "k", TVCategories: []int{5000}},
+			Addon:      AddonSettings{EnableSeries: true},
+			MaxResults: 20,
+		}
+	}, "test", nil)
+
+	root := chi.NewRouter()
+	root.Mount("/stremio", h.Router())
+	server := httptest.NewServer(root)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/stremio/stream/series/tt31849235%3A1%3A2.json")
+	if err != nil {
+		t.Fatalf("get stream: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var sr streamResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	want := "{ImdbId:tt31849235}{Season:01}{Episode:02}"
+	if gotQuery != want {
+		t.Errorf("prowlarr id query = %q, want %q", gotQuery, want)
+	}
+	if len(sr.Streams) != 1 {
+		t.Errorf("want 1 stream, got %d: %+v", len(sr.Streams), sr.Streams)
+	}
+}
+
 func TestManifestVersion(t *testing.T) {
 	tests := map[string]string{
 		"1.2.3":          "1.2.3",      // plain semver
