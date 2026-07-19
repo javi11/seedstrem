@@ -113,6 +113,8 @@ export interface Torrent {
   size: number;
   uploaded: number;
   ratio: number;
+  seed_time: number;
+  seeding_time: number;
   added_at: number;
   error?: string;
   links: TorrentLink[];
