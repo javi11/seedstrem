@@ -12,8 +12,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/javib/seedstrem/internal/downloader"
 	"github.com/javib/seedstrem/internal/playsession"
-	"github.com/javib/seedstrem/internal/qbit"
 	"github.com/javib/seedstrem/internal/store"
 	"github.com/javib/seedstrem/internal/torrents"
 )
@@ -32,21 +32,22 @@ type Settings struct {
 // qBittorrent may still be downloading.
 type Handler struct {
 	store    *store.Store
-	dc       qbit.Client
+	dc       downloader.Client
 	svc      *torrents.Service
 	resolver *Resolver
 	avail    *Availability
 	sessions *playsession.Sessions
 	settings func() Settings
+	prio     *prioritizer
 	logger   *slog.Logger
 }
 
 // NewHandler creates the streaming handler.
-func NewHandler(st *store.Store, dc qbit.Client, svc *torrents.Service, resolver *Resolver, avail *Availability, sessions *playsession.Sessions, settings func() Settings, logger *slog.Logger) *Handler {
+func NewHandler(st *store.Store, dc downloader.Client, svc *torrents.Service, resolver *Resolver, avail *Availability, sessions *playsession.Sessions, settings func() Settings, logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{store: st, dc: dc, svc: svc, resolver: resolver, avail: avail, sessions: sessions, settings: settings, logger: logger}
+	return &Handler{store: st, dc: dc, svc: svc, resolver: resolver, avail: avail, sessions: sessions, settings: settings, prio: newPrioritizer(dc, logger), logger: logger}
 }
 
 // Router returns the router to mount at /dl.
@@ -104,7 +105,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, "qbittorrent files", err)
 		return
 	}
-	var file qbit.FileInfo
+	var file downloader.FileInfo
 	found := false
 	for _, f := range files {
 		if f.Index == link.FileIndex {
@@ -221,6 +222,11 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 			return os.Open(p)
 		},
 		waitFor: func(ctx context.Context, hash string, first, last int) error {
+			// Every blocking read — first play and each seek's first read
+			// into a missing region — passes through here: ask capable
+			// backends (Deluge + Seedstream plugin) to deadline-fetch the
+			// awaited window plus readahead before settling in to wait.
+			h.prio.request(ctx, hash, first, last+readaheadPieces(props.PieceSize))
 			return h.avail.WaitForRange(ctx, hash, first, last, settings.WaitTimeout)
 		},
 	}
@@ -265,6 +271,11 @@ func (h *Handler) waitStreamReady(ctx context.Context, hash string, headFirst, h
 		haveTail, _ := h.avail.HaveRange(ctx, hash, tailFirst, tailLast)
 		return haveTail
 	}
+	// Deadline-fetch the head and tail up front on capable backends:
+	// first/last-piece priority covers them eventually, but an explicit
+	// deadline makes the MKV cues arrive deterministically fast.
+	h.prio.request(ctx, hash, headFirst, headLast)
+	h.prio.request(ctx, hash, tailFirst, tailLast)
 	deadline := time.Now().Add(grace)
 	if err := h.avail.WaitForRange(ctx, hash, headFirst, headLast, grace); err != nil {
 		return false
@@ -276,7 +287,7 @@ func (h *Handler) waitStreamReady(ctx context.Context, hash string, headFirst, h
 // timeout. qBittorrent creates the file shortly after a torrent starts;
 // until then FilePath returns not-found. Torrent info is re-fetched each
 // poll so a content-path change (temp → final location) is picked up.
-func (h *Handler) waitForFile(ctx context.Context, hash string, file qbit.FileInfo, timeout time.Duration) (string, error) {
+func (h *Handler) waitForFile(ctx context.Context, hash string, file downloader.FileInfo, timeout time.Duration) (string, error) {
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
@@ -338,7 +349,7 @@ func (h *Handler) heartbeat(ctx context.Context, stop <-chan struct{}, hash stri
 				}
 			}
 			sum, sumErr := h.avail.Summary(ctx, hash, headFirst, headLast)
-			haveHead := sumErr == nil && sum.HeadState == qbit.PieceHave
+			haveHead := sumErr == nil && sum.HeadState == downloader.PieceHave
 			h.logger.Debug("stream: download heartbeat",
 				"hash", hash, "progress", progress, "fileProgress", fileProgress,
 				"headPieces", [2]int{headFirst, headLast}, "headOnDisk", haveHead,
@@ -351,6 +362,10 @@ func (h *Handler) heartbeat(ctx context.Context, stop <-chan struct{}, hash stri
 				continue
 			}
 			stalledBeats++
+			// A piece deadline is a far more surgical unstick than the
+			// picker reset below; the kick stays as the fallback for
+			// backends without piece prioritization.
+			h.prio.request(ctx, hash, headFirst, headLast)
 			if stalledBeats >= headStallBeats && h.svc.KickStreamingPrioThrottled(ctx, hash) {
 				h.logger.Warn("stream: head stalled, kicking piece picker",
 					"hash", hash, "headPieces", [2]int{headFirst, headLast},
@@ -361,12 +376,12 @@ func (h *Handler) heartbeat(ctx context.Context, stop <-chan struct{}, hash stri
 	}
 }
 
-// pieceStateName renders a qbit.PieceState for logs.
-func pieceStateName(s qbit.PieceState) string {
+// pieceStateName renders a downloader.PieceState for logs.
+func pieceStateName(s downloader.PieceState) string {
 	switch s {
-	case qbit.PieceHave:
+	case downloader.PieceHave:
 		return "have"
-	case qbit.PieceDownloading:
+	case downloader.PieceDownloading:
 		return "downloading"
 	default:
 		return "missing"

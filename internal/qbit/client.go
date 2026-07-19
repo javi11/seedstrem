@@ -1,7 +1,7 @@
-// Package qbit wraps the qBittorrent WebUI API behind a narrow interface
-// tailored to seedstrem's needs. The adapter delegates to
-// github.com/autobrr/go-qbittorrent, which handles cookie login,
-// re-authentication, and qBittorrent 4.x/5.x endpoint renames.
+// Package qbit implements downloader.Client against the qBittorrent
+// WebUI API. The adapter delegates to github.com/autobrr/go-qbittorrent,
+// which handles cookie login, re-authentication, and qBittorrent 4.x/5.x
+// endpoint renames.
 package qbit
 
 import (
@@ -13,50 +13,35 @@ import (
 	"time"
 
 	qbt "github.com/autobrr/go-qbittorrent"
+
+	"github.com/javib/seedstrem/internal/downloader"
 )
+
+// incompleteExt is appended by qBittorrent when "Append .!qB extension
+// to incomplete files" is enabled.
+const incompleteExt = ".!qB"
 
 // isNotFound reports whether err is qBittorrent signalling that the hash
 // is unknown. This happens for a brief window right after adding a
 // torrent (the add is accepted asynchronously, before the torrent is
 // queryable) and while a magnet's metadata has not resolved yet. Callers
-// map it to ErrTorrentNotFound so WaitForMetadata polls instead of
-// failing hard.
+// map it to downloader.ErrTorrentNotFound so WaitForMetadata polls
+// instead of failing hard.
 func isNotFound(err error) bool {
 	return errors.Is(err, qbt.ErrTorrentNotFound) ||
 		errors.Is(err, qbt.ErrTorrentMetadataNotDownloadedYet)
 }
-
-// Client is the qBittorrent surface used by seedstrem.
-type Client interface {
-	AddMagnet(ctx context.Context, magnet string, opts AddOptions) error
-	AddTorrentFile(ctx context.Context, raw []byte, opts AddOptions) error
-	Torrents(ctx context.Context, hashes []string) ([]TorrentInfo, error)
-	Torrent(ctx context.Context, hash string) (TorrentInfo, error)
-	Files(ctx context.Context, hash string) ([]FileInfo, error)
-	Properties(ctx context.Context, hash string) (Properties, error)
-	PieceStates(ctx context.Context, hash string) ([]PieceState, error)
-	SetFilePriority(ctx context.Context, hash string, indices []int, priority int) error
-	ToggleFirstLastPiecePrio(ctx context.Context, hash string) error
-	ToggleSequentialDownload(ctx context.Context, hash string) error
-	Start(ctx context.Context, hash string) error
-	Delete(ctx context.Context, hash string, deleteFiles bool) error
-	AppPreferences(ctx context.Context) (Prefs, error)
-	Version(ctx context.Context) (string, error)
-}
-
-// ErrTorrentNotFound is returned when qBittorrent does not know the hash.
-var ErrTorrentNotFound = fmt.Errorf("torrent not found in qbittorrent")
 
 type client struct {
 	qb       *qbt.Client
 	category string
 }
 
-// New creates a Client for the qBittorrent WebUI at url. Login happens
-// lazily inside the underlying library on first use, so New cannot fail —
-// matching seedstrem's hot-swappable client pattern. category is the
-// default category applied to torrents seedstrem adds.
-func New(url, username, password, category string) Client {
+// New creates a downloader.Client for the qBittorrent WebUI at url.
+// Login happens lazily inside the underlying library on first use, so
+// New cannot fail — matching seedstrem's hot-swappable client pattern.
+// category is the default category applied to torrents seedstrem adds.
+func New(url, username, password, category string) downloader.Client {
 	return &client{
 		qb: qbt.NewClient(qbt.Config{
 			Host:     url,
@@ -67,7 +52,7 @@ func New(url, username, password, category string) Client {
 	}
 }
 
-func (c *client) addOptionsMap(opts AddOptions) map[string]string {
+func (c *client) addOptionsMap(opts downloader.AddOptions) map[string]string {
 	m := map[string]string{}
 	category := opts.Category
 	if category == "" {
@@ -91,7 +76,7 @@ func (c *client) addOptionsMap(opts AddOptions) map[string]string {
 	return m
 }
 
-func (c *client) AddMagnet(ctx context.Context, magnet string, opts AddOptions) error {
+func (c *client) AddMagnet(ctx context.Context, magnet string, opts downloader.AddOptions) error {
 	if _, err := c.qb.AddTorrentFromUrlCtx(ctx, magnet, c.addOptionsMap(opts)); err != nil {
 		return fmt.Errorf("qbit add magnet: %w", err)
 	}
@@ -102,15 +87,15 @@ func (c *client) AddMagnet(ctx context.Context, magnet string, opts AddOptions) 
 // the metadata is already present, so qBittorrent skips the metadata
 // (metaDL) fetch entirely — essential for private trackers whose peers
 // won't reliably serve metadata over the wire.
-func (c *client) AddTorrentFile(ctx context.Context, raw []byte, opts AddOptions) error {
+func (c *client) AddTorrentFile(ctx context.Context, raw []byte, opts downloader.AddOptions) error {
 	if _, err := c.qb.AddTorrentFromMemoryCtx(ctx, raw, c.addOptionsMap(opts)); err != nil {
 		return fmt.Errorf("qbit add torrent file: %w", err)
 	}
 	return nil
 }
 
-func convertTorrent(t qbt.Torrent) TorrentInfo {
-	return TorrentInfo{
+func convertTorrent(t qbt.Torrent) downloader.TorrentInfo {
+	return downloader.TorrentInfo{
 		Hash:        t.Hash,
 		Name:        t.Name,
 		State:       normalizeState(string(t.State)),
@@ -129,7 +114,7 @@ func convertTorrent(t qbt.Torrent) TorrentInfo {
 	}
 }
 
-func (c *client) Torrents(ctx context.Context, hashes []string) ([]TorrentInfo, error) {
+func (c *client) Torrents(ctx context.Context, hashes []string) ([]downloader.TorrentInfo, error) {
 	if len(hashes) == 0 {
 		// An empty filter means "every torrent" to qBittorrent, which could
 		// include torrents unrelated to seedstrem on a shared instance.
@@ -139,40 +124,40 @@ func (c *client) Torrents(ctx context.Context, hashes []string) ([]TorrentInfo, 
 	if err != nil {
 		return nil, fmt.Errorf("qbit list torrents: %w", err)
 	}
-	infos := make([]TorrentInfo, 0, len(list))
+	infos := make([]downloader.TorrentInfo, 0, len(list))
 	for _, t := range list {
 		infos = append(infos, convertTorrent(t))
 	}
 	return infos, nil
 }
 
-func (c *client) Torrent(ctx context.Context, hash string) (TorrentInfo, error) {
+func (c *client) Torrent(ctx context.Context, hash string) (downloader.TorrentInfo, error) {
 	list, err := c.qb.GetTorrentsCtx(ctx, qbt.TorrentFilterOptions{Hashes: []string{hash}})
 	if err != nil {
-		return TorrentInfo{}, fmt.Errorf("qbit get torrent %s: %w", hash, err)
+		return downloader.TorrentInfo{}, fmt.Errorf("qbit get torrent %s: %w", hash, err)
 	}
 	for _, t := range list {
 		if strings.EqualFold(t.Hash, hash) {
 			return convertTorrent(t), nil
 		}
 	}
-	return TorrentInfo{}, ErrTorrentNotFound
+	return downloader.TorrentInfo{}, downloader.ErrTorrentNotFound
 }
 
-func (c *client) Files(ctx context.Context, hash string) ([]FileInfo, error) {
+func (c *client) Files(ctx context.Context, hash string) ([]downloader.FileInfo, error) {
 	files, err := c.qb.GetFilesInformationCtx(ctx, hash)
 	if err != nil {
 		if isNotFound(err) {
-			return nil, ErrTorrentNotFound
+			return nil, downloader.ErrTorrentNotFound
 		}
 		return nil, fmt.Errorf("qbit files %s: %w", hash, err)
 	}
 	if files == nil {
 		return nil, nil
 	}
-	infos := make([]FileInfo, 0, len(*files))
+	infos := make([]downloader.FileInfo, 0, len(*files))
 	for _, f := range *files {
-		infos = append(infos, FileInfo{
+		infos = append(infos, downloader.FileInfo{
 			Index:    f.Index,
 			Name:     f.Name,
 			Size:     f.Size,
@@ -183,32 +168,32 @@ func (c *client) Files(ctx context.Context, hash string) ([]FileInfo, error) {
 	return infos, nil
 }
 
-func (c *client) Properties(ctx context.Context, hash string) (Properties, error) {
+func (c *client) Properties(ctx context.Context, hash string) (downloader.Properties, error) {
 	p, err := c.qb.GetTorrentPropertiesCtx(ctx, hash)
 	if err != nil {
 		if isNotFound(err) {
-			return Properties{}, ErrTorrentNotFound
+			return downloader.Properties{}, downloader.ErrTorrentNotFound
 		}
-		return Properties{}, fmt.Errorf("qbit properties %s: %w", hash, err)
+		return downloader.Properties{}, fmt.Errorf("qbit properties %s: %w", hash, err)
 	}
-	return Properties{
+	return downloader.Properties{
 		PieceSize: int64(p.PieceSize),
 		PiecesNum: p.PiecesNum,
 		SavePath:  p.SavePath,
 	}, nil
 }
 
-func (c *client) PieceStates(ctx context.Context, hash string) ([]PieceState, error) {
+func (c *client) PieceStates(ctx context.Context, hash string) ([]downloader.PieceState, error) {
 	states, err := c.qb.GetTorrentPieceStatesCtx(ctx, hash)
 	if err != nil {
 		if isNotFound(err) {
-			return nil, ErrTorrentNotFound
+			return nil, downloader.ErrTorrentNotFound
 		}
 		return nil, fmt.Errorf("qbit piece states %s: %w", hash, err)
 	}
-	out := make([]PieceState, len(states))
+	out := make([]downloader.PieceState, len(states))
 	for i, s := range states {
-		out[i] = PieceState(s)
+		out[i] = downloader.PieceState(s)
 	}
 	return out, nil
 }
@@ -223,29 +208,49 @@ func (c *client) SetFilePriority(ctx context.Context, hash string, indices []int
 	}
 	if err := c.qb.SetFilePriorityCtx(ctx, hash, strings.Join(ids, "|"), priority); err != nil {
 		if isNotFound(err) {
-			return ErrTorrentNotFound
+			return downloader.ErrTorrentNotFound
 		}
 		return fmt.Errorf("qbit set file priority %s: %w", hash, err)
 	}
 	return nil
 }
 
-func (c *client) ToggleFirstLastPiecePrio(ctx context.Context, hash string) error {
-	if err := c.qb.ToggleFirstLastPiecePrioCtx(ctx, []string{hash}); err != nil {
+// SetSequentialDownload sets the sequential-download flag to an absolute
+// state. qBittorrent's WebUI only offers a blind toggle, so the current
+// flag is read back first and toggled only when it differs.
+func (c *client) SetSequentialDownload(ctx context.Context, hash string, on bool) error {
+	info, err := c.Torrent(ctx, hash)
+	if err != nil {
+		return fmt.Errorf("read sequential download flag: %w", err)
+	}
+	if info.SequentialDownload == on {
+		return nil
+	}
+	if err := c.qb.ToggleTorrentSequentialDownloadCtx(ctx, []string{hash}); err != nil {
 		if isNotFound(err) {
-			return ErrTorrentNotFound
+			return downloader.ErrTorrentNotFound
 		}
-		return fmt.Errorf("qbit toggle first/last piece prio %s: %w", hash, err)
+		return fmt.Errorf("qbit toggle sequential download %s: %w", hash, err)
 	}
 	return nil
 }
 
-func (c *client) ToggleSequentialDownload(ctx context.Context, hash string) error {
-	if err := c.qb.ToggleTorrentSequentialDownloadCtx(ctx, []string{hash}); err != nil {
+// SetFirstLastPiecePrio sets the first/last-piece-priority flag to an
+// absolute state, via qBittorrent's blind toggle (see
+// SetSequentialDownload).
+func (c *client) SetFirstLastPiecePrio(ctx context.Context, hash string, on bool) error {
+	info, err := c.Torrent(ctx, hash)
+	if err != nil {
+		return fmt.Errorf("read first/last piece prio flag: %w", err)
+	}
+	if info.FirstLastPiecePrio == on {
+		return nil
+	}
+	if err := c.qb.ToggleFirstLastPiecePrioCtx(ctx, []string{hash}); err != nil {
 		if isNotFound(err) {
-			return ErrTorrentNotFound
+			return downloader.ErrTorrentNotFound
 		}
-		return fmt.Errorf("qbit toggle sequential download %s: %w", hash, err)
+		return fmt.Errorf("qbit toggle first/last piece prio %s: %w", hash, err)
 	}
 	return nil
 }
@@ -264,18 +269,28 @@ func (c *client) Delete(ctx context.Context, hash string, deleteFiles bool) erro
 	return nil
 }
 
-// AppPreferences returns the subset of qBittorrent settings needed to
-// locate in-progress files (temp download folder, .!qB extension).
-func (c *client) AppPreferences(ctx context.Context) (Prefs, error) {
+// IncompleteFileHints reads the qBittorrent settings that determine where
+// in-progress files live: the optional temp download folder and the
+// optional .!qB extension.
+func (c *client) IncompleteFileHints(ctx context.Context) (downloader.IncompleteHints, error) {
 	p, err := c.qb.GetAppPreferencesCtx(ctx)
 	if err != nil {
-		return Prefs{}, fmt.Errorf("qbit app preferences: %w", err)
+		return downloader.IncompleteHints{}, fmt.Errorf("qbit app preferences: %w", err)
 	}
-	return Prefs{
-		TempPath:           p.TempPath,
-		TempPathEnabled:    p.TempPathEnabled,
-		IncompleteFilesExt: p.IncompleteFilesExt,
-	}, nil
+	h := downloader.IncompleteHints{}
+	if p.TempPathEnabled {
+		h.TempDir = p.TempPath
+	}
+	if p.IncompleteFilesExt {
+		h.IncompleteExt = incompleteExt
+	}
+	return h, nil
+}
+
+// PrioritizePieces is unsupported: qBittorrent's WebUI API exposes no
+// per-piece priority primitive (qBittorrent#13612).
+func (c *client) PrioritizePieces(context.Context, string, int, int) error {
+	return downloader.ErrNotSupported
 }
 
 func (c *client) Version(ctx context.Context) (string, error) {

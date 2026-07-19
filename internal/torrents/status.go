@@ -1,7 +1,7 @@
 package torrents
 
 import (
-	"github.com/javib/seedstrem/internal/qbit"
+	"github.com/javib/seedstrem/internal/downloader"
 	"github.com/javib/seedstrem/internal/store"
 )
 
@@ -27,7 +27,7 @@ func DeriveStatus(phase, qbittorrentState string, stickyError bool, filesKnown b
 		return StatusError
 	}
 
-	if qbittorrentState == qbit.StateError {
+	if qbittorrentState == downloader.StateError {
 		return StatusError
 	}
 
@@ -44,11 +44,11 @@ func DeriveStatus(phase, qbittorrentState string, stickyError bool, filesKnown b
 	}
 
 	switch qbittorrentState {
-	case qbit.StateQueued, qbit.StateChecking, qbit.StateAllocating, qbit.StatePaused:
+	case downloader.StateQueued, downloader.StateChecking, downloader.StateAllocating, downloader.StatePaused:
 		return StatusQueued
-	case qbit.StateDownloading:
+	case downloader.StateDownloading:
 		return StatusDownloading
-	case qbit.StateSeeding, qbit.StateMoving, qbit.StateActive:
+	case downloader.StateSeeding, downloader.StateMoving, downloader.StateActive:
 		// Upload-side state but selected files not at 100%: the wanted
 		// files finished (progress is over the whole torrent, but
 		// unselected files don't count toward it) — treat as downloaded.

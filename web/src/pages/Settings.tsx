@@ -17,6 +17,7 @@ export function Settings() {
         // Secrets arrive masked; blank the fields so they follow the
         // "empty = keep existing" convention and never submit the mask.
         c.qbittorrent.password = "";
+        c.deluge.password = "";
         c.server.admin_password = "";
         c.prowlarr.api_key = "";
         c.meta.tmdb_api_key = "";
@@ -47,6 +48,7 @@ export function Settings() {
       // Re-blank secrets: the response re-masks them, and leaving typed
       // values in state would resubmit them on the next unrelated save.
       res.config.qbittorrent.password = "";
+      res.config.deluge.password = "";
       res.config.server.admin_password = "";
       res.config.prowlarr.api_key = "";
       res.config.meta.tmdb_api_key = "";
@@ -77,6 +79,21 @@ export function Settings() {
         config!.qbittorrent.category,
       );
       setTestResult(res.ok ? `✓ Connected (qBittorrent ${res.version})` : `✗ ${res.error}`);
+    } catch (err) {
+      setTestResult(`✗ ${(err as Error).message}`);
+    }
+  }
+
+  async function testDeluge() {
+    setTestResult("…");
+    try {
+      const res = await api.testDeluge(
+        config!.deluge.host,
+        config!.deluge.port,
+        config!.deluge.username,
+        config!.deluge.password,
+      );
+      setTestResult(res.ok ? `✓ Connected (${res.version})` : `✗ ${res.error}`);
     } catch (err) {
       setTestResult(`✗ ${(err as Error).message}`);
     }
@@ -126,6 +143,27 @@ export function Settings() {
     <form className="flex flex-col gap-4" onSubmit={save}>
       {message && <div className={`alert alert-${message.kind}`}>{message.text}</div>}
 
+      <div className="card bg-base-100 shadow">
+        <div className="card-body">
+          <h2 className="card-title">Download client</h2>
+          <label className="form-control max-w-xs">
+            <span className="label-text">Client</span>
+            <select
+              className="select select-bordered"
+              value={config.downloader.type}
+              onChange={(e) => {
+                setTestResult("");
+                update((c) => (c.downloader.type = e.target.value));
+              }}
+            >
+              <option value="qbittorrent">qBittorrent</option>
+              <option value="deluge">Deluge</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      {config.downloader.type !== "deluge" && (
       <div className="card bg-base-100 shadow">
         <div className="card-body">
           <h2 className="card-title">qBittorrent</h2>
@@ -179,6 +217,78 @@ export function Settings() {
           </div>
         </div>
       </div>
+      )}
+
+      {config.downloader.type === "deluge" && (
+      <div className="card bg-base-100 shadow">
+        <div className="card-body">
+          <h2 className="card-title">Deluge</h2>
+          <p className="text-sm opacity-70">
+            Connects to the Deluge 2 daemon RPC port (not the web UI). Enable
+            &quot;Allow Remote Connections&quot; in the daemon settings and use an
+            account from Deluge&apos;s auth file. Install the bundled Seedstream
+            plugin for fast seeking.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="form-control">
+              <span className="label-text">Host</span>
+              <input
+                className="input input-bordered"
+                placeholder="deluge"
+                value={config.deluge.host}
+                onChange={(e) => update((c) => (c.deluge.host = e.target.value))}
+              />
+            </label>
+            <label className="form-control">
+              <span className="label-text">Daemon port</span>
+              <input
+                type="number"
+                className="input input-bordered"
+                placeholder="58846"
+                value={config.deluge.port}
+                onChange={(e) => update((c) => (c.deluge.port = Number(e.target.value)))}
+              />
+            </label>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="form-control">
+              <span className="label-text">Username</span>
+              <input
+                className="input input-bordered"
+                placeholder="localclient"
+                value={config.deluge.username}
+                onChange={(e) => update((c) => (c.deluge.username = e.target.value))}
+              />
+            </label>
+            <label className="form-control">
+              <span className="label-text">Password</span>
+              <input
+                type="password"
+                className="input input-bordered"
+                placeholder="unchanged"
+                value={config.deluge.password}
+                onChange={(e) => update((c) => (c.deluge.password = e.target.value))}
+              />
+            </label>
+          </div>
+          <label className="form-control">
+            <span className="label-text">Label</span>
+            <input
+              className="input input-bordered"
+              placeholder="seedstrem"
+              value={config.deluge.label}
+              onChange={(e) => update((c) => (c.deluge.label = e.target.value))}
+            />
+          </label>
+          <div className="card-actions items-center">
+            <button type="button" className="btn btn-outline" onClick={testDeluge}>
+              Test connection
+            </button>
+            {testResult && <span className="text-sm">{testResult}</span>}
+          </div>
+        </div>
+      </div>
+      )}
 
       <div className="card bg-base-100 shadow">
         <div className="card-body">

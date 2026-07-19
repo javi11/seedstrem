@@ -8,6 +8,11 @@ server:
   # Web UI login password. Generated and logged on first run if empty.
   admin_password: ""
 
+downloader:
+  # Which download client seedstrem drives: "qbittorrent" (default) or
+  # "deluge". Only the matching section below is used.
+  type: "qbittorrent"
+
 qbittorrent:
   # seedstrem talks to qBittorrent's WebUI API — the WebUI must be
   # enabled and reachable at this URL.
@@ -20,6 +25,20 @@ qbittorrent:
   # Category applied to the torrents seedstrem adds, so they are
   # distinguishable from other torrents on a shared qBittorrent instance.
   category: "seedstrem"
+
+deluge:
+  # Used when downloader.type is "deluge". seedstrem talks to the Deluge
+  # 2 daemon's native RPC port (not the web UI). Enable "Allow Remote
+  # Connections" in the daemon settings and use an account from Deluge's
+  # auth file. For fast seeking, install the bundled Seedstream plugin
+  # (see contrib/deluge-seedstream/).
+  host: "deluge"
+  port: 58846
+  username: "localclient"
+  password: ""
+  # Label applied to the torrents seedstrem adds (requires Deluge's
+  # Label plugin; skipped when the plugin is disabled).
+  label: "seedstrem"
 
 prowlarr:
   # Torrent search backend. Leave url empty to configure later in the

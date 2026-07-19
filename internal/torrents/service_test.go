@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/javib/seedstrem/internal/qbit"
-	"github.com/javib/seedstrem/internal/qbit/fake"
+	"github.com/javib/seedstrem/internal/downloader"
+	"github.com/javib/seedstrem/internal/downloader/fake"
 	"github.com/javib/seedstrem/internal/store"
 )
 
@@ -44,7 +44,7 @@ func TestResolveIdempotent(t *testing.T) {
 	// season pack; add() won't overwrite an existing hash.
 	fakeDC.Put(&fake.Torrent{
 		Hash:  testHash,
-		State: qbit.StatePaused,
+		State: downloader.StatePaused,
 		Files: []fake.File{
 			{Name: "Show.S01E04.1080p.mkv", Size: 500 << 20},
 			{Name: "Show.S01E05.1080p.mkv", Size: 480 << 20},
@@ -121,7 +121,7 @@ func TestSelectAndLinkReassertsFirstLastPiecePrio(t *testing.T) {
 
 			fakeDC.Put(&fake.Torrent{
 				Hash:               testHash,
-				State:              qbit.StatePaused,
+				State:              downloader.StatePaused,
 				SequentialDownload: tc.seqDl,
 				FirstLastPiecePrio: tc.flPiecePrio,
 				Files: []fake.File{
@@ -133,20 +133,20 @@ func TestSelectAndLinkReassertsFirstLastPiecePrio(t *testing.T) {
 				t.Fatalf("resolve: %v", err)
 			}
 
-			var lastFilePrio, toggles []int
+			var lastFilePrio, reasserts []int
 			for i, c := range fakeDC.Calls() {
 				if strings.HasPrefix(c, "filePrio ") {
 					lastFilePrio = append(lastFilePrio, i)
 				}
-				if strings.HasPrefix(c, "toggleFirstLastPiecePrio ") {
-					toggles = append(toggles, i)
+				if strings.HasPrefix(c, "setFirstLastPiecePrio ") {
+					reasserts = append(reasserts, i)
 				}
 			}
-			if len(toggles) == 0 {
-				t.Fatalf("toggleFirstLastPiecePrio never called: calls=%v", fakeDC.Calls())
+			if len(reasserts) == 0 {
+				t.Fatalf("setFirstLastPiecePrio never called: calls=%v", fakeDC.Calls())
 			}
-			if len(lastFilePrio) == 0 || toggles[0] < lastFilePrio[len(lastFilePrio)-1] {
-				t.Errorf("toggle must happen after the file-priority rewrite: calls=%v", fakeDC.Calls())
+			if len(lastFilePrio) == 0 || reasserts[0] < lastFilePrio[len(lastFilePrio)-1] {
+				t.Errorf("re-assert must happen after the file-priority rewrite: calls=%v", fakeDC.Calls())
 			}
 			tor := fakeDC.Get(testHash)
 			if !tor.FirstLastPiecePrio {
@@ -172,7 +172,7 @@ func TestRepeatResolveReassertsStreamingPrio(t *testing.T) {
 
 	fakeDC.Put(&fake.Torrent{
 		Hash:  testHash,
-		State: qbit.StatePaused,
+		State: downloader.StatePaused,
 		Files: []fake.File{
 			{Name: "Movie.2026.1080p.mkv", Size: 8 << 30},
 		},
@@ -218,7 +218,7 @@ func TestKickStreamingPrio(t *testing.T) {
 
 	fakeDC.Put(&fake.Torrent{
 		Hash:               testHash,
-		State:              qbit.StateDownloading,
+		State:              downloader.StateDownloading,
 		SequentialDownload: true,
 		FirstLastPiecePrio: true,
 		Files:              []fake.File{{Name: "Movie.mkv", Size: 8 << 30}},
@@ -227,18 +227,18 @@ func TestKickStreamingPrio(t *testing.T) {
 	if !svc.KickStreamingPrioThrottled(ctx, testHash) {
 		t.Fatal("first kick must fire")
 	}
-	var seqToggles, flToggles int
+	var seqSets, flSets int
 	for _, c := range fakeDC.Calls() {
-		if strings.HasPrefix(c, "toggleSequentialDownload ") {
-			seqToggles++
+		if strings.HasPrefix(c, "setSequentialDownload ") {
+			seqSets++
 		}
-		if strings.HasPrefix(c, "toggleFirstLastPiecePrio ") {
-			flToggles++
+		if strings.HasPrefix(c, "setFirstLastPiecePrio ") {
+			flSets++
 		}
 	}
-	if seqToggles != 2 || flToggles != 2 {
-		t.Errorf("toggles seq=%d fl=%d, want 2 and 2 (off+on picker reset): calls=%v",
-			seqToggles, flToggles, fakeDC.Calls())
+	if seqSets != 2 || flSets != 2 {
+		t.Errorf("sets seq=%d fl=%d, want 2 and 2 (off+on picker reset): calls=%v",
+			seqSets, flSets, fakeDC.Calls())
 	}
 	tor := fakeDC.Get(testHash)
 	if !tor.SequentialDownload || !tor.FirstLastPiecePrio {
@@ -262,7 +262,7 @@ func TestEnsureStreamingPrioSkipsCompleted(t *testing.T) {
 
 	fakeDC.Put(&fake.Torrent{
 		Hash:     testHash,
-		State:    qbit.StateSeeding,
+		State:    downloader.StateSeeding,
 		Progress: 1,
 		Files:    []fake.File{{Name: "Movie.mkv", Size: 8 << 30, Progress: 1}},
 	})
@@ -281,7 +281,7 @@ func TestRemove(t *testing.T) {
 	svc, fakeDC, db := newService(t)
 	ctx := context.Background()
 
-	fakeDC.Put(&fake.Torrent{Hash: testHash, State: qbit.StateSeeding})
+	fakeDC.Put(&fake.Torrent{Hash: testHash, State: downloader.StateSeeding})
 	tor, err := svc.EnsureAdded(ctx, testMagnet("Show"), nil)
 	if err != nil {
 		t.Fatalf("ensure added: %v", err)
@@ -303,7 +303,7 @@ func TestRemoveMissingFromqBittorrentIsNotAnError(t *testing.T) {
 	svc, fakeDC, db := newService(t)
 	ctx := context.Background()
 
-	fakeDC.Put(&fake.Torrent{Hash: testHash, State: qbit.StateSeeding})
+	fakeDC.Put(&fake.Torrent{Hash: testHash, State: downloader.StateSeeding})
 	tor, err := svc.EnsureAdded(ctx, testMagnet("Show"), nil)
 	if err != nil {
 		t.Fatalf("ensure added: %v", err)
@@ -353,7 +353,7 @@ func TestEnsureAddedUsesTorrentFileWhenPresent(t *testing.T) {
 func TestLiveProgress(t *testing.T) {
 	svc, fakeDC, _ := newService(t)
 	ctx := context.Background()
-	fakeDC.Put(&fake.Torrent{Hash: testHash, State: qbit.StateDownloading, Progress: 0.5})
+	fakeDC.Put(&fake.Torrent{Hash: testHash, State: downloader.StateDownloading, Progress: 0.5})
 
 	got := svc.LiveProgress(ctx, []string{testHash, "ffffffffffffffffffffffffffffffffffffffff"})
 	if got[testHash] != 0.5 {
@@ -376,7 +376,7 @@ func TestLiveProgress(t *testing.T) {
 func TestWaitForMetadataTimeout(t *testing.T) {
 	svc, fakeDC, _ := newService(t)
 	// Torrent exists but never resolves files.
-	fakeDC.Put(&fake.Torrent{Hash: testHash, State: qbit.StateDownloading})
+	fakeDC.Put(&fake.Torrent{Hash: testHash, State: downloader.StateDownloading})
 
 	// Speed up the poll loop.
 	svc.sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }

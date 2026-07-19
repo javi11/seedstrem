@@ -8,24 +8,26 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/javib/seedstrem/internal/config"
-	"github.com/javib/seedstrem/internal/qbit"
-	"github.com/javib/seedstrem/internal/qbit/fake"
+	"github.com/javib/seedstrem/internal/downloader"
+	"github.com/javib/seedstrem/internal/downloader/fake"
 	"github.com/javib/seedstrem/internal/store"
 )
 
 const adminPassword = "test-admin-pw"
 
 type env struct {
-	handler http.Handler
-	config  *config.Manager
-	fake    *fake.Server
-	store   *store.Store
-	cookie  *http.Cookie
-	t       *testing.T
+	handler   http.Handler
+	config    *config.Manager
+	fake      *fake.Server
+	swappable *downloader.Swappable
+	store     *store.Store
+	cookie    *http.Cookie
+	t         *testing.T
 }
 
 func newEnv(t *testing.T) *env {
@@ -43,9 +45,12 @@ func newEnv(t *testing.T) *env {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	dc := qbit.NewSwappable(f)
-	h := New(cm, st, dc, "test", nil)
-	return &env{handler: h.Router(), config: cm, fake: f, store: st, t: t}
+	dc := downloader.NewSwappable(f)
+	// Tests swap in a fresh fake on config changes, standing in for the
+	// real backend factory.
+	newClient := func(config.Config) downloader.Client { return fake.New() }
+	h := New(cm, st, dc, newClient, "test", nil)
+	return &env{handler: h.Router(), config: cm, fake: f, swappable: dc, store: st, t: t}
 }
 
 func (e *env) login(t *testing.T) {
@@ -335,6 +340,116 @@ func TestTorrentsListing(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Errorf("expected empty list, got %v", items)
+	}
+}
+
+// closableFake wraps the fake client with a close flag so the hot-swap
+// path's cleanup of the replaced client is observable.
+type closableFake struct {
+	*fake.Server
+	closed atomic.Bool
+}
+
+func (c *closableFake) Close() error {
+	c.closed.Store(true)
+	return nil
+}
+
+func TestPutConfigSwapsDownloaderTypeAndClosesOld(t *testing.T) {
+	e := newEnv(t)
+	e.login(t)
+
+	old := &closableFake{Server: fake.New()}
+	e.swappable.Swap(old)
+
+	w := e.do(t, http.MethodGet, "/config", "")
+	var dto configDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &dto); err != nil {
+		t.Fatal(err)
+	}
+	if dto.Downloader.Type != "qbittorrent" {
+		t.Fatalf("initial type = %q", dto.Downloader.Type)
+	}
+	dto.Downloader.Type = "deluge"
+	payload, _ := json.Marshal(dto)
+	if w = e.do(t, http.MethodPut, "/config", string(payload)); w.Code != http.StatusOK {
+		t.Fatalf("put status = %d body=%s", w.Code, w.Body.String())
+	}
+	if got := e.config.Get().Downloader.Type; got != "deluge" {
+		t.Errorf("stored type = %q", got)
+	}
+	// The old client must be closed (asynchronously) after the swap.
+	deadline := time.Now().Add(2 * time.Second)
+	for !old.closed.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("replaced client was never closed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestPutConfigKeepsMaskedDelugePassword(t *testing.T) {
+	e := newEnv(t)
+	cfg := e.config.Get()
+	cfg.Deluge.Password = "deluge-secret"
+	if err := e.config.Update(cfg); err != nil {
+		t.Fatal(err)
+	}
+	e.login(t)
+
+	w := e.do(t, http.MethodGet, "/config", "")
+	var dto configDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &dto); err != nil {
+		t.Fatal(err)
+	}
+	if dto.Deluge.Password != passwordMask {
+		t.Fatalf("expected masked deluge password, got %q", dto.Deluge.Password)
+	}
+	payload, _ := json.Marshal(dto)
+	if w = e.do(t, http.MethodPut, "/config", string(payload)); w.Code != http.StatusOK {
+		t.Fatalf("put status = %d body=%s", w.Code, w.Body.String())
+	}
+	if got := e.config.Get().Deluge.Password; got != "deluge-secret" {
+		t.Errorf("masked deluge password overwrote stored value: %q", got)
+	}
+}
+
+func TestTestDeluge(t *testing.T) {
+	e := newEnv(t)
+	e.login(t)
+
+	// Like test-qbittorrent, this dials a real daemon from the posted
+	// settings, so only the failure path is unit-testable.
+	w := e.do(t, http.MethodPost, "/config/test-deluge", `{"host":"127.0.0.1","port":1,"username":"u","password":"p"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var res map[string]any
+	json.Unmarshal(w.Body.Bytes(), &res)
+	if res["ok"] != false {
+		t.Errorf("expected failure for dead deluge daemon: %v", res)
+	}
+}
+
+func TestStatusReportsDownloader(t *testing.T) {
+	e := newEnv(t)
+	e.login(t)
+
+	w := e.do(t, http.MethodGet, "/status", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var res struct {
+		Downloader struct {
+			Type      string `json:"type"`
+			Connected bool   `json:"connected"`
+		} `json:"downloader"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Downloader.Type != "qbittorrent" || !res.Downloader.Connected {
+		t.Errorf("downloader status = %+v", res.Downloader)
 	}
 }
 

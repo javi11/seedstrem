@@ -199,3 +199,76 @@ func TestGenerateSecretUnique(t *testing.T) {
 		t.Error("two generated secrets are equal")
 	}
 }
+
+func TestDownloaderDefaultsAndLegacyConfig(t *testing.T) {
+	// A config file predating the downloader/deluge sections loads as
+	// qBittorrent with the Deluge defaults intact.
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	legacy := `
+qbittorrent:
+  url: "http://qb:8080"
+`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load legacy config: %v", err)
+	}
+	if cfg.Downloader.Type != DownloaderQBittorrent {
+		t.Errorf("type = %q, want qbittorrent default", cfg.Downloader.Type)
+	}
+	if cfg.Deluge.Port != 58846 || cfg.Deluge.Username != "localclient" || cfg.Deluge.Label != "seedstrem" {
+		t.Errorf("deluge defaults = %+v", cfg.Deluge)
+	}
+}
+
+func TestDownloaderEnvOverrides(t *testing.T) {
+	cfg := Default()
+	env := map[string]string{
+		"SEEDSTREM_DOWNLOADER_TYPE": "deluge",
+		"SEEDSTREM_DELUGE_HOST":     "10.0.0.5",
+		"SEEDSTREM_DELUGE_PORT":     "12345",
+		"SEEDSTREM_DELUGE_USERNAME": "user",
+		"SEEDSTREM_DELUGE_PASSWORD": "pass",
+		"SEEDSTREM_DELUGE_LABEL":    "media",
+	}
+	applyEnv(&cfg, func(k string) string { return env[k] })
+	if cfg.Downloader.Type != DownloaderDeluge {
+		t.Errorf("type = %q", cfg.Downloader.Type)
+	}
+	if cfg.Deluge.Host != "10.0.0.5" || cfg.Deluge.Port != 12345 || cfg.Deluge.Username != "user" ||
+		cfg.Deluge.Password != "pass" || cfg.Deluge.Label != "media" {
+		t.Errorf("deluge = %+v", cfg.Deluge)
+	}
+}
+
+func TestValidateDownloader(t *testing.T) {
+	// Unknown type rejected.
+	cfg := Default()
+	cfg.Downloader.Type = "transmission"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "downloader.type") {
+		t.Errorf("want downloader.type error, got %v", err)
+	}
+
+	// Deluge selected: deluge fields validated, qbittorrent.url ignored.
+	cfg = Default()
+	cfg.Downloader.Type = DownloaderDeluge
+	cfg.QBittorrent.URL = ""
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("qbittorrent.url must not be required for deluge: %v", err)
+	}
+	cfg.Deluge.Host = ""
+	cfg.Deluge.Port = 0
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "deluge.host") || !strings.Contains(err.Error(), "deluge.port") {
+		t.Errorf("want deluge.host and deluge.port errors, got %v", err)
+	}
+
+	// qBittorrent selected: deluge fields not validated.
+	cfg = Default()
+	cfg.Deluge.Host = ""
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("deluge fields must not be required for qbittorrent: %v", err)
+	}
+}

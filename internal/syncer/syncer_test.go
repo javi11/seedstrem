@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/javib/seedstrem/internal/qbit/fake"
+	"github.com/javib/seedstrem/internal/downloader/fake"
 	"github.com/javib/seedstrem/internal/store"
 )
 

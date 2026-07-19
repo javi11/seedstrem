@@ -11,9 +11,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/javib/seedstrem/internal/downloader/fake"
 	"github.com/javib/seedstrem/internal/meta"
 	"github.com/javib/seedstrem/internal/prowlarr"
-	"github.com/javib/seedstrem/internal/qbit/fake"
 	"github.com/javib/seedstrem/internal/store"
 	"github.com/javib/seedstrem/internal/torrents"
 )

@@ -17,6 +17,8 @@ import (
 	"github.com/javib/seedstrem/internal/admin"
 	"github.com/javib/seedstrem/internal/cleanup"
 	"github.com/javib/seedstrem/internal/config"
+	"github.com/javib/seedstrem/internal/deluge"
+	"github.com/javib/seedstrem/internal/downloader"
 	"github.com/javib/seedstrem/internal/meta"
 	"github.com/javib/seedstrem/internal/playsession"
 	"github.com/javib/seedstrem/internal/prowlarr"
@@ -83,7 +85,7 @@ func run() error {
 	defer db.Close()
 
 	cm := config.NewManager(cfg, *configPath)
-	dc := qbit.NewSwappable(qbit.New(cfg.QBittorrent.URL, cfg.QBittorrent.Username, cfg.QBittorrent.Password, cfg.QBittorrent.Category))
+	dc := downloader.NewSwappable(buildDownloadClient(cfg))
 
 	torrentSvc := torrents.New(db, dc, func() torrents.Settings {
 		c := cm.Get()
@@ -133,7 +135,7 @@ func run() error {
 		}
 	}, logger)
 
-	adminHandler := admin.New(cm, db, dc, version, logger)
+	adminHandler := admin.New(cm, db, dc, buildDownloadClient, version, logger)
 
 	syncCtx, stopSync := context.WithCancel(context.Background())
 	defer stopSync()
@@ -179,6 +181,16 @@ func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return httpServer.Shutdown(ctx)
+}
+
+// buildDownloadClient constructs the download client selected by
+// downloader.type. Anything but "deluge" (including the empty legacy
+// value) means qBittorrent.
+func buildDownloadClient(cfg config.Config) downloader.Client {
+	if cfg.Downloader.Type == config.DownloaderDeluge {
+		return deluge.New(cfg.Deluge.Host, cfg.Deluge.Port, cfg.Deluge.Username, cfg.Deluge.Password, cfg.Deluge.Label)
+	}
+	return qbit.New(cfg.QBittorrent.URL, cfg.QBittorrent.Username, cfg.QBittorrent.Password, cfg.QBittorrent.Category)
 }
 
 func defaultConfigPath() string {

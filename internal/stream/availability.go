@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/javib/seedstrem/internal/qbit"
+	"github.com/javib/seedstrem/internal/downloader"
 )
 
 // ErrWaitTimeout is returned when pieces did not arrive in time.
@@ -25,7 +25,7 @@ const (
 // Availability answers "are these pieces on disk yet?" with a short-TTL
 // cache shared across concurrent readers of the same torrent.
 type Availability struct {
-	dc qbit.Client
+	dc downloader.Client
 
 	mu    sync.Mutex
 	cache map[string]*pieceEntry
@@ -36,13 +36,13 @@ type Availability struct {
 }
 
 type pieceEntry struct {
-	states    []qbit.PieceState
+	states    []downloader.PieceState
 	fetchedAt time.Time
 	inflight  chan struct{} // non-nil while a fetch is running
 }
 
 // NewAvailability creates an Availability backed by dc.
-func NewAvailability(dc qbit.Client) *Availability {
+func NewAvailability(dc downloader.Client) *Availability {
 	return &Availability{
 		dc:    dc,
 		cache: map[string]*pieceEntry{},
@@ -64,7 +64,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 
 // states returns cached piece states, fetching at most once per TTL per
 // torrent even under concurrent readers.
-func (a *Availability) states(ctx context.Context, hash string) ([]qbit.PieceState, error) {
+func (a *Availability) states(ctx context.Context, hash string) ([]downloader.PieceState, error) {
 	for {
 		a.mu.Lock()
 		entry, ok := a.cache[hash]
@@ -126,7 +126,7 @@ func (a *Availability) HaveRange(ctx context.Context, hash string, first, last i
 		return false, nil
 	}
 	for i := first; i <= last; i++ {
-		if states[i] != qbit.PieceHave {
+		if states[i] != downloader.PieceHave {
 			return false, nil
 		}
 	}
@@ -142,8 +142,8 @@ type Summary struct {
 	// HeadState is the worst state among the pieces [headFirst, headLast]
 	// (missing < downloading < have). LastState is the final piece's state.
 	// Pieces beyond the known bitfield report as missing.
-	HeadState qbit.PieceState
-	LastState qbit.PieceState
+	HeadState downloader.PieceState
+	LastState downloader.PieceState
 }
 
 // Summary reads the (cached) piece states and condenses them for
@@ -154,20 +154,20 @@ func (a *Availability) Summary(ctx context.Context, hash string, headFirst, head
 	if err != nil {
 		return Summary{}, err
 	}
-	sum := Summary{TotalPieces: len(states), FirstMissing: -1, HeadState: qbit.PieceHave}
+	sum := Summary{TotalPieces: len(states), FirstMissing: -1, HeadState: downloader.PieceHave}
 	for i, st := range states {
 		switch st {
-		case qbit.PieceHave:
+		case downloader.PieceHave:
 			sum.Have++
-		case qbit.PieceDownloading:
+		case downloader.PieceDownloading:
 			sum.Downloading++
 		}
-		if st != qbit.PieceHave && sum.FirstMissing == -1 {
+		if st != downloader.PieceHave && sum.FirstMissing == -1 {
 			sum.FirstMissing = i
 		}
 	}
 	for i := headFirst; i <= headLast; i++ {
-		st := qbit.PieceMissing
+		st := downloader.PieceMissing
 		if i >= 0 && i < len(states) {
 			st = states[i]
 		}

@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/javib/seedstrem/internal/downloader"
 	"github.com/javib/seedstrem/internal/metainfo"
-	"github.com/javib/seedstrem/internal/qbit"
 	"github.com/javib/seedstrem/internal/store"
 )
 
@@ -33,7 +33,7 @@ type Settings struct {
 // and the local store.
 type Service struct {
 	store    *store.Store
-	dc       qbit.Client
+	dc       downloader.Client
 	settings func() Settings
 	logger   *slog.Logger
 
@@ -51,7 +51,7 @@ type Service struct {
 }
 
 // New builds a Service.
-func New(st *store.Store, dc qbit.Client, settings func() Settings, logger *slog.Logger) *Service {
+func New(st *store.Store, dc downloader.Client, settings func() Settings, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -106,7 +106,7 @@ func (s *Service) EnsureAdded(ctx context.Context, magnet string, torrentFile []
 		return store.Torrent{}, fmt.Errorf("lookup torrent by hash: %w", err)
 	}
 
-	opts := qbit.AddOptions{
+	opts := downloader.AddOptions{
 		Stopped:            false,
 		SequentialDownload: true,
 		FirstLastPiecePrio: true,
@@ -148,14 +148,14 @@ func (s *Service) EnsureAdded(ctx context.Context, magnet string, torrentFile []
 
 // WaitForMetadata polls qBittorrent until it has resolved the torrent's file
 // list (non-empty) or timeout elapses.
-func (s *Service) WaitForMetadata(ctx context.Context, hash string, timeout time.Duration) ([]qbit.FileInfo, error) {
+func (s *Service) WaitForMetadata(ctx context.Context, hash string, timeout time.Duration) ([]downloader.FileInfo, error) {
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
 	deadline := time.Now().Add(timeout)
 	for {
 		files, err := s.dc.Files(ctx, hash)
-		if err != nil && !errors.Is(err, qbit.ErrTorrentNotFound) {
+		if err != nil && !errors.Is(err, downloader.ErrTorrentNotFound) {
 			return nil, fmt.Errorf("qbittorrent files: %w", err)
 		}
 		if len(files) > 0 {
@@ -179,7 +179,7 @@ var ErrMetadataTimeout = errors.New("timed out waiting for torrent metadata")
 // SelectAndLink marks fileIndex as wanted (others unwanted), starts the
 // torrent, and mints a streaming link for that file. It is idempotent on
 // (torrentID, fileIndex): a repeat call returns the existing link.
-func (s *Service) SelectAndLink(ctx context.Context, tor store.Torrent, fileIndex int, files []qbit.FileInfo) (store.Link, error) {
+func (s *Service) SelectAndLink(ctx context.Context, tor store.Torrent, fileIndex int, files []downloader.FileInfo) (store.Link, error) {
 	if existing, err := s.linkFor(ctx, tor.ID, fileIndex); err == nil {
 		// Repeat play of an already-linked file: the first/last-piece
 		// boost may have been dropped since the first select (qBittorrent
@@ -231,7 +231,7 @@ func (s *Service) SelectAndLink(ctx context.Context, tor store.Torrent, fileInde
 	if err != nil {
 		return store.Link{}, fmt.Errorf("generate link token: %w", err)
 	}
-	var picked qbit.FileInfo
+	var picked downloader.FileInfo
 	for _, f := range files {
 		if f.Index == fileIndex {
 			picked = f
@@ -270,12 +270,12 @@ const streamingPrioReassertInterval = 30
 
 // EnsureStreamingPrio makes sure the torrent downloads in an order fit
 // for streaming: sequential download ON and the first/last-piece boost
-// ON. The actual flag state is read back from qBittorrent and corrected
-// rather than assumed — the add-time flags may never have stuck, and
-// qBittorrent silently drops the first/last boost when it recomputes
-// piece priorities after a file-priority rewrite. When the boost flag is
-// already on it is still toggled off and back on to force a recompute
-// over the current file priorities. No-op once the download is complete.
+// ON. The flags are set absolutely rather than assumed — the add-time
+// flags may never have stuck, and qBittorrent silently drops the
+// first/last boost when it recomputes piece priorities after a
+// file-priority rewrite. The boost is set off and back on to force a
+// recompute over the current file priorities. No-op once the download is
+// complete.
 func (s *Service) EnsureStreamingPrio(ctx context.Context, hash string) error {
 	info, err := s.dc.Torrent(ctx, hash)
 	if err != nil {
@@ -284,24 +284,19 @@ func (s *Service) EnsureStreamingPrio(ctx context.Context, hash string) error {
 	if info.Progress >= 1 {
 		return nil
 	}
-	if !info.SequentialDownload {
-		if err := s.dc.ToggleSequentialDownload(ctx, hash); err != nil {
-			return fmt.Errorf("enable sequential download: %w", err)
-		}
+	if err := s.dc.SetSequentialDownload(ctx, hash, true); err != nil {
+		return fmt.Errorf("enable sequential download: %w", err)
 	}
-	toggles := 1 // off → on
-	if info.FirstLastPiecePrio {
-		toggles = 2 // on → off → on, forcing a piece-priority recompute
+	if err := s.dc.SetFirstLastPiecePrio(ctx, hash, false); err != nil {
+		return fmt.Errorf("re-assert first/last piece prio: %w", err)
 	}
-	for range toggles {
-		if err := s.dc.ToggleFirstLastPiecePrio(ctx, hash); err != nil {
-			return fmt.Errorf("re-assert first/last piece prio: %w", err)
-		}
+	if err := s.dc.SetFirstLastPiecePrio(ctx, hash, true); err != nil {
+		return fmt.Errorf("re-assert first/last piece prio: %w", err)
 	}
 	return nil
 }
 
-// KickStreamingPrio force-resets libtorrent's piece picker: it toggles
+// KickStreamingPrio force-resets libtorrent's piece picker: it sets
 // sequential download AND the first/last-piece boost off and back on
 // regardless of their current state (both end enabled). Used when the
 // head piece a player is waiting on sits stalled for many seconds while
@@ -315,23 +310,17 @@ func (s *Service) KickStreamingPrio(ctx context.Context, hash string) error {
 	if info.Progress >= 1 {
 		return nil
 	}
-	seqToggles := 2 // on → off → on
-	if !info.SequentialDownload {
-		seqToggles = 1 // off → on
+	if err := s.dc.SetSequentialDownload(ctx, hash, false); err != nil {
+		return fmt.Errorf("kick sequential download: %w", err)
 	}
-	for range seqToggles {
-		if err := s.dc.ToggleSequentialDownload(ctx, hash); err != nil {
-			return fmt.Errorf("kick sequential download: %w", err)
-		}
+	if err := s.dc.SetSequentialDownload(ctx, hash, true); err != nil {
+		return fmt.Errorf("kick sequential download: %w", err)
 	}
-	flToggles := 2
-	if !info.FirstLastPiecePrio {
-		flToggles = 1
+	if err := s.dc.SetFirstLastPiecePrio(ctx, hash, false); err != nil {
+		return fmt.Errorf("kick first/last piece prio: %w", err)
 	}
-	for range flToggles {
-		if err := s.dc.ToggleFirstLastPiecePrio(ctx, hash); err != nil {
-			return fmt.Errorf("kick first/last piece prio: %w", err)
-		}
+	if err := s.dc.SetFirstLastPiecePrio(ctx, hash, true); err != nil {
+		return fmt.Errorf("kick first/last piece prio: %w", err)
 	}
 	return nil
 }
@@ -415,7 +404,7 @@ func (s *Service) LiveProgress(ctx context.Context, hashes []string) map[string]
 // error.
 func (s *Service) Remove(ctx context.Context, tor store.Torrent) error {
 	deleteFiles := s.settings().DeleteFilesOnRemove
-	if err := s.dc.Delete(ctx, tor.Hash, deleteFiles); err != nil && !errors.Is(err, qbit.ErrTorrentNotFound) {
+	if err := s.dc.Delete(ctx, tor.Hash, deleteFiles); err != nil && !errors.Is(err, downloader.ErrTorrentNotFound) {
 		return fmt.Errorf("delete from qbittorrent: %w", err)
 	}
 	if err := s.store.DeleteTorrent(ctx, tor.ID); err != nil && !errors.Is(err, store.ErrNotFound) {

@@ -9,12 +9,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/javib/seedstrem/internal/config"
+	"github.com/javib/seedstrem/internal/downloader/fake"
 	"github.com/javib/seedstrem/internal/playsession"
-	"github.com/javib/seedstrem/internal/qbit/fake"
 	"github.com/javib/seedstrem/internal/store"
 	"github.com/javib/seedstrem/internal/torrents"
 )
@@ -339,5 +340,51 @@ func TestCheckAbandonedSkipsWhenSomeoneElseIsWatching(t *testing.T) {
 
 	if f.Get(testHash) == nil {
 		t.Error("expected torrent to remain: another session is active")
+	}
+}
+
+func TestServeRequestsPiecePrioritization(t *testing.T) {
+	// Head and tail available, middle missing. A range request must ask a
+	// capable backend to prioritize the awaited pieces (+readahead)
+	// before waiting on them.
+	e := newStreamEnv(t, []int{2, 0, 0, 2}, 0.5)
+	e.fake.SetPrioritizeErr(nil) // capable backend
+
+	w := e.get(t, "bytes=3072-4095")
+	if w.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	want := fmt.Sprintf("prioritizePieces hash=%s first=3 last=%d", testHash, 3+readaheadPieces(pieceSize))
+	found := false
+	for _, c := range e.fake.Calls() {
+		if c == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("no %q in calls: %v", want, e.fake.Calls())
+	}
+}
+
+func TestServeSilencesPrioritizationWhenUnsupported(t *testing.T) {
+	// Default fake behavior is ErrNotSupported (like qBittorrent): after
+	// the first attempt the prioritizer must back off — one call total.
+	e := newStreamEnv(t, []int{2, 0, 0, 2}, 0.5)
+
+	if w := e.get(t, "bytes=3072-4095"); w.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if w := e.get(t, "bytes=0-1023"); w.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d", w.Code)
+	}
+	count := 0
+	for _, c := range e.fake.Calls() {
+		if strings.HasPrefix(c, "prioritizePieces ") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("prioritizePieces called %d times, want 1 (backoff after ErrNotSupported)", count)
 	}
 }

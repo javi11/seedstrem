@@ -20,7 +20,9 @@ import (
 // Config is the root configuration document.
 type Config struct {
 	Server      Server      `yaml:"server"`
+	Downloader  Downloader  `yaml:"downloader"`
 	QBittorrent QBittorrent `yaml:"qbittorrent"`
+	Deluge      Deluge      `yaml:"deluge"`
 	Prowlarr    Prowlarr    `yaml:"prowlarr"`
 	Addon       Addon       `yaml:"addon"`
 	Filters     Filters     `yaml:"filters"`
@@ -37,6 +39,30 @@ type Server struct {
 	Listen        string `yaml:"listen"`
 	ExternalURL   string `yaml:"external_url"`
 	AdminPassword string `yaml:"admin_password"`
+}
+
+// Downloader-type values accepted by downloader.type.
+const (
+	DownloaderQBittorrent = "qbittorrent"
+	DownloaderDeluge      = "deluge"
+)
+
+// Downloader selects which download client seedstrem drives.
+type Downloader struct {
+	// Type is "qbittorrent" (default) or "deluge".
+	Type string `yaml:"type"`
+}
+
+// Deluge configures the connection to a Deluge 2 daemon (native RPC,
+// not the web UI — the daemon port, 58846 by default).
+type Deluge struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	// Label tags the torrents seedstrem adds (requires Deluge's Label
+	// plugin; applied best-effort).
+	Label string `yaml:"label"`
 }
 
 // QBittorrent configures the connection to the qBittorrent WebUI API.
@@ -139,10 +165,17 @@ func Default() Config {
 			Listen:      ":8080",
 			ExternalURL: "http://localhost:8080",
 		},
+		Downloader: Downloader{Type: DownloaderQBittorrent},
 		QBittorrent: QBittorrent{
 			URL:      "http://qbittorrent:8080",
 			Username: "admin",
 			Category: "seedstrem",
+		},
+		Deluge: Deluge{
+			Host:     "deluge",
+			Port:     58846,
+			Username: "localclient",
+			Label:    "seedstrem",
 		},
 		Prowlarr: Prowlarr{
 			MovieCategories: []int{2000},
@@ -219,10 +252,20 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 	set("SERVER_LISTEN", &cfg.Server.Listen)
 	set("SERVER_EXTERNAL_URL", &cfg.Server.ExternalURL)
 	set("SERVER_ADMIN_PASSWORD", &cfg.Server.AdminPassword)
+	set("DOWNLOADER_TYPE", &cfg.Downloader.Type)
 	set("QBITTORRENT_URL", &cfg.QBittorrent.URL)
 	set("QBITTORRENT_USERNAME", &cfg.QBittorrent.Username)
 	set("QBITTORRENT_PASSWORD", &cfg.QBittorrent.Password)
 	set("QBITTORRENT_CATEGORY", &cfg.QBittorrent.Category)
+	set("DELUGE_HOST", &cfg.Deluge.Host)
+	set("DELUGE_USERNAME", &cfg.Deluge.Username)
+	set("DELUGE_PASSWORD", &cfg.Deluge.Password)
+	set("DELUGE_LABEL", &cfg.Deluge.Label)
+	if v := getenv("SEEDSTREM_DELUGE_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Deluge.Port = n
+		}
+	}
 	set("PROWLARR_URL", &cfg.Prowlarr.URL)
 	set("PROWLARR_API_KEY", &cfg.Prowlarr.APIKey)
 	set("META_CINEMETA_URL", &cfg.Meta.CinemetaURL)
@@ -306,10 +349,25 @@ func (c Config) Validate() error {
 	} else if !strings.HasPrefix(c.Server.ExternalURL, "http://") && !strings.HasPrefix(c.Server.ExternalURL, "https://") {
 		errs = append(errs, fmt.Errorf("server.external_url must start with http:// or https://, got %q", c.Server.ExternalURL))
 	}
-	if c.QBittorrent.URL == "" {
-		errs = append(errs, errors.New("qbittorrent.url must not be empty"))
-	} else if !strings.HasPrefix(c.QBittorrent.URL, "http://") && !strings.HasPrefix(c.QBittorrent.URL, "https://") {
-		errs = append(errs, fmt.Errorf("qbittorrent.url must start with http:// or https://, got %q", c.QBittorrent.URL))
+	switch c.Downloader.Type {
+	// An empty type (config predating the downloader section, or a
+	// zero-value Config) means qBittorrent, matching the factory.
+	case "", DownloaderQBittorrent:
+		if c.QBittorrent.URL == "" {
+			errs = append(errs, errors.New("qbittorrent.url must not be empty"))
+		} else if !strings.HasPrefix(c.QBittorrent.URL, "http://") && !strings.HasPrefix(c.QBittorrent.URL, "https://") {
+			errs = append(errs, fmt.Errorf("qbittorrent.url must start with http:// or https://, got %q", c.QBittorrent.URL))
+		}
+	case DownloaderDeluge:
+		if c.Deluge.Host == "" {
+			errs = append(errs, errors.New("deluge.host must not be empty"))
+		}
+		if c.Deluge.Port <= 0 || c.Deluge.Port > 65535 {
+			errs = append(errs, fmt.Errorf("deluge.port must be between 1 and 65535, got %d", c.Deluge.Port))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("downloader.type must be %q or %q, got %q",
+			DownloaderQBittorrent, DownloaderDeluge, c.Downloader.Type))
 	}
 	if c.Storage.Database == "" {
 		errs = append(errs, errors.New("storage.database must not be empty"))
