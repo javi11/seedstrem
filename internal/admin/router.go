@@ -360,19 +360,21 @@ func (h *Handler) liveByHash(ctx context.Context, stored []store.Torrent) map[st
 
 // torrentItem is the UI torrent listing shape.
 type torrentItem struct {
-	ID       string     `json:"id"`
-	Name     string     `json:"name"`
-	Hash     string     `json:"hash"`
-	Status   string     `json:"status"`
-	Progress float64    `json:"progress"`
-	Speed    int64      `json:"speed"`
-	Seeders  int64      `json:"seeders"`
-	Size     int64      `json:"size"`
-	Uploaded int64      `json:"uploaded"`
-	Ratio    float64    `json:"ratio"`
-	AddedAt  int64      `json:"added_at"`
-	Error    string     `json:"error,omitempty"`
-	Links    []linkItem `json:"links"`
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Hash        string     `json:"hash"`
+	Status      string     `json:"status"`
+	Progress    float64    `json:"progress"`
+	Speed       int64      `json:"speed"`
+	Seeders     int64      `json:"seeders"`
+	Size        int64      `json:"size"`
+	Uploaded    int64      `json:"uploaded"`
+	Ratio       float64    `json:"ratio"`
+	SeedTime    int64      `json:"seed_time"`
+	SeedingTime int64      `json:"seeding_time"`
+	AddedAt     int64      `json:"added_at"`
+	Error       string     `json:"error,omitempty"`
+	Links       []linkItem `json:"links"`
 }
 
 type linkItem struct {
@@ -411,19 +413,21 @@ func (h *Handler) torrents(w http.ResponseWriter, r *http.Request) {
 			name = info.Name
 		}
 		items = append(items, torrentItem{
-			ID:       tor.ID,
-			Name:     name,
-			Hash:     tor.Hash,
-			Status:   torrents.DeriveStatus(tor.Phase, info.State, tor.Error != "" || !inQbit, info.Size > 0, info.Progress),
-			Progress: info.Progress,
-			Speed:    info.DlSpeed,
-			Seeders:  info.NumSeeds,
-			Size:     info.Size,
-			Uploaded: info.Uploaded,
-			Ratio:    info.Ratio,
-			AddedAt:  tor.AddedAt,
-			Error:    tor.Error,
-			Links:    linkItems,
+			ID:          tor.ID,
+			Name:        name,
+			Hash:        tor.Hash,
+			Status:      torrents.DeriveStatus(tor.Phase, info.State, tor.Error != "" || !inQbit, info.Size > 0, info.Progress),
+			Progress:    info.Progress,
+			Speed:       info.DlSpeed,
+			Seeders:     info.NumSeeds,
+			Size:        info.Size,
+			Uploaded:    info.Uploaded,
+			Ratio:       info.Ratio,
+			SeedTime:    int64(cfg.Cleanup.SeedTime / time.Second),
+			SeedingTime: int64(info.SeedingTime / time.Second),
+			AddedAt:     tor.AddedAt,
+			Error:       tor.Error,
+			Links:       linkItems,
 		})
 	}
 	writeJSON(w, http.StatusOK, items)
