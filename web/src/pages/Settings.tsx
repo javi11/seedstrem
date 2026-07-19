@@ -20,6 +20,7 @@ export function Settings() {
         c.deluge.password = "";
         c.server.admin_password = "";
         c.prowlarr.api_key = "";
+        c.meta.tmdb_api_key = "";
         // A nil slice is serialized as JSON null; configs predating the
         // indexer_ids field arrive without it, so normalize to an array.
         c.prowlarr.indexer_ids = c.prowlarr.indexer_ids ?? [];
@@ -50,11 +51,15 @@ export function Settings() {
       res.config.deluge.password = "";
       res.config.server.admin_password = "";
       res.config.prowlarr.api_key = "";
+      res.config.meta.tmdb_api_key = "";
       res.config.prowlarr.indexer_ids = res.config.prowlarr.indexer_ids ?? [];
       setConfig(res.config);
       setMessage(
         res.restart_required
-          ? { kind: "warning", text: "Saved. Restart seedstrem to apply the new listen address." }
+          ? {
+              kind: "warning",
+              text: "Saved. Some of the changed settings (listen address, database path, log level, metadata sources) only apply after restarting seedstrem.",
+            }
           : { kind: "success", text: "Saved." },
       );
     } catch (err) {
@@ -464,6 +469,97 @@ export function Settings() {
 
       <div className="card bg-base-100 shadow">
         <div className="card-body">
+          <h2 className="card-title">Metadata</h2>
+          <p className="text-sm opacity-70">
+            Cinemeta resolves IMDb ids to titles/years. A TMDb API key (optional, free at
+            themoviedb.org) improves matching on indexers that support TMDb-id search.
+            Changing these requires a restart.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="form-control">
+              <span className="label-text">Cinemeta URL</span>
+              <input
+                className="input input-bordered"
+                placeholder="https://v3-cinemeta.strem.io"
+                value={config.meta.cinemeta_url}
+                onChange={(e) => update((c) => (c.meta.cinemeta_url = e.target.value))}
+              />
+            </label>
+            <label className="form-control">
+              <span className="label-text">Metadata timeout (seconds)</span>
+              <input
+                type="number"
+                min={1}
+                className="input input-bordered"
+                value={config.meta.metadata_timeout_seconds}
+                onChange={(e) =>
+                  update((c) => (c.meta.metadata_timeout_seconds = Number(e.target.value)))
+                }
+              />
+            </label>
+          </div>
+          <label className="form-control">
+            <span className="label-text">TMDb API key</span>
+            <input
+              type="password"
+              className="input input-bordered"
+              placeholder="unchanged"
+              value={config.meta.tmdb_api_key}
+              onChange={(e) => update((c) => (c.meta.tmdb_api_key = e.target.value))}
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="card bg-base-100 shadow">
+        <div className="card-body">
+          <h2 className="card-title">Seeding & cleanup</h2>
+          <label className="label cursor-pointer justify-start gap-3">
+            <input
+              type="checkbox"
+              className="toggle"
+              checked={config.seeding.full}
+              onChange={(e) => update((c) => (c.seeding.full = e.target.checked))}
+            />
+            <span className="label-text">
+              Download the whole torrent (played file first) so a complete copy seeds — better
+              for ratio on private trackers. Off = download only the played file.
+            </span>
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="form-control">
+              <span className="label-text">Seed time before removal (hours, 0 = never)</span>
+              <input
+                type="number"
+                min={0}
+                className="input input-bordered"
+                value={config.cleanup.seed_time_hours}
+                onChange={(e) =>
+                  update((c) => (c.cleanup.seed_time_hours = Number(e.target.value)))
+                }
+              />
+            </label>
+            <label className="form-control">
+              <span className="label-text">Min progress to keep on abandoned playback (%)</span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                className="input input-bordered"
+                value={config.cleanup.min_progress_for_cancel_percent}
+                onChange={(e) =>
+                  update(
+                    (c) => (c.cleanup.min_progress_for_cancel_percent = Number(e.target.value)),
+                  )
+                }
+              />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div className="card bg-base-100 shadow">
+        <div className="card-body">
           <h2 className="card-title">Path mappings</h2>
           <p className="text-sm opacity-70">
             Translate paths as qBittorrent sees them to paths seedstrem can read (e.g. Docker
@@ -541,6 +637,30 @@ export function Settings() {
               }
             />
           </label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="form-control">
+              <span className="label-text">Database path (restart required)</span>
+              <input
+                className="input input-bordered"
+                placeholder="/config/seedstrem.db"
+                value={config.storage.database}
+                onChange={(e) => update((c) => (c.storage.database = e.target.value))}
+              />
+            </label>
+            <label className="form-control">
+              <span className="label-text">Log level (restart required)</span>
+              <select
+                className="select select-bordered"
+                value={config.log.level}
+                onChange={(e) => update((c) => (c.log.level = e.target.value))}
+              >
+                <option value="debug">debug</option>
+                <option value="info">info</option>
+                <option value="warn">warn</option>
+                <option value="error">error</option>
+              </select>
+            </label>
+          </div>
           <label className="label cursor-pointer justify-start gap-3">
             <input
               type="checkbox"
@@ -558,20 +678,37 @@ export function Settings() {
       <div className="card bg-base-100 shadow">
         <div className="card-body">
           <h2 className="card-title">Streaming</h2>
-          <label className="form-control max-w-xs">
-            <span className="label-text">
-              Wait timeout for missing pieces (seconds)
-            </span>
-            <input
-              type="number"
-              min={5}
-              className="input input-bordered"
-              value={config.stream.wait_timeout_seconds}
-              onChange={(e) =>
-                update((c) => (c.stream.wait_timeout_seconds = Number(e.target.value)))
-              }
-            />
-          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="form-control">
+              <span className="label-text">
+                Wait timeout for missing pieces (seconds)
+              </span>
+              <input
+                type="number"
+                min={5}
+                className="input input-bordered"
+                value={config.stream.wait_timeout_seconds}
+                onChange={(e) =>
+                  update((c) => (c.stream.wait_timeout_seconds = Number(e.target.value)))
+                }
+              />
+            </label>
+            <label className="form-control">
+              <span className="label-text">Read chunk size (MiB)</span>
+              <input
+                type="number"
+                min={1}
+                className="input input-bordered"
+                value={Math.max(1, Math.round(config.stream.read_chunk / 1048576))}
+                onChange={(e) =>
+                  update(
+                    (c) =>
+                      (c.stream.read_chunk = Math.max(1, Number(e.target.value)) * 1048576),
+                  )
+                }
+              />
+            </label>
+          </div>
         </div>
       </div>
 

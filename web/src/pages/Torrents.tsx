@@ -10,6 +10,19 @@ const BADGE: Record<string, string> = {
   error: "badge-error",
 };
 
+export function availableUntil(t: Torrent): string {
+  if (t.progress < 1) return "—";
+  if (t.seed_time <= 0) return "Kept";
+  const remaining = t.seed_time - t.seeding_time; // seconds
+  if (remaining <= 0) return "Removing soon";
+  return new Date(Date.now() + remaining * 1000).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 export function Torrents() {
   const [torrents, setTorrents] = useState<Torrent[] | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -73,6 +86,7 @@ export function Torrents() {
             <th>Size</th>
             <th>Uploaded</th>
             <th>Ratio</th>
+            <th>Available until</th>
           </tr>
         </thead>
         <tbody>
@@ -100,10 +114,11 @@ export function Torrents() {
                 <td>
                   <span className={t.ratio >= 1 ? "text-success" : ""}>{t.ratio.toFixed(2)}</span>
                 </td>
+                <td className="whitespace-nowrap">{availableUntil(t)}</td>
               </tr>
               {expanded === t.id && (
                 <tr>
-                  <td colSpan={8} className="bg-base-200">
+                  <td colSpan={9} className="bg-base-200">
                     {t.error && <div className="alert alert-error mb-2 py-2">{t.error}</div>}
                     {t.links.length === 0 ? (
                       <span className="text-sm opacity-70">

@@ -35,6 +35,13 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 	s := h.settings()
 	typ := chi.URLParam(r, "type")
 	id := strings.TrimSuffix(chi.URLParam(r, "id"), ".json")
+	// chi returns the raw (still percent-encoded) path segment when it
+	// differs from the decoded path — Stremio encodes the colons in
+	// series ids (tt123%3A1%3A2), which would break the ":" split in
+	// meta.ParseID and leak the blob into the Prowlarr query.
+	if decoded, err := url.PathUnescape(id); err == nil {
+		id = decoded
+	}
 
 	empty := streamResponse{Streams: []streamItem{}}
 
@@ -81,6 +88,12 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, empty)
 			return
 		}
+		// The episode-scoped search above carries an {Episode} token, which
+		// indexers honor by returning only single-episode releases — full
+		// season packs never come back. Run a second, season-only search
+		// (Sonarr does the same) and merge in just the packs; Dedup later
+		// collapses any release both searches returned.
+		results = append(results, h.seasonPacks(ctx, q, s)...)
 	}
 
 	raw := len(results)
@@ -192,6 +205,32 @@ func (h *Handler) ttSearch(ctx context.Context, q meta.Query, s Settings) ([]pro
 		results = append(results, r...)
 	}
 	return results, nil
+}
+
+// seasonPacks runs a season-only variant of the tt search (the same query
+// minus the Episode token) and returns only the releases that are
+// full-season packs for q's season. It is best-effort: a request for
+// anything but a specific series episode, or any search error, yields no
+// extra results rather than failing the discovery request.
+func (h *Handler) seasonPacks(ctx context.Context, q meta.Query, s Settings) []prowlarr.Result {
+	if !q.IsSeries() || q.Season <= 0 || q.Episode <= 0 {
+		return nil
+	}
+	seasonQ := q
+	seasonQ.Episode = 0 // drop the episode token → season-scoped search
+	results, err := h.ttSearch(ctx, seasonQ, s)
+	if err != nil {
+		h.logger.Warn("stremio: season-pack search failed", "id", q.ID, "season", q.Season, "error", err)
+		return nil
+	}
+	packs := make([]prowlarr.Result, 0, len(results))
+	for _, r := range results {
+		if isSeasonPack(r.Title, q.Season) {
+			packs = append(packs, r)
+		}
+	}
+	h.logger.Debug("stremio: season-pack search", "id", q.ID, "season", q.Season, "raw", len(results), "packs", len(packs))
+	return packs
 }
 
 // resolveTmdbQuery resolves q's IMDb id to a TMDb id and builds the
@@ -334,7 +373,11 @@ func buildIDSearch(q meta.Query, p ProwlarrSettings) (query, searchType string, 
 func buildTextSearch(q meta.Query, title string, year int, p ProwlarrSettings) (query string, categories []int) {
 	if q.IsSeries() {
 		if q.Season > 0 {
-			return fmt.Sprintf("%s S%02dE%02d", title, q.Season, q.Episode), p.TVCategories
+			if q.Episode > 0 {
+				return fmt.Sprintf("%s S%02dE%02d", title, q.Season, q.Episode), p.TVCategories
+			}
+			// Season-only search (used to surface full-season packs).
+			return fmt.Sprintf("%s S%02d", title, q.Season), p.TVCategories
 		}
 		if q.Episode > 0 {
 			return fmt.Sprintf("%s %02d", title, q.Episode), p.TVCategories

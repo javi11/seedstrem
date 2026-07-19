@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -24,6 +25,7 @@ type env struct {
 	config    *config.Manager
 	fake      *fake.Server
 	swappable *downloader.Swappable
+	store     *store.Store
 	cookie    *http.Cookie
 	t         *testing.T
 }
@@ -48,7 +50,7 @@ func newEnv(t *testing.T) *env {
 	// real backend factory.
 	newClient := func(config.Config) downloader.Client { return fake.New() }
 	h := New(cm, st, dc, newClient, "test", nil)
-	return &env{handler: h.Router(), config: cm, fake: f, swappable: dc, t: t}
+	return &env{handler: h.Router(), config: cm, fake: f, swappable: dc, store: st, t: t}
 }
 
 func (e *env) login(t *testing.T) {
@@ -448,5 +450,37 @@ func TestStatusReportsDownloader(t *testing.T) {
 	}
 	if res.Downloader.Type != "qbittorrent" || !res.Downloader.Connected {
 		t.Errorf("downloader status = %+v", res.Downloader)
+	}
+}
+
+func TestTorrentsListingExposesSeedTimes(t *testing.T) {
+	e := newEnv(t)
+	e.login(t)
+
+	const hash = "aa11bb22cc33dd44"
+	if err := e.store.InsertTorrent(context.Background(), store.Torrent{
+		ID: "tt1", Hash: hash, Name: "Example", Phase: store.PhaseSelected, AddedAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Completed torrent that has been seeding for 2h; default SeedTime is 72h.
+	e.fake.Put(&fake.Torrent{Hash: hash, Progress: 1, SeedingTime: 2 * time.Hour})
+
+	w := e.do(t, http.MethodGet, "/torrents", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("torrents = %d", w.Code)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &items); err != nil {
+		t.Fatalf("decode: %v body=%s", err, w.Body.String())
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d: %v", len(items), items)
+	}
+	if got := items[0]["seed_time"]; got != float64(72*3600) {
+		t.Errorf("seed_time = %v, want %d", got, 72*3600)
+	}
+	if got := items[0]["seeding_time"]; got != float64(2*3600) {
+		t.Errorf("seeding_time = %v, want %d", got, 2*3600)
 	}
 }
