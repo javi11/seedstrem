@@ -37,11 +37,13 @@ type Service struct {
 	settings func() Settings
 	logger   *slog.Logger
 
-	// prioAsserted tracks (unix seconds) when streaming priorities were
-	// last re-asserted per hash, so repeat play resolves don't hammer
+	// prioAsserted / kickAsserted track (unix seconds) when streaming
+	// priorities were last re-asserted / force-kicked per hash, so repeat
+	// play resolves and heartbeat stall detection don't hammer
 	// qBittorrent with toggle calls.
 	prioMu       sync.Mutex
 	prioAsserted map[string]int64
+	kickAsserted map[string]int64
 
 	// injectable for tests
 	now   func() int64
@@ -59,6 +61,7 @@ func New(st *store.Store, dc qbit.Client, settings func() Settings, logger *slog
 		settings:     settings,
 		logger:       logger,
 		prioAsserted: map[string]int64{},
+		kickAsserted: map[string]int64{},
 		now:          func() int64 { return time.Now().Unix() },
 		sleep:        sleepCtx,
 	}
@@ -298,6 +301,61 @@ func (s *Service) EnsureStreamingPrio(ctx context.Context, hash string) error {
 	return nil
 }
 
+// KickStreamingPrio force-resets libtorrent's piece picker: it toggles
+// sequential download AND the first/last-piece boost off and back on
+// regardless of their current state (both end enabled). Used when the
+// head piece a player is waiting on sits stalled for many seconds while
+// the rest of the torrent downloads — a picker reset makes libtorrent
+// re-request the stuck piece from healthy peers. No-op once complete.
+func (s *Service) KickStreamingPrio(ctx context.Context, hash string) error {
+	info, err := s.dc.Torrent(ctx, hash)
+	if err != nil {
+		return fmt.Errorf("read torrent flags: %w", err)
+	}
+	if info.Progress >= 1 {
+		return nil
+	}
+	seqToggles := 2 // on → off → on
+	if !info.SequentialDownload {
+		seqToggles = 1 // off → on
+	}
+	for range seqToggles {
+		if err := s.dc.ToggleSequentialDownload(ctx, hash); err != nil {
+			return fmt.Errorf("kick sequential download: %w", err)
+		}
+	}
+	flToggles := 2
+	if !info.FirstLastPiecePrio {
+		flToggles = 1
+	}
+	for range flToggles {
+		if err := s.dc.ToggleFirstLastPiecePrio(ctx, hash); err != nil {
+			return fmt.Errorf("kick first/last piece prio: %w", err)
+		}
+	}
+	return nil
+}
+
+// KickStreamingPrioThrottled runs KickStreamingPrio at most once per
+// streamingPrioReassertInterval per hash, reporting whether a kick was
+// actually performed. Best-effort: failures are logged, not returned.
+func (s *Service) KickStreamingPrioThrottled(ctx context.Context, hash string) bool {
+	now := s.now()
+	s.prioMu.Lock()
+	if last, ok := s.kickAsserted[hash]; ok && now-last < streamingPrioReassertInterval {
+		s.prioMu.Unlock()
+		return false
+	}
+	s.kickAsserted[hash] = now
+	s.prioMu.Unlock()
+
+	if err := s.KickStreamingPrio(ctx, hash); err != nil {
+		s.logger.Warn("torrents: kick streaming priorities", "hash", hash, "error", err)
+		return false
+	}
+	return true
+}
+
 // ensureStreamingPrioThrottled runs EnsureStreamingPrio at most once per
 // streamingPrioReassertInterval per hash. Best-effort: a failure only
 // costs playback-startup latency, so it is logged rather than returned.
@@ -365,6 +423,7 @@ func (s *Service) Remove(ctx context.Context, tor store.Torrent) error {
 	}
 	s.prioMu.Lock()
 	delete(s.prioAsserted, tor.Hash)
+	delete(s.kickAsserted, tor.Hash)
 	s.prioMu.Unlock()
 	return nil
 }

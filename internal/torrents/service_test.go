@@ -206,6 +206,54 @@ func TestRepeatResolveReassertsStreamingPrio(t *testing.T) {
 	}
 }
 
+// KickStreamingPrio must force a full piece-picker reset — both flags
+// toggled off and back on even when already enabled — end with both
+// flags ON, and be throttled on back-to-back calls.
+func TestKickStreamingPrio(t *testing.T) {
+	svc, fakeDC, _ := newService(t)
+	ctx := context.Background()
+
+	clock := int64(1_000_000)
+	svc.now = func() int64 { return clock }
+
+	fakeDC.Put(&fake.Torrent{
+		Hash:               testHash,
+		State:              qbit.StateDownloading,
+		SequentialDownload: true,
+		FirstLastPiecePrio: true,
+		Files:              []fake.File{{Name: "Movie.mkv", Size: 8 << 30}},
+	})
+
+	if !svc.KickStreamingPrioThrottled(ctx, testHash) {
+		t.Fatal("first kick must fire")
+	}
+	var seqToggles, flToggles int
+	for _, c := range fakeDC.Calls() {
+		if strings.HasPrefix(c, "toggleSequentialDownload ") {
+			seqToggles++
+		}
+		if strings.HasPrefix(c, "toggleFirstLastPiecePrio ") {
+			flToggles++
+		}
+	}
+	if seqToggles != 2 || flToggles != 2 {
+		t.Errorf("toggles seq=%d fl=%d, want 2 and 2 (off+on picker reset): calls=%v",
+			seqToggles, flToggles, fakeDC.Calls())
+	}
+	tor := fakeDC.Get(testHash)
+	if !tor.SequentialDownload || !tor.FirstLastPiecePrio {
+		t.Errorf("flags must end enabled: seq=%v fl=%v", tor.SequentialDownload, tor.FirstLastPiecePrio)
+	}
+
+	if svc.KickStreamingPrioThrottled(ctx, testHash) {
+		t.Error("kick inside throttle window must not fire")
+	}
+	clock += streamingPrioReassertInterval
+	if !svc.KickStreamingPrioThrottled(ctx, testHash) {
+		t.Error("kick past throttle window must fire again")
+	}
+}
+
 // EnsureStreamingPrio is a no-op once the download is complete: toggling
 // flags on a finished torrent is pointless qBittorrent churn.
 func TestEnsureStreamingPrioSkipsCompleted(t *testing.T) {

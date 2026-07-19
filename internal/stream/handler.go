@@ -207,7 +207,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	// returns (stopBeat) or the client disconnects (ctx).
 	headFirst, headLast := PiecesForRange(fileOffset, props.PieceSize, 0, 0)
 	stopBeat := make(chan struct{})
-	go h.heartbeat(ctx, stopBeat, tor.Hash, headFirst, headLast)
+	go h.heartbeat(ctx, stopBeat, tor.Hash, file.Index, headFirst, headLast)
 
 	serveStart := time.Now()
 	http.ServeContent(w, r, path.Base(file.Name), time.Time{}, pr)
@@ -251,12 +251,21 @@ func (h *Handler) waitForFile(ctx context.Context, hash string, file qbit.FileIn
 	}
 }
 
-// heartbeat logs the torrent's download progress and head-piece
-// availability every few seconds until the serve finishes (stop closed)
-// or the client disconnects (ctx). Instrumentation only — no side effects.
-func (h *Handler) heartbeat(ctx context.Context, stop <-chan struct{}, hash string, headFirst, headLast int) {
+// headStallBeats is how many consecutive heartbeats (3s apart) the head
+// pieces may stay off disk before the piece picker is kicked.
+const headStallBeats = 3
+
+// heartbeat logs the torrent's download progress and a piece-bitfield
+// summary every few seconds until the serve finishes (stop closed) or
+// the client disconnects (ctx). If the head pieces the player is waiting
+// on stay off disk for headStallBeats consecutive beats while the rest
+// of the torrent downloads, it kicks libtorrent's piece picker
+// (sequential + first/last toggled off and back on) so the stuck piece
+// is re-requested from healthy peers.
+func (h *Handler) heartbeat(ctx context.Context, stop <-chan struct{}, hash string, fileIndex, headFirst, headLast int) {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
+	stalledBeats := 0
 	for {
 		select {
 		case <-stop:
@@ -264,15 +273,51 @@ func (h *Handler) heartbeat(ctx context.Context, stop <-chan struct{}, hash stri
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			var progress float64
+			var progress, fileProgress float64
 			if info, err := h.dc.Torrent(ctx, hash); err == nil {
 				progress = info.Progress
 			}
-			haveHead, _ := h.avail.HaveRange(ctx, hash, headFirst, headLast)
+			if files, err := h.dc.Files(ctx, hash); err == nil {
+				for _, f := range files {
+					if f.Index == fileIndex {
+						fileProgress = f.Progress
+						break
+					}
+				}
+			}
+			sum, sumErr := h.avail.Summary(ctx, hash, headFirst, headLast)
+			haveHead := sumErr == nil && sum.HeadState == qbit.PieceHave
 			h.logger.Debug("stream: download heartbeat",
-				"hash", hash, "progress", progress,
-				"headPieces", [2]int{headFirst, headLast}, "headOnDisk", haveHead)
+				"hash", hash, "progress", progress, "fileProgress", fileProgress,
+				"headPieces", [2]int{headFirst, headLast}, "headOnDisk", haveHead,
+				"headState", pieceStateName(sum.HeadState), "lastState", pieceStateName(sum.LastState),
+				"pieces", sum.TotalPieces, "have", sum.Have, "downloading", sum.Downloading,
+				"frontier", sum.FirstMissing, "summaryErr", sumErr)
+
+			if haveHead {
+				stalledBeats = 0
+				continue
+			}
+			stalledBeats++
+			if stalledBeats >= headStallBeats && h.svc.KickStreamingPrioThrottled(ctx, hash) {
+				h.logger.Warn("stream: head stalled, kicking piece picker",
+					"hash", hash, "headPieces", [2]int{headFirst, headLast},
+					"headState", pieceStateName(sum.HeadState), "frontier", sum.FirstMissing,
+					"stalledBeats", stalledBeats)
+			}
 		}
+	}
+}
+
+// pieceStateName renders a qbit.PieceState for logs.
+func pieceStateName(s qbit.PieceState) string {
+	switch s {
+	case qbit.PieceHave:
+		return "have"
+	case qbit.PieceDownloading:
+		return "downloading"
+	default:
+		return "missing"
 	}
 }
 

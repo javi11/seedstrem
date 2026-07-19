@@ -135,3 +135,42 @@ func TestStatesCacheReducesFetches(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+func TestSummary(t *testing.T) {
+	a, f := newAvail(t)
+	// pieces: 0=have 1=downloading 2=missing 3=have 4=missing(last)
+	f.Put(&fake.Torrent{Hash: testHash, PieceStates: []int{2, 1, 0, 2, 0}})
+
+	sum, err := a.Summary(context.Background(), testHash, 0, 1)
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	if sum.TotalPieces != 5 || sum.Have != 2 || sum.Downloading != 1 {
+		t.Errorf("counts = %+v, want total=5 have=2 downloading=1", sum)
+	}
+	if sum.FirstMissing != 1 {
+		t.Errorf("frontier = %d, want 1 (first non-have piece)", sum.FirstMissing)
+	}
+	if got := pieceStateName(sum.HeadState); got != "downloading" {
+		t.Errorf("head state = %q, want downloading (worst of pieces 0-1)", got)
+	}
+	if got := pieceStateName(sum.LastState); got != "missing" {
+		t.Errorf("last state = %q, want missing", got)
+	}
+}
+
+func TestSummaryHeadBeyondKnownBitfield(t *testing.T) {
+	a, f := newAvail(t)
+	f.Put(&fake.Torrent{Hash: testHash, PieceStates: []int{2}})
+
+	sum, err := a.Summary(context.Background(), testHash, 0, 3)
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	if got := pieceStateName(sum.HeadState); got != "missing" {
+		t.Errorf("head state past bitfield = %q, want missing", got)
+	}
+	if sum.FirstMissing != -1 {
+		t.Errorf("frontier = %d, want -1 (all known pieces downloaded)", sum.FirstMissing)
+	}
+}

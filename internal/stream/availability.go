@@ -133,6 +133,54 @@ func (a *Availability) HaveRange(ctx context.Context, hash string, first, last i
 	return true, nil
 }
 
+// Summary is a diagnostic snapshot of a torrent's piece bitfield.
+type Summary struct {
+	TotalPieces  int // len of the piece-states array qBittorrent reported
+	Have         int
+	Downloading  int
+	FirstMissing int // index of the first piece not yet downloaded (the sequential frontier), -1 if all downloaded
+	// HeadState is the worst state among the pieces [headFirst, headLast]
+	// (missing < downloading < have). LastState is the final piece's state.
+	// Pieces beyond the known bitfield report as missing.
+	HeadState qbit.PieceState
+	LastState qbit.PieceState
+}
+
+// Summary reads the (cached) piece states and condenses them for
+// instrumentation: how far the download frontier is, and whether the
+// head/tail pieces a player needs are missing, in flight, or on disk.
+func (a *Availability) Summary(ctx context.Context, hash string, headFirst, headLast int) (Summary, error) {
+	states, err := a.states(ctx, hash)
+	if err != nil {
+		return Summary{}, err
+	}
+	sum := Summary{TotalPieces: len(states), FirstMissing: -1, HeadState: qbit.PieceHave}
+	for i, st := range states {
+		switch st {
+		case qbit.PieceHave:
+			sum.Have++
+		case qbit.PieceDownloading:
+			sum.Downloading++
+		}
+		if st != qbit.PieceHave && sum.FirstMissing == -1 {
+			sum.FirstMissing = i
+		}
+	}
+	for i := headFirst; i <= headLast; i++ {
+		st := qbit.PieceMissing
+		if i >= 0 && i < len(states) {
+			st = states[i]
+		}
+		if st < sum.HeadState {
+			sum.HeadState = st
+		}
+	}
+	if len(states) > 0 {
+		sum.LastState = states[len(states)-1]
+	}
+	return sum, nil
+}
+
 // WaitForRange blocks until pieces [first, last] are downloaded, the
 // timeout elapses (ErrWaitTimeout), or ctx is cancelled.
 func (a *Availability) WaitForRange(ctx context.Context, hash string, first, last int, timeout time.Duration) error {
