@@ -159,6 +159,13 @@ func TestBuildTextSearch(t *testing.T) {
 	if query, cats := buildTextSearch(series, "Chernobyl", 0, p); query != "Chernobyl S01E05" || cats[0] != 5000 {
 		t.Errorf("series text search = %q, %v", query, cats)
 	}
+
+	// Season-only search (episode dropped) queries the whole season so
+	// full-season packs surface, not "S01E00".
+	seasonOnly := meta.Query{Source: "tt", ID: "tt0944947", Kind: meta.KindSeries, Season: 1}
+	if query, _ := buildTextSearch(seasonOnly, "Chernobyl", 0, p); query != "Chernobyl S01" {
+		t.Errorf("season-only text search = %q, want %q", query, "Chernobyl S01")
+	}
 }
 
 func TestBuildAnimeSearch(t *testing.T) {
@@ -441,7 +448,10 @@ func TestStreamDecodesEncodedSeriesID(t *testing.T) {
 			]`))
 		case "/api/v1/search":
 			q := r.URL.Query()
-			if q.Get("type") == "tvsearch" {
+			// A specific-episode request now fans out into an
+			// episode-scoped and a season-only tvsearch; capture the
+			// episode-scoped one (the id decoding under test).
+			if q.Get("type") == "tvsearch" && strings.Contains(q.Get("query"), "{Episode:") {
 				gotQuery = q.Get("query")
 			}
 			w.Write([]byte(`[{"title":"Series Hit S01E02","magnetUrl":"` + testMagnet() + `","size":100,"seeders":10,"protocol":"torrent","indexer":"Capable"}]`))
@@ -482,6 +492,95 @@ func TestStreamDecodesEncodedSeriesID(t *testing.T) {
 	}
 	if len(sr.Streams) != 1 {
 		t.Errorf("want 1 stream, got %d: %+v", len(sr.Streams), sr.Streams)
+	}
+}
+
+// TestStreamSurfacesSeasonPacks verifies that a specific-episode request
+// also issues a season-only search (no Episode token) and merges in
+// full-season packs, while dropping the stray other-episode releases that
+// season search returns. This is what makes season packs show up at all —
+// the episode-scoped search alone never returns them.
+func TestStreamSurfacesSeasonPacks(t *testing.T) {
+	const (
+		episodeHash = "1111111111111111111111111111111111111111"
+		packHash    = "2222222222222222222222222222222222222222"
+		otherEpHash = "3333333333333333333333333333333333333333"
+	)
+	magnet := func(h string) string { return "magnet:?xt=urn:btih:" + h + "&dn=x" }
+
+	var sawSeasonOnlySearch bool
+
+	prow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/indexer":
+			w.Write([]byte(`[
+				{"id":1,"name":"Capable","protocol":"torrent","enable":true,
+				 "capabilities":{"tvSearchParams":["Q","ImdbId","Season","Episode"]}}
+			]`))
+		case "/api/v1/search":
+			query := r.URL.Query().Get("query")
+			if strings.Contains(query, "{Episode:") {
+				// Episode-scoped search: only the single episode.
+				w.Write([]byte(`[{"title":"The Show S01E02 1080p","magnetUrl":"` + magnet(episodeHash) + `","size":100,"seeders":10,"protocol":"torrent","indexer":"Capable"}]`))
+				return
+			}
+			// Season-only search: a full-season pack plus a stray other
+			// episode that must be filtered out.
+			sawSeasonOnlySearch = true
+			w.Write([]byte(`[
+				{"title":"The Show S01 1080p WEB-DL","magnetUrl":"` + magnet(packHash) + `","size":5000,"seeders":30,"protocol":"torrent","indexer":"Capable"},
+				{"title":"The Show S01E07 1080p","magnetUrl":"` + magnet(otherEpHash) + `","size":120,"seeders":50,"protocol":"torrent","indexer":"Capable"}
+			]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer prow.Close()
+
+	metaClient := meta.New("http://cinemeta.invalid", "")
+	h := New(nil, metaClient, func() Settings {
+		return Settings{
+			Prowlarr:   ProwlarrSettings{URL: prow.URL, APIKey: "k", TVCategories: []int{5000}},
+			Addon:      AddonSettings{EnableSeries: true},
+			Filters:    prowlarr.Filters{MinSeeders: 1},
+			MaxResults: 20,
+		}
+	}, "test", nil)
+
+	root := chi.NewRouter()
+	root.Mount("/stremio", h.Router())
+	server := httptest.NewServer(root)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/stremio/stream/series/tt0944947%3A1%3A2.json")
+	if err != nil {
+		t.Fatalf("get stream: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var sr streamResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if !sawSeasonOnlySearch {
+		t.Fatal("no season-only search was issued")
+	}
+
+	var titles []string
+	for _, s := range sr.Streams {
+		titles = append(titles, s.Title)
+	}
+	joined := strings.Join(titles, "\n")
+	if !strings.Contains(joined, "The Show S01E02") {
+		t.Errorf("missing the requested episode; got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "The Show S01 1080p") {
+		t.Errorf("missing the season pack; got:\n%s", joined)
+	}
+	if strings.Contains(joined, "S01E07") {
+		t.Errorf("stray other-episode should have been filtered out; got:\n%s", joined)
 	}
 }
 
