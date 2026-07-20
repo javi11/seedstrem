@@ -61,12 +61,25 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Torrents the app already added for exactly this content are offered
+	// first as high-priority streams (instant/near-instant playback). Look
+	// them up before searching — it's a cheap local query, and when we
+	// already have the content we skip the slow Prowlarr search entirely
+	// (that network call was tripping the caller's fetch timeout, which
+	// canceled the request before any streams were returned).
+	owned := h.svc.OwnedForContent(ctx, q.Source, q.ID, q.Season, q.Episode)
+
 	// tt-sourced (IMDb) queries search Prowlarr by id token, split across
 	// indexers by capability (see ttSearch). Anime ids have no
 	// Prowlarr-recognized id token, so those resolve a title and search
 	// by free text across whatever indexers are configured.
 	var results []prowlarr.Result
-	if q.IsAnime() {
+	switch {
+	case len(owned) > 0:
+		// Fast path: we already have this content, so serve the owned
+		// torrents and skip the Prowlarr search altogether.
+		h.logger.Debug("stremio: serving owned content, skipping prowlarr search", "id", id, "owned", len(owned))
+	case q.IsAnime():
 		title, err := h.meta.AnimeTitle(ctx, q.Source, q.ID)
 		if err != nil {
 			h.logger.Warn("stremio: title resolution failed", "id", id, "error", err)
@@ -82,7 +95,7 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, empty)
 			return
 		}
-	} else {
+	default:
 		// The episode-scoped search carries an {Episode} token, which
 		// indexers honor by returning only single-episode releases — full
 		// season packs never come back. A second, season-only search
@@ -120,11 +133,9 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 		results = results[:s.MaxResults]
 	}
 
-	// Torrents the app already added for exactly this content are offered
-	// first as high-priority streams (instant/near-instant playback); the
-	// Prowlarr results below are the fallback. A release present in both is
-	// shown only once, as the owned entry.
-	owned := h.svc.OwnedForContent(ctx, q.Source, q.ID, q.Season, q.Episode)
+	// Owned torrents (looked up above) are offered first as high-priority
+	// streams; any Prowlarr result below is the fallback. A release present
+	// in both is shown only once, as the owned entry.
 	ownedHashes := make(map[string]struct{}, len(owned))
 	for _, t := range owned {
 		ownedHashes[strings.ToLower(t.Hash)] = struct{}{}
