@@ -15,7 +15,7 @@ seek prioritization is skipped.
 
 | Method | Purpose |
 | --- | --- |
-| `seedstream.api_version()` | returns `2`; used for detection |
+| `seedstream.api_version()` | returns `3`; used for detection |
 | `seedstream.prioritize_range(torrent_id, first, last, deadline_ms=3000, step_ms=50)` | staggered `set_piece_deadline` on the first ~8 MiB of `[first, last]`, top piece priority on the rest (clamped) |
 | `seedstream.clear_range(torrent_id, first, last)` | `reset_piece_deadline` on the range, ends focus mode |
 
@@ -32,6 +32,29 @@ competing with the sequential flood's inflight backlog. Every
 `prioritize_range` call re-arms a 15s timer; sequential download is
 restored when the timer fires (playback stopped blocking) or on
 `clear_range`/plugin disable.
+
+### Session tuning & stale-window cleanup (api_version 3)
+
+On enable the plugin raises libtorrent's `max_out_request_queue` to
+3000 blocks (never lowering an operator's own higher setting; restored
+on disable). The default (~500 blocks ≈ 8 MiB in flight per peer)
+starves fast links: with the queue permanently full, new requests —
+including the deadline'd head/tail pieces — cannot be issued, and the
+daemon log floods with `outstanding_request_limit_reached` warnings.
+
+Each `prioritize_range` call also remembers its window per torrent and,
+on the next call, resets the deadline/priority of pieces that left the
+window, so unmet deadlines from superseded windows stop re-requesting
+blocks redundantly and eating queue slots.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s contrib/deluge-seedstream/tests
+```
+
+The Deluge/libtorrent/Twisted runtime is stubbed, so the tests run on
+any Python 3 without Deluge installed.
 
 ## Download a prebuilt egg
 

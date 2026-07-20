@@ -122,14 +122,14 @@ func (s *Service) EnsureAdded(ctx context.Context, magnet string, torrentFile []
 		FirstLastPiecePrio: true,
 	}
 	if len(torrentFile) > 0 {
-		s.logger.Debug("torrents: adding .torrent file to qbittorrent", "hash", hash, "name", name)
+		s.logger.Debug("torrents: adding .torrent file to download client", "hash", hash, "name", name)
 		if err := s.dc.AddTorrentFile(ctx, torrentFile, opts); err != nil {
-			return store.Torrent{}, fmt.Errorf("add torrent file to qbittorrent: %w", err)
+			return store.Torrent{}, fmt.Errorf("add torrent file to download client: %w", err)
 		}
 	} else {
-		s.logger.Debug("torrents: adding magnet to qbittorrent", "hash", hash, "name", name)
+		s.logger.Debug("torrents: adding magnet to download client", "hash", hash, "name", name)
 		if err := s.dc.AddMagnet(ctx, magnet, opts); err != nil {
-			return store.Torrent{}, fmt.Errorf("add magnet to qbittorrent: %w", err)
+			return store.Torrent{}, fmt.Errorf("add magnet to download client: %w", err)
 		}
 	}
 
@@ -170,7 +170,7 @@ func (s *Service) WaitForMetadata(ctx context.Context, hash string, timeout time
 	for {
 		files, err := s.dc.Files(ctx, hash)
 		if err != nil && !errors.Is(err, downloader.ErrTorrentNotFound) {
-			return nil, fmt.Errorf("qbittorrent files: %w", err)
+			return nil, fmt.Errorf("download client files: %w", err)
 		}
 		if len(files) > 0 {
 			s.logger.Debug("torrents: metadata ready", "hash", hash, "files", len(files))
@@ -436,7 +436,7 @@ func (s *Service) OwnedForContent(ctx context.Context, source, ref string, seaso
 func (s *Service) Remove(ctx context.Context, tor store.Torrent) error {
 	deleteFiles := s.settings().DeleteFilesOnRemove
 	if err := s.dc.Delete(ctx, tor.Hash, deleteFiles); err != nil && !errors.Is(err, downloader.ErrTorrentNotFound) {
-		return fmt.Errorf("delete from qbittorrent: %w", err)
+		return fmt.Errorf("delete from download client: %w", err)
 	}
 	if err := s.store.DeleteTorrent(ctx, tor.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("delete from store: %w", err)

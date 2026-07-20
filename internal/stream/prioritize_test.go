@@ -75,6 +75,26 @@ func TestPrioritizerDedupesIdenticalRange(t *testing.T) {
 	}
 }
 
+func TestPrioritizerDedupesInterleavedRanges(t *testing.T) {
+	// The playability gate hints the head and tail ranges of the same
+	// hash concurrently. Alternating ranges must not clobber each
+	// other's dedup slot: a repeat of either range within the interval
+	// stays deduplicated.
+	spy := &prioSpy{}
+	p := newPrioritizer(spy, nil)
+	now := time.Unix(1_000_000, 0)
+	p.now = func() time.Time { return now }
+	ctx := context.Background()
+
+	p.request(ctx, "abc", 0, 0)       // head
+	p.request(ctx, "abc", 8768, 8768) // tail
+	p.request(ctx, "abc", 0, 0)       // head repeat within interval → dropped
+	p.request(ctx, "abc", 8768, 8768) // tail repeat within interval → dropped
+	if spy.count() != 2 {
+		t.Fatalf("calls = %d, want 2 (interleaved ranges dedupe independently)", spy.count())
+	}
+}
+
 func TestPrioritizerBacksOffWhenUnsupported(t *testing.T) {
 	spy := &prioSpy{err: downloader.ErrNotSupported}
 	p := newPrioritizer(spy, nil)

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -80,6 +81,32 @@ func newStreamEnv(t *testing.T, pieceStates []int, fileProgress float64) *stream
 	return &streamEnv{handler: h.Router(), fake: f, avail: avail, content: content, dir: dir}
 }
 
+// fakeClock replaces avail's clock with a mutex-guarded fake (the
+// playability gate polls from two goroutines) that advances on every
+// poll sleep and invokes onSleep (if non-nil) per sleep. Returns a
+// counter of how many sleeps happened.
+func fakeClock(e *streamEnv, onSleep func()) *int {
+	var mu sync.Mutex
+	now := time.Unix(1000, 0)
+	polls := new(int)
+	e.avail.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	e.avail.sleep = func(_ context.Context, d time.Duration) error {
+		mu.Lock()
+		now = now.Add(d)
+		*polls++
+		mu.Unlock()
+		if onSleep != nil {
+			onSleep()
+		}
+		return nil
+	}
+	return polls
+}
+
 func (e *streamEnv) get(t *testing.T, rangeHeader string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/"+testToken+"/movie.mkv", nil)
@@ -143,12 +170,7 @@ func TestServeWaitsForPiecesArrivingMidRequest(t *testing.T) {
 	// to downloaded as the availability poller sleeps.
 	e := newStreamEnv(t, []int{2, 0, 0, 0}, 0.25)
 
-	now := time.Unix(1000, 0)
-	e.avail.now = func() time.Time { return now }
-	polls := 0
-	e.avail.sleep = func(_ context.Context, d time.Duration) error {
-		now = now.Add(d)
-		polls++
+	polls := fakeClock(e, func() {
 		e.fake.Update(testHash, func(tor *fake.Torrent) {
 			// One more piece per poll.
 			for i, st := range tor.PieceStates {
@@ -158,8 +180,7 @@ func TestServeWaitsForPiecesArrivingMidRequest(t *testing.T) {
 				}
 			}
 		})
-		return nil
-	}
+	})
 
 	w := e.get(t, "")
 	if w.Code != http.StatusOK {
@@ -168,7 +189,7 @@ func TestServeWaitsForPiecesArrivingMidRequest(t *testing.T) {
 	if !bytes.Equal(w.Body.Bytes(), e.content) {
 		t.Error("body mismatch after in-flight piece arrival")
 	}
-	if polls == 0 {
+	if *polls == 0 {
 		t.Error("expected the reader to poll for pieces")
 	}
 }
@@ -178,13 +199,7 @@ func TestServePiecesNeverArriveServesPlaceholder(t *testing.T) {
 	// and the bundled "still downloading" clip is served instead of
 	// leaving the player buffering until it errors out.
 	e := newStreamEnv(t, []int{0, 0, 0, 0}, 0)
-
-	now := time.Unix(1000, 0)
-	e.avail.now = func() time.Time { return now }
-	e.avail.sleep = func(_ context.Context, d time.Duration) error {
-		now = now.Add(d)
-		return nil
-	}
+	fakeClock(e, nil)
 
 	w := e.get(t, "")
 	if w.Code != http.StatusOK {
@@ -203,17 +218,43 @@ func TestServeTailMissingServesPlaceholder(t *testing.T) {
 	// super-seeding scenario. The placeholder must be served rather than
 	// a stream the player cannot start.
 	e := newStreamEnv(t, []int{2, 2, 2, 0}, 0.75)
-
-	now := time.Unix(1000, 0)
-	e.avail.now = func() time.Time { return now }
-	e.avail.sleep = func(_ context.Context, d time.Duration) error {
-		now = now.Add(d)
-		return nil
-	}
+	fakeClock(e, nil)
 
 	w := e.get(t, "")
 	if want := placeholderFor(0.75); !bytes.Equal(w.Body.Bytes(), want) {
 		t.Errorf("body = %d bytes, want the 70%% downloading placeholder", w.Body.Len())
+	}
+}
+
+func TestPlaceholderWaitHintsHeadAndTailTogether(t *testing.T) {
+	// Neither head nor tail ever arrives (super-seeding seeder). The
+	// playability gate must deadline-hint BOTH ranges from the start of
+	// the grace window: waiting for the head first and only then hinting
+	// the tail gives the tail piece zero time to be fetched.
+	e := newStreamEnv(t, []int{0, 0, 0, 0}, 0)
+	e.fake.SetPrioritizeErr(nil) // capable backend
+	fakeClock(e, nil)
+
+	w := e.get(t, "")
+	if want := placeholderFor(0); !bytes.Equal(w.Body.Bytes(), want) {
+		t.Fatalf("body = %d bytes, want the downloading placeholder", w.Body.Len())
+	}
+	headHint := fmt.Sprintf("prioritizePieces hash=%s first=0 last=0", testHash)
+	tailHint := fmt.Sprintf("prioritizePieces hash=%s first=3 last=3", testHash)
+	var haveHead, haveTail bool
+	for _, c := range e.fake.Calls() {
+		switch c {
+		case headHint:
+			haveHead = true
+		case tailHint:
+			haveTail = true
+		}
+	}
+	if !haveHead {
+		t.Errorf("head range was never prioritized during the gate: %v", e.fake.Calls())
+	}
+	if !haveTail {
+		t.Errorf("tail range was never prioritized during the gate: %v", e.fake.Calls())
 	}
 }
 
@@ -346,10 +387,7 @@ func TestCheckAbandonedSkipsWhenSomeoneElseIsWatching(t *testing.T) {
 // arrivingPieces wires fake time into avail and flips one missing piece
 // to downloaded per availability poll, simulating download progress.
 func arrivingPieces(e *streamEnv) {
-	now := time.Unix(1000, 0)
-	e.avail.now = func() time.Time { return now }
-	e.avail.sleep = func(_ context.Context, d time.Duration) error {
-		now = now.Add(d)
+	fakeClock(e, func() {
 		e.fake.Update(testHash, func(tor *fake.Torrent) {
 			for i, st := range tor.PieceStates {
 				if st != 2 {
@@ -358,8 +396,7 @@ func arrivingPieces(e *streamEnv) {
 				}
 			}
 		})
-		return nil
-	}
+	})
 }
 
 func TestServeRequestsPiecePrioritization(t *testing.T) {
