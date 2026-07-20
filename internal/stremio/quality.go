@@ -16,6 +16,33 @@ type Quality struct {
 	HDR        []string // ordered subset of {"DV","HDR10+","HDR10","HDR"}; nil if none
 	Audio      string   // "Atmos" | "DTS-HD" | "DTS" | "DDP" | "AC3" | ""
 	TenBit     bool     // "10bit"/"10-bit" present
+	Languages  []string // normalized language names in detection order; nil if none
+}
+
+// langMatcher maps a normalized language label to the tokens that identify it.
+// Kept in a fixed order so detection output is stable. Only 3+ letter scene
+// tags and full names are used — two-letter codes (EN/IT/ES) are omitted to
+// avoid matching words in titles ("IT", Spanish "por", etc.).
+type langMatcher struct {
+	name string
+	re   *regexp.Regexp
+}
+
+var langMatchers = []langMatcher{
+	{"Multi", regexp.MustCompile(`(?i)\bmulti\b`)},
+	{"Dual Audio", regexp.MustCompile(`(?i)\bdual\b`)},
+	{"English", regexp.MustCompile(`(?i)\b(english|eng)\b`)},
+	{"Spanish", regexp.MustCompile(`(?i)\b(spanish|castellano|espanol|español|spa)\b`)},
+	{"Latino", regexp.MustCompile(`(?i)\blatino\b`)},
+	{"French", regexp.MustCompile(`(?i)\b(french|truefrench|vostfr|vff|vfq|vfi|vf2)\b`)},
+	{"German", regexp.MustCompile(`(?i)\b(german|ger|deu)\b`)},
+	{"Italian", regexp.MustCompile(`(?i)\b(italian|ita)\b`)},
+	{"Portuguese", regexp.MustCompile(`(?i)\b(portuguese|dublado|pt-br)\b`)},
+	{"Russian", regexp.MustCompile(`(?i)\b(russian|rus)\b`)},
+	{"Japanese", regexp.MustCompile(`(?i)\b(japanese|jpn)\b`)},
+	{"Korean", regexp.MustCompile(`(?i)\b(korean|kor)\b`)},
+	{"Chinese", regexp.MustCompile(`(?i)\b(chinese|mandarin|cantonese)\b`)},
+	{"Hindi", regexp.MustCompile(`(?i)\bhindi\b`)},
 }
 
 // Precompiled, case-insensitive, word-boundary-aware matchers. RE2 treats any
@@ -140,6 +167,12 @@ func ParseQuality(title string) Quality {
 		q.Audio = "AC3"
 	}
 
+	for _, lm := range langMatchers {
+		if lm.re.MatchString(title) {
+			q.Languages = append(q.Languages, lm.name)
+		}
+	}
+
 	return q
 }
 
@@ -160,7 +193,7 @@ func qualityBadge(q Quality) string {
 // "1080p • WEB-DL • HEVC • HDR". Empty segments are omitted; the result is ""
 // when nothing was recognized.
 func qualitySummary(q Quality) string {
-	parts := make([]string, 0, 5)
+	parts := make([]string, 0, 6)
 	if q.Resolution != "" {
 		parts = append(parts, q.Resolution)
 	}
@@ -179,6 +212,9 @@ func qualitySummary(q Quality) string {
 	}
 	if q.Audio != "" {
 		parts = append(parts, q.Audio)
+	}
+	if len(q.Languages) > 0 {
+		parts = append(parts, strings.Join(q.Languages, ", "))
 	}
 	return strings.Join(parts, " • ")
 }
