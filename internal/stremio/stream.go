@@ -20,7 +20,8 @@ import (
 // streamItem is one entry in a Stremio stream response.
 type streamItem struct {
 	Name          string         `json:"name"`
-	Title         string         `json:"title"`
+	Title         string         `json:"title"`                 // deprecated by Stremio; kept for back-compat
+	Description   string         `json:"description,omitempty"` // Stremio-preferred; AIOStreams reads it
 	URL           string         `json:"url"`
 	BehaviorHints map[string]any `json:"behaviorHints,omitempty"`
 }
@@ -457,27 +458,42 @@ func (h *Handler) toStreamItem(externalURL string, q meta.Query, res prowlarr.Re
 	setContentIdentity(v, q)
 	playURL := fmt.Sprintf("%s/stremio/play/%s?%s", base, res.InfoHash, v.Encode())
 
-	title := fmt.Sprintf("%s\n👤 %d  💾 %s", res.Title, res.Seeders, humanSize(res.Size))
+	// Surface the parsed resolution on the name's second line so Stremio's
+	// resolution badge and AIOStreams' grouping resolve cleanly.
+	ql := ParseQuality(res.Title)
+	name := "seedstrem"
+	if badge := qualityBadge(ql); badge != "" {
+		name += "\n" + badge
+	}
+
+	// Detail keeps the raw release title on line 1 (AIOStreams parses it),
+	// then a normalized quality summary, then the stat line.
+	detail := res.Title
+	if summary := qualitySummary(ql); summary != "" {
+		detail += "\n" + summary
+	}
+	detail += fmt.Sprintf("\n👤 %d  💾 %s", res.Seeders, humanSize(res.Size))
 	if res.Freeleech {
-		title += "  🆓 FL"
+		detail += "  🆓 FL"
 	}
 	if res.Indexer != "" {
-		title += "  ⚙ " + res.Indexer
+		detail += "  ⚙ " + res.Indexer
 	}
 	// Show live progress for a torrent the user already started so they
 	// can tell it is downloading (and how far along) before pressing play.
 	if progress > 0 && progress < 1 {
-		title += fmt.Sprintf("  ⬇ %d%%", int(progress*100))
+		detail += fmt.Sprintf("  ⬇ %d%%", int(progress*100))
 	} else if progress >= 1 {
-		title += "  ✅ ready"
+		detail += "  ✅ ready"
 	}
 	hints := map[string]any{}
 	if q.IsSeries() || q.IsAnime() {
 		hints["bingeGroup"] = "seedstrem-" + strings.ToLower(q.Source) + "-" + q.ID
 	}
 	return streamItem{
-		Name:          "seedstrem",
-		Title:         title,
+		Name:          name,
+		Title:         detail,
+		Description:   detail,
 		URL:           playURL,
 		BehaviorHints: hints,
 	}
@@ -514,15 +530,27 @@ func (h *Handler) toOwnedStreamItem(externalURL string, q meta.Query, tor store.
 	case progress > 0:
 		status = fmt.Sprintf("⬇ %d%% downloaded", int(progress*100))
 	}
-	title := fmt.Sprintf("%s\n⚡ %s", tor.Name, status)
+
+	ql := ParseQuality(tor.Name)
+	name := "seedstrem ⚡"
+	if badge := qualityBadge(ql); badge != "" {
+		name += "\n" + badge
+	}
+
+	detail := tor.Name
+	if summary := qualitySummary(ql); summary != "" {
+		detail += "\n" + summary
+	}
+	detail += "\n⚡ " + status
 
 	hints := map[string]any{}
 	if q.IsSeries() || q.IsAnime() {
 		hints["bingeGroup"] = "seedstrem-" + strings.ToLower(q.Source) + "-" + q.ID
 	}
 	return streamItem{
-		Name:          "seedstrem ⚡",
-		Title:         title,
+		Name:          name,
+		Title:         detail,
+		Description:   detail,
 		URL:           playURL,
 		BehaviorHints: hints,
 	}
