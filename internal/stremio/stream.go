@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 
@@ -81,19 +82,35 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		var err error
-		results, err = h.ttSearch(ctx, q, s)
-		if err != nil {
-			h.logger.Warn("stremio: prowlarr search failed", "id", id, "error", err)
+		// The episode-scoped search carries an {Episode} token, which
+		// indexers honor by returning only single-episode releases — full
+		// season packs never come back. A second, season-only search
+		// (Sonarr does the same) surfaces the packs. The two are
+		// independent, so run them concurrently: sequentially they roughly
+		// doubled the response time, which was tripping the caller's fetch
+		// timeout. Dedup later collapses any release both searches returned.
+		var (
+			wg      sync.WaitGroup
+			epRes   []prowlarr.Result
+			epErr   error
+			packRes []prowlarr.Result
+		)
+		wg.Go(func() {
+			epRes, epErr = h.ttSearch(ctx, q, s)
+		})
+		wg.Go(func() {
+			// Best-effort: seasonPacks never returns an error (a failed
+			// season search just yields no packs), so it can't fail the
+			// request; a non-series/movie query yields nil cheaply.
+			packRes = h.seasonPacks(ctx, q, s)
+		})
+		wg.Wait()
+		if epErr != nil {
+			h.logger.Warn("stremio: prowlarr search failed", "id", id, "error", epErr)
 			writeJSON(w, http.StatusOK, empty)
 			return
 		}
-		// The episode-scoped search above carries an {Episode} token, which
-		// indexers honor by returning only single-episode releases — full
-		// season packs never come back. Run a second, season-only search
-		// (Sonarr does the same) and merge in just the packs; Dedup later
-		// collapses any release both searches returned.
-		results = append(results, h.seasonPacks(ctx, q, s)...)
+		results = append(epRes, packRes...)
 	}
 
 	raw := len(results)
@@ -177,33 +194,49 @@ func (h *Handler) ttSearch(ctx context.Context, q meta.Query, s Settings) ([]pro
 	idBucket, combinedQuery, extraText := combineIDBuckets(imdbCapable, tmdbCapable, idQuery, tmdbQuery)
 	textOnly = append(textOnly, extraText...)
 
-	var results []prowlarr.Result
+	// The id-token search and the free-text fallback hit disjoint indexer
+	// sets, so run them concurrently. The id search is primary — its error
+	// fails the whole tt search; the text fallback is best-effort, logging
+	// and contributing nothing on failure rather than aborting.
+	var (
+		wg      sync.WaitGroup
+		idRes   []prowlarr.Result
+		idErr   error
+		textRes []prowlarr.Result
+	)
 	if len(idBucket) > 0 {
-		h.logger.Debug("stremio: prowlarr id search",
-			"query", combinedQuery, "type", searchType, "indexers", len(idBucket))
-		r, err := pc.Search(ctx, combinedQuery, searchType, categories, idBucket)
-		if err != nil {
-			return nil, fmt.Errorf("id search: %w", err)
-		}
-		results = append(results, r...)
+		wg.Go(func() {
+			h.logger.Debug("stremio: prowlarr id search",
+				"query", combinedQuery, "type", searchType, "indexers", len(idBucket))
+			idRes, idErr = pc.Search(ctx, combinedQuery, searchType, categories, idBucket)
+		})
+	}
+	if len(textOnly) > 0 {
+		wg.Go(func() {
+			title, year, err := h.resolveTitle(ctx, q)
+			if err != nil {
+				h.logger.Warn("stremio: fallback title resolution failed", "error", err)
+				return
+			}
+			textQuery, textCategories := buildTextSearch(q, title, year, s.Prowlarr)
+			h.logger.Debug("stremio: prowlarr text-fallback search",
+				"query", textQuery, "indexers", len(textOnly))
+			r, err := pc.Search(ctx, textQuery, "search", textCategories, textOnly)
+			if err != nil {
+				h.logger.Warn("stremio: prowlarr text-fallback search failed", "query", textQuery, "error", err)
+				return
+			}
+			textRes = r
+		})
+	}
+	wg.Wait()
+	if idErr != nil {
+		return nil, fmt.Errorf("id search: %w", idErr)
 	}
 
-	if len(textOnly) > 0 {
-		title, year, err := h.resolveTitle(ctx, q)
-		if err != nil {
-			h.logger.Warn("stremio: fallback title resolution failed", "error", err)
-			return results, nil
-		}
-		textQuery, textCategories := buildTextSearch(q, title, year, s.Prowlarr)
-		h.logger.Debug("stremio: prowlarr text-fallback search",
-			"query", textQuery, "indexers", len(textOnly))
-		r, err := pc.Search(ctx, textQuery, "search", textCategories, textOnly)
-		if err != nil {
-			h.logger.Warn("stremio: prowlarr text-fallback search failed", "query", textQuery, "error", err)
-			return results, nil
-		}
-		results = append(results, r...)
-	}
+	results := make([]prowlarr.Result, 0, len(idRes)+len(textRes))
+	results = append(results, idRes...)
+	results = append(results, textRes...)
 	return results, nil
 }
 
