@@ -13,6 +13,7 @@ import (
 
 	"github.com/javib/seedstrem/internal/meta"
 	"github.com/javib/seedstrem/internal/prowlarr"
+	"github.com/javib/seedstrem/internal/store"
 )
 
 // streamItem is one entry in a Stremio stream response.
@@ -101,19 +102,39 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 	if s.MaxResults > 0 && len(results) > s.MaxResults {
 		results = results[:s.MaxResults]
 	}
-	h.logger.Debug("stremio: stream results", "id", id, "raw", raw, "returned", len(results))
 
-	// Best-effort: annotate results the user has already started with
-	// their live download progress. One batched call; failures/misses
-	// just mean no annotation.
-	hashes := make([]string, 0, len(results))
+	// Torrents the app already added for exactly this content are offered
+	// first as high-priority streams (instant/near-instant playback); the
+	// Prowlarr results below are the fallback. A release present in both is
+	// shown only once, as the owned entry.
+	owned := h.svc.OwnedForContent(ctx, q.Source, q.ID, q.Season, q.Episode)
+	ownedHashes := make(map[string]struct{}, len(owned))
+	for _, t := range owned {
+		ownedHashes[strings.ToLower(t.Hash)] = struct{}{}
+	}
+	h.logger.Debug("stremio: stream results", "id", id, "raw", raw, "returned", len(results), "owned", len(owned))
+
+	// Best-effort: annotate results (and owned torrents) with their live
+	// download progress. One batched call; failures/misses just mean no
+	// annotation.
+	hashes := make([]string, 0, len(results)+len(owned))
 	for _, res := range results {
 		hashes = append(hashes, res.InfoHash)
 	}
+	for _, t := range owned {
+		hashes = append(hashes, t.Hash)
+	}
 	progress := h.svc.LiveProgress(ctx, hashes)
 
-	items := make([]streamItem, 0, len(results))
+	items := make([]streamItem, 0, len(owned)+len(results))
+	for _, t := range owned {
+		items = append(items, h.toOwnedStreamItem(s.ExternalURL, q, t, progress[strings.ToLower(t.Hash)]))
+	}
 	for _, res := range results {
+		// Skip a Prowlarr result already surfaced as an owned entry above.
+		if _, ok := ownedHashes[strings.ToLower(res.InfoHash)]; ok {
+			continue
+		}
 		// Stash any raw .torrent we already fetched (magnet-less
 		// releases) so the play handler can add it directly instead of a
 		// metadata-less magnet.
@@ -398,11 +419,9 @@ func (h *Handler) toStreamItem(externalURL string, q meta.Query, res prowlarr.Re
 	base := strings.TrimSuffix(externalURL, "/")
 	v := url.Values{}
 	v.Set("magnet", res.MagnetURL)
-	if q.IsSeries() || q.IsAnime() {
-		v.Set("series", "1")
-		v.Set("s", strconv.Itoa(q.Season))
-		v.Set("e", strconv.Itoa(q.Episode))
-	}
+	// Persist the content identity through play so later stream requests
+	// can surface this torrent as already-owned (see stream handler).
+	setContentIdentity(v, q)
 	playURL := fmt.Sprintf("%s/stremio/play/%s?%s", base, res.InfoHash, v.Encode())
 
 	title := fmt.Sprintf("%s\n👤 %d  💾 %s", res.Title, res.Seeders, humanSize(res.Size))
@@ -425,6 +444,51 @@ func (h *Handler) toStreamItem(externalURL string, q meta.Query, res prowlarr.Re
 	}
 	return streamItem{
 		Name:          "seedstrem",
+		Title:         title,
+		URL:           playURL,
+		BehaviorHints: hints,
+	}
+}
+
+// setContentIdentity encodes the Stremio content identity into a play
+// URL's query so the resolve handler can persist what a torrent was added
+// for. Season/episode are already carried by the series params.
+func setContentIdentity(v url.Values, q meta.Query) {
+	v.Set("src", q.Source)
+	v.Set("cid", q.ID)
+	if q.IsSeries() || q.IsAnime() {
+		v.Set("series", "1")
+		v.Set("s", strconv.Itoa(q.Season))
+		v.Set("e", strconv.Itoa(q.Episode))
+	}
+}
+
+// toOwnedStreamItem builds a high-priority stream for a torrent the app
+// already added for this content. It points at the same resolve-on-play
+// endpoint (reusing the stored magnet), and its title flags the download
+// state so it stands out above the Prowlarr fallback results.
+func (h *Handler) toOwnedStreamItem(externalURL string, q meta.Query, tor store.Torrent, progress float64) streamItem {
+	base := strings.TrimSuffix(externalURL, "/")
+	v := url.Values{}
+	v.Set("magnet", tor.Magnet)
+	setContentIdentity(v, q)
+	playURL := fmt.Sprintf("%s/stremio/play/%s?%s", base, tor.Hash, v.Encode())
+
+	status := "⬇ downloading"
+	switch {
+	case progress >= 1:
+		status = "✅ downloaded"
+	case progress > 0:
+		status = fmt.Sprintf("⬇ %d%% downloaded", int(progress*100))
+	}
+	title := fmt.Sprintf("%s\n⚡ %s", tor.Name, status)
+
+	hints := map[string]any{}
+	if q.IsSeries() || q.IsAnime() {
+		hints["bingeGroup"] = "seedstrem-" + strings.ToLower(q.Source) + "-" + q.ID
+	}
+	return streamItem{
+		Name:          "seedstrem ⚡",
 		Title:         title,
 		URL:           playURL,
 		BehaviorHints: hints,

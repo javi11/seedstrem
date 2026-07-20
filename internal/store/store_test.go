@@ -78,6 +78,102 @@ func TestTorrentCRUD(t *testing.T) {
 	}
 }
 
+func TestTorrentContentRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	tor := Torrent{
+		ID: "CONTENT0000001", Hash: "hc", Phase: PhaseAdded, AddedAt: 1,
+		ContentSource: "tt", ContentRef: "tt0944947", Season: 1, Episode: 5,
+	}
+	if err := s.InsertTorrent(ctx, tor); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	got, err := s.TorrentByID(ctx, tor.ID)
+	if err != nil {
+		t.Fatalf("by id: %v", err)
+	}
+	if got != tor {
+		t.Errorf("content columns not round-tripped: got %+v; want %+v", got, tor)
+	}
+}
+
+func TestTorrentsByContent(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	rows := []Torrent{
+		{ID: "MOVIE00000001", Hash: "m1", Phase: PhaseAdded, AddedAt: 10, ContentSource: "tt", ContentRef: "tt1375666"},
+		{ID: "SER1E5000001", Hash: "s15", Phase: PhaseAdded, AddedAt: 20, ContentSource: "tt", ContentRef: "tt0944947", Season: 1, Episode: 5},
+		{ID: "SER1E6000001", Hash: "s16", Phase: PhaseAdded, AddedAt: 30, ContentSource: "tt", ContentRef: "tt0944947", Season: 1, Episode: 6},
+		{ID: "LEGACY0000001", Hash: "leg", Phase: PhaseAdded, AddedAt: 40}, // no content identity
+	}
+	for _, r := range rows {
+		if err := s.InsertTorrent(ctx, r); err != nil {
+			t.Fatalf("insert %s: %v", r.ID, err)
+		}
+	}
+
+	tests := []struct {
+		name            string
+		source, ref     string
+		season, episode int
+		wantIDs         []string
+	}{
+		{"movie match", "tt", "tt1375666", 0, 0, []string{"MOVIE00000001"}},
+		{"series exact episode", "tt", "tt0944947", 1, 5, []string{"SER1E5000001"}},
+		{"series other episode excluded", "tt", "tt0944947", 1, 6, []string{"SER1E6000001"}},
+		{"series missing episode", "tt", "tt0944947", 1, 9, nil},
+		{"unknown ref", "tt", "tt9999999", 0, 0, nil},
+		{"blank ref never matches legacy rows", "", "", 0, 0, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := s.TorrentsByContent(ctx, tc.source, tc.ref, tc.season, tc.episode)
+			if err != nil {
+				t.Fatalf("by content: %v", err)
+			}
+			var gotIDs []string
+			for _, g := range got {
+				gotIDs = append(gotIDs, g.ID)
+			}
+			if len(gotIDs) != len(tc.wantIDs) {
+				t.Fatalf("got ids %v; want %v", gotIDs, tc.wantIDs)
+			}
+			for i := range gotIDs {
+				if gotIDs[i] != tc.wantIDs[i] {
+					t.Errorf("got ids %v; want %v", gotIDs, tc.wantIDs)
+				}
+			}
+		})
+	}
+}
+
+func TestSetTorrentContent(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.InsertTorrent(ctx, Torrent{ID: "BACKFILL00001", Hash: "bf", Phase: PhaseAdded, AddedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTorrentContent(ctx, "BACKFILL00001", "tt", "tt0111161", 0, 0); err != nil {
+		t.Fatalf("set content: %v", err)
+	}
+	got, _ := s.TorrentByID(ctx, "BACKFILL00001")
+	if got.ContentSource != "tt" || got.ContentRef != "tt0111161" {
+		t.Errorf("backfill lost: %+v", got)
+	}
+	// Now findable by content.
+	found, err := s.TorrentsByContent(ctx, "tt", "tt0111161", 0, 0)
+	if err != nil || len(found) != 1 || found[0].ID != "BACKFILL00001" {
+		t.Errorf("expected backfilled row findable, got %+v err=%v", found, err)
+	}
+
+	if err := s.SetTorrentContent(ctx, "missing", "tt", "x", 0, 0); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetTorrentContent missing: want ErrNotFound, got %v", err)
+	}
+}
+
 func TestNotFoundPaths(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

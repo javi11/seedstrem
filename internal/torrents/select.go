@@ -16,10 +16,18 @@ var ErrNoFileMatch = errors.New("no matching file in torrent")
 // Selector describes which file to stream out of a (possibly multi-file)
 // torrent. For movies IsSeries is false and the largest video file wins.
 // For series/anime the file whose name matches Season/Episode wins.
+//
+// Source and ContentRef carry the Stremio content identity the play was
+// requested for (e.g. "tt"/"tt0944947"); they are not used for file
+// picking but are persisted with the torrent so later stream requests for
+// the same content can surface it as already-owned. Both empty when
+// unknown.
 type Selector struct {
-	IsSeries bool
-	Season   int // 0 when unknown (anime absolute numbering)
-	Episode  int
+	IsSeries   bool
+	Season     int // 0 when unknown (anime absolute numbering)
+	Episode    int
+	Source     string
+	ContentRef string
 }
 
 var videoExts = map[string]bool{

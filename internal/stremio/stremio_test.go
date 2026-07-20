@@ -1,6 +1,7 @@
 package stremio
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,7 @@ type harness struct {
 	prowlarr *httptest.Server
 	cinemeta *httptest.Server
 	fakeDC   *fake.Server
+	db       *store.Store
 }
 
 func newHarness(t *testing.T) *harness {
@@ -73,7 +75,7 @@ func newHarness(t *testing.T) *harness {
 
 	metaClient := meta.New(cinemeta.URL, "")
 
-	h := &harness{prowlarr: prow, cinemeta: cinemeta, fakeDC: fakeDC}
+	h := &harness{prowlarr: prow, cinemeta: cinemeta, fakeDC: fakeDC, db: db}
 	h.handler = New(svc, metaClient, func() Settings {
 		return Settings{
 			ExternalURL: h.server.URL,
@@ -625,6 +627,72 @@ func TestStreamDiscovery(t *testing.T) {
 	}
 	if !strings.Contains(sr.Streams[0].URL, "/stremio/play/"+testHash) {
 		t.Errorf("play URL = %q", sr.Streams[0].URL)
+	}
+}
+
+// TestStreamPrioritizesOwnedTorrents verifies that a torrent the app
+// already added for this content is surfaced first as a high-priority
+// stream, that a Prowlarr result sharing its infohash is deduped away, and
+// that unrelated Prowlarr results remain as fallback.
+func TestStreamPrioritizesOwnedTorrents(t *testing.T) {
+	h := newHarness(t)
+
+	// Re-put testHash fully downloaded so the owned entry reports
+	// "downloaded" (Get returns a copy, so Put is how tests mutate state).
+	h.fakeDC.Put(&fake.Torrent{
+		Hash: testHash, State: "Paused", Progress: 1,
+		Files: []fake.File{{Name: "The.Matrix.1999.1080p.BluRay.mkv", Size: 8 << 30}},
+	})
+
+	// Seed an owned torrent for tt1375666 keyed to testHash — the same
+	// release the harness's Prowlarr also returns (testMagnet).
+	err := h.db.InsertTorrent(context.Background(), store.Torrent{
+		ID: "OWNED000000001", Hash: testHash, Name: "The Matrix (owned)",
+		Phase: store.PhaseSelected, AddedAt: 1, Magnet: testMagnet(),
+		ContentSource: "tt", ContentRef: "tt1375666",
+	})
+	if err != nil {
+		t.Fatalf("seed owned: %v", err)
+	}
+
+	resp, err := http.Get(h.server.URL + "/stremio/stream/movie/tt1375666.json")
+	if err != nil {
+		t.Fatalf("get stream: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var sr streamResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Owned entry + the one non-shared Prowlarr result (ffff...); the
+	// Prowlarr result sharing testHash is deduped away.
+	if len(sr.Streams) != 2 {
+		t.Fatalf("want 2 streams (owned + 1 fallback), got %d: %+v", len(sr.Streams), sr.Streams)
+	}
+	first := sr.Streams[0]
+	if !strings.Contains(first.Title, "⚡") || !strings.Contains(first.Title, "The Matrix (owned)") {
+		t.Errorf("first stream should be the owned high-priority entry, got %q", first.Title)
+	}
+	if !strings.Contains(first.Title, "downloaded") {
+		t.Errorf("owned entry should report download state, got %q", first.Title)
+	}
+	if !strings.Contains(first.URL, "/stremio/play/"+testHash) {
+		t.Errorf("owned play URL = %q", first.URL)
+	}
+	if !strings.Contains(first.URL, "cid=tt1375666") {
+		t.Errorf("owned play URL missing content identity: %q", first.URL)
+	}
+	// testHash must appear exactly once across all streams (deduped).
+	var testHashCount int
+	for _, s := range sr.Streams {
+		if strings.Contains(s.URL, "/stremio/play/"+testHash+"?") {
+			testHashCount++
+		}
+	}
+	if testHashCount != 1 {
+		t.Errorf("testHash appeared %d times, want 1 (deduped): %+v", testHashCount, sr.Streams)
 	}
 }
 

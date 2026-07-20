@@ -93,7 +93,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 // metadata is already embedded, so qBittorrent skips the metaDL fetch
 // entirely — which is unreliable for private-tracker peers and otherwise
 // leaves the torrent stuck in metaDL.
-func (s *Service) EnsureAdded(ctx context.Context, magnet string, torrentFile []byte) (store.Torrent, error) {
+func (s *Service) EnsureAdded(ctx context.Context, magnet string, torrentFile []byte, sel Selector) (store.Torrent, error) {
 	hash, name, err := metainfo.FromMagnet(magnet)
 	if err != nil {
 		return store.Torrent{}, fmt.Errorf("parse magnet: %w", err)
@@ -101,6 +101,16 @@ func (s *Service) EnsureAdded(ctx context.Context, magnet string, torrentFile []
 
 	if existing, err := s.store.TorrentByHash(ctx, hash); err == nil {
 		s.logger.Debug("torrents: reusing existing torrent", "hash", hash, "id", existing.ID)
+		// Backfill the content identity if this torrent was first added
+		// before we knew it (older row, or a re-add carrying it now).
+		if existing.ContentRef == "" && sel.ContentRef != "" {
+			if err := s.store.SetTorrentContent(ctx, existing.ID, sel.Source, sel.ContentRef, sel.Season, sel.Episode); err != nil {
+				s.logger.Warn("torrents: backfill content identity", "id", existing.ID, "error", err)
+			} else {
+				existing.ContentSource, existing.ContentRef = sel.Source, sel.ContentRef
+				existing.Season, existing.Episode = sel.Season, sel.Episode
+			}
+		}
 		return existing, nil
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return store.Torrent{}, fmt.Errorf("lookup torrent by hash: %w", err)
@@ -128,12 +138,16 @@ func (s *Service) EnsureAdded(ctx context.Context, magnet string, torrentFile []
 		return store.Torrent{}, fmt.Errorf("generate id: %w", err)
 	}
 	tor := store.Torrent{
-		ID:      id,
-		Hash:    hash,
-		Name:    name,
-		Phase:   store.PhaseAdded,
-		AddedAt: s.now(),
-		Magnet:  magnet,
+		ID:            id,
+		Hash:          hash,
+		Name:          name,
+		Phase:         store.PhaseAdded,
+		AddedAt:       s.now(),
+		Magnet:        magnet,
+		ContentSource: sel.Source,
+		ContentRef:    sel.ContentRef,
+		Season:        sel.Season,
+		Episode:       sel.Episode,
 	}
 	if err := s.store.InsertTorrent(ctx, tor); err != nil {
 		// A concurrent add of the same hash may have won the race (the
@@ -399,6 +413,23 @@ func (s *Service) LiveProgress(ctx context.Context, hashes []string) map[string]
 	return out
 }
 
+// OwnedForContent returns torrents the app already added for exactly this
+// Stremio content identity (source, ref, season, episode) — used to
+// surface already-downloaded / in-progress torrents as high-priority
+// streams. Best-effort: any store error yields no rows rather than
+// failing the stream request.
+func (s *Service) OwnedForContent(ctx context.Context, source, ref string, season, episode int) []store.Torrent {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	owned, err := s.store.TorrentsByContent(ctx, source, ref, season, episode)
+	if err != nil {
+		s.logger.Warn("torrents: owned-for-content lookup", "source", source, "ref", ref, "error", err)
+		return nil
+	}
+	return owned
+}
+
 // Remove deletes a torrent from qBittorrent and the local store. A torrent
 // already missing on either side is treated as already-removed, not an
 // error.
@@ -421,7 +452,7 @@ func (s *Service) Remove(ctx context.Context, tor store.Torrent) error {
 // the raw .torrent file when available, else the magnet), wait for
 // metadata, pick the file matching sel, and mint a streaming link.
 func (s *Service) Resolve(ctx context.Context, magnet string, torrentFile []byte, sel Selector) (store.Link, error) {
-	tor, err := s.EnsureAdded(ctx, magnet, torrentFile)
+	tor, err := s.EnsureAdded(ctx, magnet, torrentFile, sel)
 	if err != nil {
 		return store.Link{}, err
 	}
