@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,16 +28,19 @@ func testMagnet() string {
 
 // harness wires a Handler over fakes: cinemeta, prowlarr, and qBittorrent.
 type harness struct {
-	handler  *Handler
-	server   *httptest.Server
-	prowlarr *httptest.Server
-	cinemeta *httptest.Server
-	fakeDC   *fake.Server
-	db       *store.Store
+	handler      *Handler
+	server       *httptest.Server
+	prowlarr     *httptest.Server
+	prowlarrHits atomic.Int64 // number of Prowlarr search requests served
+	cinemeta     *httptest.Server
+	fakeDC       *fake.Server
+	db           *store.Store
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+
+	h := &harness{}
 
 	cinemeta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/meta/movie/tt1375666") {
@@ -48,6 +52,7 @@ func newHarness(t *testing.T) *harness {
 	t.Cleanup(cinemeta.Close)
 
 	prow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.prowlarrHits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`[
 			{"title":"The Matrix 1999 1080p BluRay","magnetUrl":"` + testMagnet() + `","size":8589934592,"seeders":42,"protocol":"torrent","indexer":"idx1"},
@@ -75,7 +80,10 @@ func newHarness(t *testing.T) *harness {
 
 	metaClient := meta.New(cinemeta.URL, "")
 
-	h := &harness{prowlarr: prow, cinemeta: cinemeta, fakeDC: fakeDC, db: db}
+	h.prowlarr = prow
+	h.cinemeta = cinemeta
+	h.fakeDC = fakeDC
+	h.db = db
 	h.handler = New(svc, metaClient, func() Settings {
 		return Settings{
 			ExternalURL: h.server.URL,
@@ -666,10 +674,13 @@ func TestStreamPrioritizesOwnedTorrents(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
-	// Owned entry + the one non-shared Prowlarr result (ffff...); the
-	// Prowlarr result sharing testHash is deduped away.
-	if len(sr.Streams) != 2 {
-		t.Fatalf("want 2 streams (owned + 1 fallback), got %d: %+v", len(sr.Streams), sr.Streams)
+	// With owned content present, the Prowlarr search is skipped entirely,
+	// so only the owned entry is returned.
+	if got := h.prowlarrHits.Load(); got != 0 {
+		t.Errorf("Prowlarr should not be searched when content is owned, got %d hits", got)
+	}
+	if len(sr.Streams) != 1 {
+		t.Fatalf("want 1 stream (owned only), got %d: %+v", len(sr.Streams), sr.Streams)
 	}
 	first := sr.Streams[0]
 	if !strings.Contains(first.Title, "⚡") || !strings.Contains(first.Title, "The Matrix (owned)") {
