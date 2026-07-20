@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -102,7 +103,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	files, err := h.dc.Files(ctx, tor.Hash)
 	if err != nil {
-		h.internalError(w, "qbittorrent files", err)
+		h.internalError(w, "download client files", err)
 		return
 	}
 	var file downloader.FileInfo
@@ -276,16 +277,23 @@ func (h *Handler) waitStreamReady(ctx context.Context, hash string, headFirst, h
 	// Deadline-fetch the head and tail on capable backends when they are
 	// missing: first/last-piece priority covers them eventually, but an
 	// explicit deadline makes the MKV cues arrive deterministically fast.
-	deadline := time.Now().Add(grace)
-	err := h.avail.WaitForRangeHint(ctx, hash, headFirst, headLast, grace, prioRefreshInterval, func() {
-		h.prio.request(ctx, hash, headFirst, headLast)
-	})
-	if err != nil {
-		return false
+	// Both ranges are waited on (and hinted) concurrently: waiting for
+	// the head first would leave the tail unhinted — and with no time
+	// left in the grace window — whenever the head is slow to arrive.
+	ranges := [2][2]int{{headFirst, headLast}, {tailFirst, tailLast}}
+	var wg sync.WaitGroup
+	var errs [2]error
+	for i, rng := range ranges {
+		wg.Add(1)
+		go func(i, first, last int) {
+			defer wg.Done()
+			errs[i] = h.avail.WaitForRangeHint(ctx, hash, first, last, grace, prioRefreshInterval, func() {
+				h.prio.request(ctx, hash, first, last)
+			})
+		}(i, rng[0], rng[1])
 	}
-	return h.avail.WaitForRangeHint(ctx, hash, tailFirst, tailLast, time.Until(deadline), prioRefreshInterval, func() {
-		h.prio.request(ctx, hash, tailFirst, tailLast)
-	}) == nil
+	wg.Wait()
+	return errs[0] == nil && errs[1] == nil
 }
 
 // waitForFile polls for the torrent's file to appear on disk, up to

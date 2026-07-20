@@ -28,10 +28,18 @@ const (
 	prioRefreshInterval = 5 * time.Second
 )
 
-type prioCall struct {
+// prioKey identifies one hinted range: the playability gate hints the
+// head and tail ranges of the same hash concurrently, so dedup state
+// must be per (hash, range) — a single per-hash slot would be clobbered
+// by the alternating ranges and never dedupe either of them.
+type prioKey struct {
+	hash        string
 	first, last int
-	at          time.Time
 }
+
+// prioMaxEntries bounds the dedup map: past it, entries older than
+// prioMinInterval (which can no longer suppress anything) are pruned.
+const prioMaxEntries = 1024
 
 // prioritizer throttles downloader.PrioritizePieces calls. Fire-and-
 // forget: prioritization is a best-effort hint, so failures are logged
@@ -41,7 +49,7 @@ type prioritizer struct {
 	logger *slog.Logger
 
 	mu               sync.Mutex
-	last             map[string]prioCall
+	last             map[prioKey]time.Time
 	unsupportedUntil time.Time
 
 	// now is injectable for tests.
@@ -52,28 +60,35 @@ func newPrioritizer(dc downloader.Client, logger *slog.Logger) *prioritizer {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &prioritizer{dc: dc, logger: logger, last: map[string]prioCall{}, now: time.Now}
+	return &prioritizer{dc: dc, logger: logger, last: map[prioKey]time.Time{}, now: time.Now}
 }
 
 // request asks the backend to fetch pieces [first, last] of hash ahead
-// of the sequential order, deduplicated and rate-limited per hash.
+// of the sequential order, deduplicated and rate-limited per range.
 func (p *prioritizer) request(ctx context.Context, hash string, first, last int) {
 	if p == nil || first > last {
 		return
 	}
 	now := p.now()
+	key := prioKey{hash: hash, first: first, last: last}
 
 	p.mu.Lock()
 	if now.Before(p.unsupportedUntil) {
 		p.mu.Unlock()
 		return
 	}
-	if prev, ok := p.last[hash]; ok && now.Sub(prev.at) < prioMinInterval &&
-		prev.first == first && prev.last == last {
+	if at, ok := p.last[key]; ok && now.Sub(at) < prioMinInterval {
 		p.mu.Unlock()
 		return
 	}
-	p.last[hash] = prioCall{first: first, last: last, at: now}
+	if len(p.last) >= prioMaxEntries {
+		for k, at := range p.last {
+			if now.Sub(at) >= prioMinInterval {
+				delete(p.last, k)
+			}
+		}
+	}
+	p.last[key] = now
 	p.mu.Unlock()
 
 	err := p.dc.PrioritizePieces(ctx, hash, first, last)
