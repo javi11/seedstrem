@@ -277,12 +277,65 @@ func TestEnsureStreamingPrioSkipsCompleted(t *testing.T) {
 	}
 }
 
+func TestEnsureAddedPersistsContentIdentity(t *testing.T) {
+	svc, _, db := newService(t)
+	ctx := context.Background()
+
+	sel := Selector{IsSeries: true, Season: 1, Episode: 5, Source: "tt", ContentRef: "tt0944947"}
+	tor, err := svc.EnsureAdded(ctx, testMagnet("Show.S01E05"), nil, sel)
+	if err != nil {
+		t.Fatalf("ensure added: %v", err)
+	}
+
+	got, err := db.TorrentByID(ctx, tor.ID)
+	if err != nil {
+		t.Fatalf("by id: %v", err)
+	}
+	if got.ContentSource != "tt" || got.ContentRef != "tt0944947" || got.Season != 1 || got.Episode != 5 {
+		t.Errorf("content identity not persisted: %+v", got)
+	}
+
+	// OwnedForContent finds it for exactly this identity, and not for another.
+	if owned := svc.OwnedForContent(ctx, "tt", "tt0944947", 1, 5); len(owned) != 1 || owned[0].ID != tor.ID {
+		t.Errorf("OwnedForContent = %+v, want the added torrent", owned)
+	}
+	if owned := svc.OwnedForContent(ctx, "tt", "tt0944947", 1, 6); len(owned) != 0 {
+		t.Errorf("OwnedForContent for other episode = %+v, want none", owned)
+	}
+}
+
+func TestEnsureAddedBackfillsContentIdentity(t *testing.T) {
+	svc, _, db := newService(t)
+	ctx := context.Background()
+
+	// First add without a content identity (e.g. a pre-migration play URL).
+	tor, err := svc.EnsureAdded(ctx, testMagnet("Movie"), nil, Selector{})
+	if err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	// Re-add (idempotent on hash) now carrying the identity — it backfills.
+	got, err := svc.EnsureAdded(ctx, testMagnet("Movie"), nil, Selector{Source: "tt", ContentRef: "tt1375666"})
+	if err != nil {
+		t.Fatalf("re-add: %v", err)
+	}
+	if got.ID != tor.ID {
+		t.Fatalf("re-add created a new row: %q vs %q", got.ID, tor.ID)
+	}
+	if got.ContentRef != "tt1375666" {
+		t.Errorf("returned torrent not backfilled: %+v", got)
+	}
+	persisted, _ := db.TorrentByID(ctx, tor.ID)
+	if persisted.ContentSource != "tt" || persisted.ContentRef != "tt1375666" {
+		t.Errorf("content identity not backfilled in store: %+v", persisted)
+	}
+}
+
 func TestRemove(t *testing.T) {
 	svc, fakeDC, db := newService(t)
 	ctx := context.Background()
 
 	fakeDC.Put(&fake.Torrent{Hash: testHash, State: downloader.StateSeeding})
-	tor, err := svc.EnsureAdded(ctx, testMagnet("Show"), nil)
+	tor, err := svc.EnsureAdded(ctx, testMagnet("Show"), nil, Selector{})
 	if err != nil {
 		t.Fatalf("ensure added: %v", err)
 	}
@@ -304,7 +357,7 @@ func TestRemoveMissingFromqBittorrentIsNotAnError(t *testing.T) {
 	ctx := context.Background()
 
 	fakeDC.Put(&fake.Torrent{Hash: testHash, State: downloader.StateSeeding})
-	tor, err := svc.EnsureAdded(ctx, testMagnet("Show"), nil)
+	tor, err := svc.EnsureAdded(ctx, testMagnet("Show"), nil, Selector{})
 	if err != nil {
 		t.Fatalf("ensure added: %v", err)
 	}
@@ -329,7 +382,7 @@ func TestEnsureAddedUsesTorrentFileWhenPresent(t *testing.T) {
 	// works.
 	torrentFile := []byte("d4:infod6:lengthi1e4:name4:test12:piece lengthi1e6:pieces20:aaaaaaaaaaaaaaaaaaaaee")
 
-	if _, err := svc.EnsureAdded(ctx, testMagnet("Show"), torrentFile); err != nil {
+	if _, err := svc.EnsureAdded(ctx, testMagnet("Show"), torrentFile, Selector{}); err != nil {
 		t.Fatalf("ensure added: %v", err)
 	}
 

@@ -31,7 +31,13 @@ func (h *Handler) play(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sel := torrents.Selector{}
+	sel := torrents.Selector{
+		// Content identity (empty when the stream URL predates it) — used
+		// only to persist what this torrent was added for, so later stream
+		// requests can surface it as already-owned.
+		Source:     r.URL.Query().Get("src"),
+		ContentRef: r.URL.Query().Get("cid"),
+	}
 	if r.URL.Query().Get("series") == "1" {
 		sel.IsSeries = true
 		sel.Season, _ = strconv.Atoi(r.URL.Query().Get("s"))

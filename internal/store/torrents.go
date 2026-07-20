@@ -16,22 +16,30 @@ const (
 // ErrNotFound is returned when a torrent or link does not exist.
 var ErrNotFound = errors.New("not found")
 
-// Torrent is a persisted RD-id ↔ qBittorrent-hash mapping.
+// Torrent is a persisted RD-id ↔ qBittorrent-hash mapping. The Content*
+// / Season / Episode fields record the Stremio content this torrent was
+// added for (empty/zero when unknown), used to surface already-owned
+// torrents on later stream requests.
 type Torrent struct {
-	ID      string
-	Hash    string
-	Name    string
-	Phase   string
-	AddedAt int64 // unix seconds
-	Magnet  string
-	Error   string
+	ID            string
+	Hash          string
+	Name          string
+	Phase         string
+	AddedAt       int64 // unix seconds
+	Magnet        string
+	Error         string
+	ContentSource string // "tt", "kitsu", ... ("" when unknown)
+	ContentRef    string // id portion, e.g. "tt0944947" ("" when unknown)
+	Season        int    // 0 for movies / anime absolute numbering
+	Episode       int    // 0 for movies
 }
 
-const torrentCols = `id, hash, name, phase, added_at, magnet, error`
+const torrentCols = `id, hash, name, phase, added_at, magnet, error, content_source, content_ref, season, episode`
 
 func scanTorrent(row interface{ Scan(...any) error }) (Torrent, error) {
 	var t Torrent
-	err := row.Scan(&t.ID, &t.Hash, &t.Name, &t.Phase, &t.AddedAt, &t.Magnet, &t.Error)
+	err := row.Scan(&t.ID, &t.Hash, &t.Name, &t.Phase, &t.AddedAt, &t.Magnet, &t.Error,
+		&t.ContentSource, &t.ContentRef, &t.Season, &t.Episode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Torrent{}, ErrNotFound
 	}
@@ -44,8 +52,9 @@ func scanTorrent(row interface{ Scan(...any) error }) (Torrent, error) {
 // InsertTorrent stores a new torrent row.
 func (s *Store) InsertTorrent(ctx context.Context, t Torrent) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO torrents (`+torrentCols+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Hash, t.Name, t.Phase, t.AddedAt, t.Magnet, t.Error)
+		`INSERT INTO torrents (`+torrentCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Hash, t.Name, t.Phase, t.AddedAt, t.Magnet, t.Error,
+		t.ContentSource, t.ContentRef, t.Season, t.Episode)
 	if err != nil {
 		return fmt.Errorf("insert torrent %s: %w", t.ID, err)
 	}
@@ -62,6 +71,56 @@ func (s *Store) TorrentByID(ctx context.Context, id string) (Torrent, error) {
 func (s *Store) TorrentByHash(ctx context.Context, hash string) (Torrent, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+torrentCols+` FROM torrents WHERE hash = ?`, hash)
 	return scanTorrent(row)
+}
+
+// TorrentsByContent returns torrents added for exactly this Stremio
+// content identity (source, ref, season, episode), newest-first. Movies
+// and anime are stored with season/episode 0, so an exact match on all
+// four columns serves every content type. A blank ref yields no rows
+// (legacy pre-migration rows have empty content columns and must not
+// match every request).
+func (s *Store) TorrentsByContent(ctx context.Context, source, ref string, season, episode int) ([]Torrent, error) {
+	if ref == "" {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+torrentCols+` FROM torrents
+		 WHERE content_source = ? AND content_ref = ? AND season = ? AND episode = ?
+		 ORDER BY added_at DESC, id`,
+		source, ref, season, episode)
+	if err != nil {
+		return nil, fmt.Errorf("torrents by content %s/%s: %w", source, ref, err)
+	}
+	defer rows.Close()
+
+	var torrents []Torrent
+	for rows.Next() {
+		t, err := scanTorrent(rows)
+		if err != nil {
+			return nil, err
+		}
+		torrents = append(torrents, t)
+	}
+	return torrents, rows.Err()
+}
+
+// SetTorrentContent records the Stremio content identity a torrent was
+// added for (used to backfill rows added before the identity was known).
+func (s *Store) SetTorrentContent(ctx context.Context, id, source, ref string, season, episode int) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE torrents SET content_source = ?, content_ref = ?, season = ?, episode = ? WHERE id = ?`,
+		source, ref, season, episode, id)
+	if err != nil {
+		return fmt.Errorf("set torrent content %s: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // ListTorrents returns a page of torrents ordered newest-first, plus the
