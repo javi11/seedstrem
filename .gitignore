@@ -21,3 +21,6 @@ config.yaml
 .DS_Store
 .idea/
 .vscode/
+
+# Superpowers brainstorm scratch
+.superpowers/

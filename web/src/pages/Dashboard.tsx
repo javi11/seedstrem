@@ -1,126 +1,135 @@
-import { useCallback, useEffect, useState } from "react";
-import { api, formatBytes, Status } from "../api";
-
-const STATUS_LABELS: Record<string, string> = {
-  magnet_conversion: "Resolving",
-  waiting_files_selection: "Waiting selection",
-  queued: "Queued",
-  downloading: "Downloading",
-  downloaded: "Downloaded",
-  error: "Error",
-};
+import { api } from "../api";
+import { formatBytes } from "../lib/format";
+import { DASHBOARD_STATUSES } from "../lib/status";
+import { usePolling } from "../lib/usePolling";
+import { useToast } from "../components/Toast";
+import { StatCard } from "../components/StatCard";
+import { StatCardSkeleton } from "../components/Skeleton";
+import { FreshnessIndicator } from "../components/FreshnessIndicator";
+import { PageHeader } from "../components/PageHeader";
 
 export function Dashboard() {
-  const [status, setStatus] = useState<Status | null>(null);
-  const [loadError, setLoadError] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const toast = useToast();
+  const { data: status, error, isStale, isOffline, lastUpdated } = usePolling(
+    api.status,
+    { baseIntervalMs: 5000 },
+  );
 
-  const refresh = useCallback(async () => {
-    try {
-      setStatus(await api.status());
-      setLoadError(false);
-    } catch {
-      setLoadError(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    let inflight = false;
-    const tick = async () => {
-      if (inflight) return;
-      inflight = true;
-      await refresh();
-      inflight = false;
-    };
-    tick();
-    const t = setInterval(tick, 5000);
-    return () => clearInterval(t);
-  }, [refresh]);
-
+  // First load, nothing yet.
   if (!status) {
-    if (loadError) {
+    if (error) {
       return (
         <div className="alert alert-error">
-          <span>Could not load status. Retrying…</span>
+          <span>Couldn&rsquo;t load status. Retrying automatically…</span>
         </div>
       );
     }
-    return <span className="loading loading-spinner loading-lg" />;
+    return (
+      <div className="flex flex-col gap-6">
+        <PageHeader title="Dashboard" />
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <StatCardSkeleton key={i} />
+          ))}
+        </div>
+      </div>
+    );
   }
 
   async function copyManifest() {
-    await navigator.clipboard.writeText(status!.manifest_url);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    try {
+      await navigator.clipboard.writeText(status!.manifest_url);
+      toast.info("Manifest URL copied");
+    } catch {
+      toast.error("Couldn't copy to clipboard");
+    }
   }
 
   const externalHostMismatch =
     new URL(status.external_url).host !== window.location.host;
-
   // stremio:// deep link installs the addon directly in the Stremio app.
   const stremioDeepLink = status.manifest_url.replace(/^https?:\/\//, "stremio://");
   // Older backends only report the qbittorrent key.
   const downloaderStatus = status.downloader ?? status.qbittorrent;
+  const downloaderName = status.downloader?.type === "deluge" ? "Deluge" : "qBittorrent";
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="stats stats-vertical shadow sm:stats-horizontal">
-        <div className="stat">
-          <div className="stat-title">
-            {status.downloader?.type === "deluge" ? "Deluge" : "qBittorrent"}
-          </div>
-          <div className={`stat-value text-lg ${downloaderStatus.connected ? "text-success" : "text-error"}`}>
-            {downloaderStatus.connected ? `Connected (${downloaderStatus.version})` : "Disconnected"}
-          </div>
-          {downloaderStatus.error && (
-            <div className="stat-desc text-error">{downloaderStatus.error}</div>
-          )}
-        </div>
-        {Object.entries(STATUS_LABELS).map(([key, label]) => (
-          <div className="stat" key={key}>
-            <div className="stat-title">{label}</div>
-            <div className="stat-value text-lg">{status.torrents[key] ?? 0}</div>
-          </div>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Dashboard"
+        actions={
+          <FreshnessIndicator
+            isStale={isStale}
+            isOffline={isOffline}
+            lastUpdated={lastUpdated}
+          />
+        }
+      />
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+        <StatCard
+          label={downloaderName}
+          value={
+            <span className={downloaderStatus.connected ? "text-success" : "text-error"}>
+              {downloaderStatus.connected ? "Connected" : "Disconnected"}
+            </span>
+          }
+          hint={
+            downloaderStatus.connected
+              ? `v${downloaderStatus.version}`
+              : downloaderStatus.error
+          }
+          accent="default"
+        />
+        {DASHBOARD_STATUSES.map(({ key, label }) => (
+          <StatCard
+            key={key}
+            label={label}
+            value={status.torrents[key] ?? 0}
+            accent={key === "downloading" ? "primary" : key === "error" ? "error" : "default"}
+          />
         ))}
-        <div className="stat">
-          <div className="stat-title">Uploaded</div>
-          <div className="stat-value text-lg">{formatBytes(status.total_uploaded ?? 0)}</div>
-          <div className="stat-desc">total seeded</div>
-        </div>
+        <StatCard
+          label="Uploaded"
+          value={formatBytes(status.total_uploaded ?? 0)}
+          hint="total seeded"
+          accent="success"
+        />
       </div>
 
       {externalHostMismatch && (
         <div className="alert alert-warning">
           <span>
-            The configured external URL <code>{status.external_url}</code> does not match the
-            address you are browsing from. Generated stream links may not be reachable by
-            players — check Settings.
+            The configured external URL <code>{status.external_url}</code> doesn&rsquo;t
+            match the address you&rsquo;re browsing from. Generated stream links may not be
+            reachable by players — check Settings.
           </span>
         </div>
       )}
 
-      <div className="card bg-base-100 shadow">
-        <div className="card-body">
-          <h2 className="card-title">Stremio addon</h2>
-          <p className="text-sm opacity-70">
-            Install this addon in Stremio, then search for movies or shows — seedstrem finds
-            torrents via Prowlarr and streams them through your download client. Manifest URL:
-          </p>
-          <div className="flex items-center gap-2">
-            <input
-              readOnly
-              className="input input-bordered flex-1 font-mono text-sm"
-              value={status.manifest_url}
-            />
-            <button className="btn" onClick={copyManifest}>
-              {copied ? "Copied ✓" : "Copy"}
+      <div className="surface p-6">
+        <h2 className="text-lg font-bold tracking-brand">Stremio addon</h2>
+        <p className="mt-1 text-sm opacity-70">
+          Install this addon in Stremio, then search for movies or shows — seedstrem finds
+          torrents via Prowlarr and streams them through your download client.
+        </p>
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
+          <input
+            readOnly
+            className="input input-bordered flex-1 font-mono text-sm"
+            value={status.manifest_url}
+            onFocus={(e) => e.currentTarget.select()}
+          />
+          <div className="flex gap-2">
+            <button className="btn flex-1 sm:flex-none" onClick={copyManifest}>
+              Copy
             </button>
-            <a className="btn btn-primary" href={stremioDeepLink}>
+            <a className="btn btn-primary flex-1 sm:flex-none" href={stremioDeepLink}>
               Install in Stremio
             </a>
           </div>
-          <p className="text-xs opacity-50">seedstrem {status.version}</p>
         </div>
+        <p className="mt-3 text-xs opacity-50">seedstrem {status.version}</p>
       </div>
     </div>
   );

@@ -16,6 +16,7 @@ import (
 	"github.com/javib/seedstrem/internal/downloader"
 	"github.com/javib/seedstrem/internal/downloader/fake"
 	"github.com/javib/seedstrem/internal/store"
+	"github.com/javib/seedstrem/internal/torrents"
 )
 
 const adminPassword = "test-admin-pw"
@@ -49,7 +50,11 @@ func newEnv(t *testing.T) *env {
 	// Tests swap in a fresh fake on config changes, standing in for the
 	// real backend factory.
 	newClient := func(config.Config) downloader.Client { return fake.New() }
-	h := New(cm, st, dc, newClient, "test", nil)
+	svc := torrents.New(st, dc, func() torrents.Settings {
+		c := cm.Get()
+		return torrents.Settings{DeleteFilesOnRemove: c.Storage.DeleteFilesOnRemove}
+	}, nil)
+	h := New(cm, st, dc, svc, newClient, "test", nil)
 	return &env{handler: h.Router(), config: cm, fake: f, swappable: dc, store: st, t: t}
 }
 
