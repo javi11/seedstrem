@@ -672,6 +672,24 @@ export function Settings() {
             />
             <span className="label-text">Delete downloaded files when a torrent is removed</span>
           </label>
+          <label className="form-control">
+            <span className="label-text">Max disk usage before withholding new streams (%)</span>
+            <input
+              type="number"
+              className="input input-bordered"
+              min={0}
+              max={100}
+              value={config.storage.max_disk_usage_percent}
+              onChange={(e) =>
+                update((c) => (c.storage.max_disk_usage_percent = Number(e.target.value)))
+              }
+            />
+            <span className="label-text-alt text-base-content/60">
+              Once the download disk is this full, no new streams are offered and releases that
+              would push it over are hidden. Already-downloaded and downloading content is
+              unaffected. 0 disables.
+            </span>
+          </label>
         </div>
       </div>
 

@@ -152,6 +152,7 @@ type configDTO struct {
 	Storage struct {
 		Database            string `json:"database"`
 		DeleteFilesOnRemove bool   `json:"delete_files_on_remove"`
+		MaxDiskUsagePercent int    `json:"max_disk_usage_percent"`
 	} `json:"storage"`
 	Stream struct {
 		WaitTimeoutSeconds int   `json:"wait_timeout_seconds"`
@@ -215,6 +216,7 @@ func toDTO(cfg config.Config) configDTO {
 	dto.Paths.Mappings = cfg.Paths.Mappings
 	dto.Storage.Database = cfg.Storage.Database
 	dto.Storage.DeleteFilesOnRemove = cfg.Storage.DeleteFilesOnRemove
+	dto.Storage.MaxDiskUsagePercent = cfg.Storage.MaxDiskUsagePercent
 	dto.Stream.WaitTimeoutSeconds = int(cfg.Stream.WaitTimeout / time.Second)
 	dto.Stream.ReadChunk = cfg.Stream.ReadChunk
 	dto.Cleanup.SeedTimeHours = int(cfg.Cleanup.SeedTime / time.Hour)
@@ -292,6 +294,9 @@ func (dto configDTO) apply(cfg config.Config) config.Config {
 		cfg.Storage.Database = dto.Storage.Database
 	}
 	cfg.Storage.DeleteFilesOnRemove = dto.Storage.DeleteFilesOnRemove
+	// 0 is a meaningful, settable value (disables the disk-usage gate), so
+	// it is always applied rather than treated as "keep existing value".
+	cfg.Storage.MaxDiskUsagePercent = dto.Storage.MaxDiskUsagePercent
 	if dto.Stream.WaitTimeoutSeconds > 0 {
 		cfg.Stream.WaitTimeout = time.Duration(dto.Stream.WaitTimeoutSeconds) * time.Second
 	}

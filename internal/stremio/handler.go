@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/javib/seedstrem/internal/diskusage"
 	"github.com/javib/seedstrem/internal/meta"
 	"github.com/javib/seedstrem/internal/prowlarr"
 	"github.com/javib/seedstrem/internal/torrents"
@@ -41,6 +42,17 @@ type AddonSettings struct {
 	EnableAnime  bool
 }
 
+// DiskSettings configures the disk-usage gate that withholds new streams
+// once the download disk is too full. A zero MaxUsagePercent or empty Path
+// disables it.
+type DiskSettings struct {
+	// MaxUsagePercent is the used-disk percentage (0..100) at/above which
+	// no new streams are offered. 0 disables the gate.
+	MaxUsagePercent int
+	// Path is the local directory whose filesystem usage is measured.
+	Path string
+}
+
 // Settings is the live configuration slice the handlers need, fetched per
 // request so config hot-reload takes effect without restart.
 type Settings struct {
@@ -49,6 +61,7 @@ type Settings struct {
 	Addon       AddonSettings
 	Filters     prowlarr.Filters
 	MaxResults  int
+	Disk        DiskSettings
 }
 
 // Handler serves the Stremio addon endpoints.
@@ -64,6 +77,10 @@ type Handler struct {
 	indexerCacheAt time.Time
 
 	torrentFiles *torrentFileCache
+
+	// diskUsage reports (used, total) bytes for a local path. Injectable
+	// for tests; defaults to diskusage.Stat.
+	diskUsage func(path string) (used, total int64, err error)
 }
 
 // New creates the addon handler. meta is shared (its cache persists);
@@ -72,7 +89,7 @@ func New(svc *torrents.Service, m *meta.Client, settings func() Settings, versio
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{svc: svc, meta: m, settings: settings, version: version, logger: logger, torrentFiles: newTorrentFileCache()}
+	return &Handler{svc: svc, meta: m, settings: settings, version: version, logger: logger, torrentFiles: newTorrentFileCache(), diskUsage: diskusage.Stat}
 }
 
 // Router returns the chi router for mounting at /stremio.
