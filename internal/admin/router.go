@@ -174,6 +174,13 @@ type configDTO struct {
 		IntervalMinutes  int  `json:"interval_minutes"`
 		MaxGrabsPerCycle int  `json:"max_grabs_per_cycle"`
 		FreeleechOnly    bool `json:"freeleech_only"`
+		Filters          struct {
+			MinSizeMB       int64    `json:"min_size_mb"`
+			MaxSizeMB       int64    `json:"max_size_mb"`
+			Categories      []int    `json:"categories"`
+			IncludeKeywords []string `json:"include_keywords"`
+			ExcludeKeywords []string `json:"exclude_keywords"`
+		} `json:"filters"`
 	} `json:"rss"`
 	Log struct {
 		Level string `json:"level"`
@@ -236,6 +243,21 @@ func toDTO(cfg config.Config) configDTO {
 	dto.RSS.IntervalMinutes = int(cfg.RSS.Interval / time.Minute)
 	dto.RSS.MaxGrabsPerCycle = cfg.RSS.MaxGrabsPerCycle
 	dto.RSS.FreeleechOnly = cfg.RSS.FreeleechOnly
+	dto.RSS.Filters.MinSizeMB = cfg.RSS.Filters.MinSizeMB
+	dto.RSS.Filters.MaxSizeMB = cfg.RSS.Filters.MaxSizeMB
+	// Emit [] rather than null so clients can treat these as arrays.
+	dto.RSS.Filters.Categories = cfg.RSS.Filters.Categories
+	if dto.RSS.Filters.Categories == nil {
+		dto.RSS.Filters.Categories = []int{}
+	}
+	dto.RSS.Filters.IncludeKeywords = cfg.RSS.Filters.IncludeKeywords
+	if dto.RSS.Filters.IncludeKeywords == nil {
+		dto.RSS.Filters.IncludeKeywords = []string{}
+	}
+	dto.RSS.Filters.ExcludeKeywords = cfg.RSS.Filters.ExcludeKeywords
+	if dto.RSS.Filters.ExcludeKeywords == nil {
+		dto.RSS.Filters.ExcludeKeywords = []string{}
+	}
 	dto.Log.Level = cfg.Log.Level
 	return dto
 }
@@ -335,6 +357,13 @@ func (dto configDTO) apply(cfg config.Config) config.Config {
 	// 0 is a meaningful, settable value (disables grabbing), so always apply.
 	cfg.RSS.MaxGrabsPerCycle = dto.RSS.MaxGrabsPerCycle
 	cfg.RSS.FreeleechOnly = dto.RSS.FreeleechOnly
+	// RSS filters: sizes are always applied (0 = no bound / unbounded), and
+	// the list fields replace the stored values wholesale.
+	cfg.RSS.Filters.MinSizeMB = dto.RSS.Filters.MinSizeMB
+	cfg.RSS.Filters.MaxSizeMB = dto.RSS.Filters.MaxSizeMB
+	cfg.RSS.Filters.Categories = dto.RSS.Filters.Categories
+	cfg.RSS.Filters.IncludeKeywords = dto.RSS.Filters.IncludeKeywords
+	cfg.RSS.Filters.ExcludeKeywords = dto.RSS.Filters.ExcludeKeywords
 	// Empty = keep the stored level (older clients don't send the field).
 	if dto.Log.Level != "" {
 		cfg.Log.Level = dto.Log.Level

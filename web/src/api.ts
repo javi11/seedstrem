@@ -105,6 +105,13 @@ export interface Config {
     interval_minutes: number;
     max_grabs_per_cycle: number;
     freeleech_only: boolean;
+    filters: {
+      min_size_mb: number;
+      max_size_mb: number;
+      categories: number[];
+      include_keywords: string[];
+      exclude_keywords: string[];
+    };
   };
   log: { level: string };
 }

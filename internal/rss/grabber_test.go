@@ -123,6 +123,76 @@ func TestSelectGrabs(t *testing.T) {
 	}
 }
 
+func titled(hash, title string, seeders int, size int64) prowlarr.Result {
+	r := res(hash, seeders, size, false)
+	r.Title = title
+	return r
+}
+
+func TestSelectGrabsTitleFilter(t *testing.T) {
+	const gb = 1 << 30
+
+	tests := []struct {
+		name       string
+		results    []prowlarr.Result
+		settings   Settings
+		wantHashes []string
+	}{
+		{
+			name: "exclude drops matching titles (case-insensitive)",
+			results: []prowlarr.Result{
+				titled("a", "Movie.2020.1080p.BluRay", 10, gb),
+				titled("b", "Movie.2020.CAM", 10, gb),
+				titled("c", "Movie.2019.hdts.x264", 10, gb),
+			},
+			settings:   Settings{MaxGrabsPerCycle: 5, IncludeKeywords: nil, ExcludeKeywords: []string{"CAM", "HDTS"}},
+			wantHashes: []string{"a"},
+		},
+		{
+			name: "include keeps only titles matching at least one keyword",
+			results: []prowlarr.Result{
+				titled("a", "Movie.2020.1080p.BluRay", 10, gb),
+				titled("b", "Movie.2020.720p.WEB", 10, gb),
+				titled("c", "Movie.2020.2160p.UHD", 10, gb),
+			},
+			settings:   Settings{MaxGrabsPerCycle: 5, IncludeKeywords: []string{"1080p", "2160p"}},
+			wantHashes: []string{"a", "c"},
+		},
+		{
+			name: "empty include allows all",
+			results: []prowlarr.Result{
+				titled("a", "Anything.Goes", 10, gb),
+				titled("b", "Also.Fine", 10, gb),
+			},
+			settings:   Settings{MaxGrabsPerCycle: 5},
+			wantHashes: []string{"a", "b"},
+		},
+		{
+			name: "exclude wins over include when a title matches both",
+			results: []prowlarr.Result{
+				titled("a", "Movie.2020.1080p.PROPER", 10, gb),
+				titled("b", "Movie.2020.1080p.CAM", 10, gb),
+			},
+			settings:   Settings{MaxGrabsPerCycle: 5, IncludeKeywords: []string{"1080p"}, ExcludeKeywords: []string{"CAM"}},
+			wantHashes: []string{"a"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hashesOf(selectGrabs(tc.results, tc.settings, 0, 0, nil))
+			if len(got) != len(tc.wantHashes) {
+				t.Fatalf("got %v; want %v", got, tc.wantHashes)
+			}
+			for i := range got {
+				if got[i] != tc.wantHashes[i] {
+					t.Fatalf("got %v; want %v", got, tc.wantHashes)
+				}
+			}
+		})
+	}
+}
+
 func TestNormalizeReleaseTitle(t *testing.T) {
 	tests := []struct {
 		in, want string

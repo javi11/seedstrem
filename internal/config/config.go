@@ -181,6 +181,30 @@ type RSS struct {
 	// FreeleechOnly restricts grabs to freeleech releases, whose download
 	// does not count against ratio — the safest way to build ratio.
 	FreeleechOnly bool `yaml:"freeleech_only"`
+	// Filters constrains which releases the grabber picks up, independent of
+	// the global filters.* used by on-demand stream search. The seeder floor
+	// is still inherited from filters.min_seeders (a ratio-safety default);
+	// only size/category/title are RSS-specific here.
+	Filters RSSFilters `yaml:"filters"`
+}
+
+// RSSFilters holds the RSS-grabber-specific filtering knobs. All are
+// optional: a zero value means "no restriction" (grab-everything, matching
+// the pre-filters behavior).
+type RSSFilters struct {
+	// MinSizeMB / MaxSizeMB bound release size in MiB. 0 min = no lower
+	// bound; 0 max = unbounded.
+	MinSizeMB int64 `yaml:"min_size_mb"`
+	MaxSizeMB int64 `yaml:"max_size_mb"`
+	// Categories restricts the poll to these raw newznab category ids.
+	// Empty means "all enabled content types" (the addon-derived default).
+	Categories []int `yaml:"categories"`
+	// IncludeKeywords keeps only releases whose title contains at least one
+	// of these (case-insensitive substring). Empty means allow all titles.
+	IncludeKeywords []string `yaml:"include_keywords"`
+	// ExcludeKeywords drops releases whose title contains any of these
+	// (case-insensitive substring). Exclude takes precedence over include.
+	ExcludeKeywords []string `yaml:"exclude_keywords"`
 }
 
 type Log struct {
@@ -374,6 +398,36 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 	setInts("PROWLARR_TV_CATEGORIES", &cfg.Prowlarr.TVCategories)
 	setInts("PROWLARR_ANIME_CATEGORIES", &cfg.Prowlarr.AnimeCategories)
 	setInts("PROWLARR_INDEXER_IDS", &cfg.Prowlarr.IndexerIDs)
+	// Comma-separated string lists, e.g. "1080p,2160p". Blank parts are
+	// dropped; an all-blank value leaves the destination untouched.
+	setStrings := func(key string, dst *[]string) {
+		v := getenv("SEEDSTREM_" + key)
+		if v == "" {
+			return
+		}
+		var out []string
+		for _, part := range strings.Split(v, ",") {
+			if p := strings.TrimSpace(part); p != "" {
+				out = append(out, p)
+			}
+		}
+		if len(out) > 0 {
+			*dst = out
+		}
+	}
+	if v := getenv("SEEDSTREM_RSS_FILTERS_MIN_SIZE_MB"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.RSS.Filters.MinSizeMB = n
+		}
+	}
+	if v := getenv("SEEDSTREM_RSS_FILTERS_MAX_SIZE_MB"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.RSS.Filters.MaxSizeMB = n
+		}
+	}
+	setInts("RSS_FILTERS_CATEGORIES", &cfg.RSS.Filters.Categories)
+	setStrings("RSS_FILTERS_INCLUDE_KEYWORDS", &cfg.RSS.Filters.IncludeKeywords)
+	setStrings("RSS_FILTERS_EXCLUDE_KEYWORDS", &cfg.RSS.Filters.ExcludeKeywords)
 	// SEEDSTREM_PATHS_MAPPINGS: comma-separated "remote:local" pairs,
 	// e.g. "/downloads:/data,/media:/mnt/media".
 	if v := getenv("SEEDSTREM_PATHS_MAPPINGS"); v != "" {
@@ -464,6 +518,12 @@ func (c Config) Validate() error {
 	}
 	if c.RSS.Enabled && c.RSS.Interval <= 0 {
 		errs = append(errs, errors.New("rss.interval must be positive when rss.enabled is true"))
+	}
+	if c.RSS.Filters.MinSizeMB < 0 || c.RSS.Filters.MaxSizeMB < 0 {
+		errs = append(errs, errors.New("rss.filters.min_size_mb and max_size_mb must not be negative"))
+	}
+	if c.RSS.Filters.MaxSizeMB != 0 && c.RSS.Filters.MaxSizeMB < c.RSS.Filters.MinSizeMB {
+		errs = append(errs, errors.New("rss.filters.max_size_mb must be >= min_size_mb (or 0 for unbounded)"))
 	}
 	if c.RSS.MaxGrabsPerCycle < 0 {
 		errs = append(errs, errors.New("rss.max_grabs_per_cycle must not be negative (0 disables grabbing)"))

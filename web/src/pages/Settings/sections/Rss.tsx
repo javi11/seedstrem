@@ -1,11 +1,27 @@
 import { SectionProps } from "../types";
-import { SectionCard, NumberField, ToggleField } from "../fields";
+import { SectionCard, NumberField, TextField, ToggleField } from "../fields";
+
+// Category lists are edited as comma-separated ints; keyword lists as
+// comma-separated strings. Both round-trip through the array config fields.
+function parseCategories(s: string): number[] {
+  return s
+    .split(",")
+    .map((p) => Number(p.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+function parseKeywords(s: string): string[] {
+  return s
+    .split(",")
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+}
 
 export function Rss({ config, update }: SectionProps) {
   return (
     <SectionCard
       title="RSS auto-grab"
-      description="Periodically pull the just-released items from your Prowlarr indexers and auto-download a filtered subset — to build seeding ratio and pre-cache content so it plays instantly in Stremio. Off by default. Which indexers/categories are polled comes from the Prowlarr section, and the seeder/size limits from Result filters. Disk use is bounded by the disk-usage gate and the seed-time cleanup."
+      description="Periodically pull the just-released items from your Prowlarr indexers and auto-download a filtered subset — to build seeding ratio and pre-cache content so it plays instantly in Stremio. Off by default. The seeder floor is inherited from Result filters; size, categories, and title keywords below are RSS-specific. Disk use is bounded by the disk-usage gate and the seed-time cleanup."
     >
       <ToggleField
         label="Enable background RSS grabbing"
@@ -33,6 +49,43 @@ export function Rss({ config, update }: SectionProps) {
           hint="Caps how many new releases are added each poll."
         />
       </div>
+
+      <div className="divider text-sm opacity-70">RSS filters</div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <NumberField
+          label="Min size (MB, 0 = no minimum)"
+          min={0}
+          value={config.rss.filters.min_size_mb}
+          onChange={(v) => update((c) => (c.rss.filters.min_size_mb = v))}
+          hint="Skip releases smaller than this."
+        />
+        <NumberField
+          label="Max size (MB, 0 = unbounded)"
+          min={0}
+          value={config.rss.filters.max_size_mb}
+          onChange={(v) => update((c) => (c.rss.filters.max_size_mb = v))}
+          hint="Skip releases larger than this."
+        />
+      </div>
+      <TextField
+        label="Categories (newznab ids, comma-separated)"
+        placeholder="leave empty to poll all enabled content types"
+        value={config.rss.filters.categories.join(", ")}
+        onChange={(v) => update((c) => (c.rss.filters.categories = parseCategories(v)))}
+      />
+      <TextField
+        label="Include keywords (comma-separated)"
+        placeholder="e.g. 1080p, 2160p — empty allows all titles"
+        value={config.rss.filters.include_keywords.join(", ")}
+        onChange={(v) => update((c) => (c.rss.filters.include_keywords = parseKeywords(v)))}
+      />
+      <TextField
+        label="Exclude keywords (comma-separated)"
+        placeholder="e.g. CAM, HDTS — dropped even if included; case-insensitive"
+        value={config.rss.filters.exclude_keywords.join(", ")}
+        onChange={(v) => update((c) => (c.rss.filters.exclude_keywords = parseKeywords(v)))}
+      />
     </SectionCard>
   );
 }

@@ -54,6 +54,17 @@ function blankSecrets(c: Config): Config {
   c.meta.tmdb_api_key = "";
   // Configs predating indexer_ids arrive without it (JSON null).
   c.prowlarr.indexer_ids = c.prowlarr.indexer_ids ?? [];
+  // Configs predating the rss.filters block arrive without it.
+  c.rss.filters = c.rss.filters ?? {
+    min_size_mb: 0,
+    max_size_mb: 0,
+    categories: [],
+    include_keywords: [],
+    exclude_keywords: [],
+  };
+  c.rss.filters.categories = c.rss.filters.categories ?? [];
+  c.rss.filters.include_keywords = c.rss.filters.include_keywords ?? [];
+  c.rss.filters.exclude_keywords = c.rss.filters.exclude_keywords ?? [];
   return c;
 }
 
