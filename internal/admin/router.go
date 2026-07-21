@@ -169,6 +169,12 @@ type configDTO struct {
 	Seeding struct {
 		Full bool `json:"full"`
 	} `json:"seeding"`
+	RSS struct {
+		Enabled          bool `json:"enabled"`
+		IntervalMinutes  int  `json:"interval_minutes"`
+		MaxGrabsPerCycle int  `json:"max_grabs_per_cycle"`
+		FreeleechOnly    bool `json:"freeleech_only"`
+	} `json:"rss"`
 	Log struct {
 		Level string `json:"level"`
 	} `json:"log"`
@@ -226,6 +232,10 @@ func toDTO(cfg config.Config) configDTO {
 	dto.Cleanup.SeedTimeHours = int(cfg.Cleanup.SeedTime / time.Hour)
 	dto.Cleanup.MinProgressForCancelPercent = int(cfg.Cleanup.MinProgressForCancel * 100)
 	dto.Seeding.Full = cfg.Seeding.Full
+	dto.RSS.Enabled = cfg.RSS.Enabled
+	dto.RSS.IntervalMinutes = int(cfg.RSS.Interval / time.Minute)
+	dto.RSS.MaxGrabsPerCycle = cfg.RSS.MaxGrabsPerCycle
+	dto.RSS.FreeleechOnly = cfg.RSS.FreeleechOnly
 	dto.Log.Level = cfg.Log.Level
 	return dto
 }
@@ -316,6 +326,15 @@ func (dto configDTO) apply(cfg config.Config) config.Config {
 	// Likewise 0 meaningfully disables the abandoned-download check.
 	cfg.Cleanup.MinProgressForCancel = float64(dto.Cleanup.MinProgressForCancelPercent) / 100
 	cfg.Seeding.Full = dto.Seeding.Full
+	cfg.RSS.Enabled = dto.RSS.Enabled
+	// Interval is only meaningful when positive; 0 keeps the stored value so
+	// a client clearing the field can't produce an invalid (<=0) interval.
+	if dto.RSS.IntervalMinutes > 0 {
+		cfg.RSS.Interval = time.Duration(dto.RSS.IntervalMinutes) * time.Minute
+	}
+	// 0 is a meaningful, settable value (disables grabbing), so always apply.
+	cfg.RSS.MaxGrabsPerCycle = dto.RSS.MaxGrabsPerCycle
+	cfg.RSS.FreeleechOnly = dto.RSS.FreeleechOnly
 	// Empty = keep the stored level (older clients don't send the field).
 	if dto.Log.Level != "" {
 		cfg.Log.Level = dto.Log.Level
