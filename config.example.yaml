@@ -59,6 +59,12 @@ prowlarr:
   # would otherwise stall the whole response. 0 disables (wait for every
   # indexer). Override with PROWLARR_SEARCH_TIMEOUT.
   search_timeout: 15s
+  # How long Stremio discovery search results are served from memory before
+  # Prowlarr is queried again for the same search. Repeated/concurrent
+  # requests for the same title within this window skip Prowlarr entirely.
+  # 0 disables caching (every request searches live). Override with
+  # PROWLARR_SEARCH_CACHE_TTL.
+  search_cache_ttl: 5m
 
 addon:
   # Which content types the Stremio addon serves.

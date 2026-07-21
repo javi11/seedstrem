@@ -93,7 +93,7 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 		ids := h.resolveIndexerIDs(ctx, pc, s)
 		h.logger.Debug("stremio: prowlarr search",
 			"query", query, "type", "search", "categories", categories, "indexers", len(ids))
-		results, err = pc.SearchEach(ctx, query, "search", categories, ids, s.Prowlarr.SearchTimeout)
+		results, err = h.searchEach(ctx, pc, s, query, "search", categories, ids)
 		if err != nil {
 			h.logger.Warn("stremio: prowlarr search failed", "query", query, "error", err)
 			writeJSON(w, http.StatusOK, empty)
@@ -296,7 +296,7 @@ func (h *Handler) ttSearch(ctx context.Context, q meta.Query, s Settings) ([]pro
 	indexers, err := h.cachedIndexers(ctx, pc)
 	if err != nil {
 		h.logger.Debug("stremio: indexer capability lookup failed, searching by id only", "error", err)
-		return pc.SearchEach(ctx, idQuery, searchType, categories, s.Prowlarr.IndexerIDs, s.Prowlarr.SearchTimeout)
+		return h.searchEach(ctx, pc, s, idQuery, searchType, categories, s.Prowlarr.IndexerIDs)
 	}
 
 	imdbCapable, tmdbCapable, textOnly, needsTmdb := splitByIDCapability(indexers, s.Prowlarr.IndexerIDs, q.IsSeries())
@@ -309,7 +309,7 @@ func (h *Handler) ttSearch(ctx context.Context, q meta.Query, s Settings) ([]pro
 		if len(fallbackIDs) == 0 {
 			fallbackIDs = enabledTorrentIDs(indexers)
 		}
-		return pc.SearchEach(ctx, idQuery, searchType, categories, fallbackIDs, s.Prowlarr.SearchTimeout)
+		return h.searchEach(ctx, pc, s, idQuery, searchType, categories, fallbackIDs)
 	}
 
 	tmdbQuery := ""
@@ -333,7 +333,7 @@ func (h *Handler) ttSearch(ctx context.Context, q meta.Query, s Settings) ([]pro
 		wg.Go(func() {
 			h.logger.Debug("stremio: prowlarr id search",
 				"query", combinedQuery, "type", searchType, "indexers", len(idBucket))
-			idRes, idErr = pc.SearchEach(ctx, combinedQuery, searchType, categories, idBucket, s.Prowlarr.SearchTimeout)
+			idRes, idErr = h.searchEach(ctx, pc, s, combinedQuery, searchType, categories, idBucket)
 		})
 	}
 	if len(textOnly) > 0 {
@@ -346,7 +346,7 @@ func (h *Handler) ttSearch(ctx context.Context, q meta.Query, s Settings) ([]pro
 			textQuery, textCategories := buildTextSearch(q, title, year, s.Prowlarr)
 			h.logger.Debug("stremio: prowlarr text-fallback search",
 				"query", textQuery, "indexers", len(textOnly))
-			r, err := pc.SearchEach(ctx, textQuery, "search", textCategories, textOnly, s.Prowlarr.SearchTimeout)
+			r, err := h.searchEach(ctx, pc, s, textQuery, "search", textCategories, textOnly)
 			if err != nil {
 				h.logger.Warn("stremio: prowlarr text-fallback search failed", "query", textQuery, "error", err)
 				return
