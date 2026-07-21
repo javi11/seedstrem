@@ -91,6 +91,10 @@ type Prowlarr struct {
 	// indexers still in flight are abandoned and the results already
 	// returned are used. 0 disables the budget (wait for every indexer).
 	SearchTimeout time.Duration `yaml:"search_timeout"`
+	// SearchCacheTTL is how long Stremio discovery search results are
+	// served from memory before Prowlarr is queried again for the same
+	// search. 0 disables caching (every request searches live).
+	SearchCacheTTL time.Duration `yaml:"search_cache_ttl"`
 }
 
 // Addon toggles which Stremio content types the addon serves.
@@ -240,6 +244,7 @@ func Default() Config {
 			TVCategories:    []int{5000},
 			AnimeCategories: []int{5070},
 			SearchTimeout:   15 * time.Second,
+			SearchCacheTTL:  5 * time.Minute,
 		},
 		Addon: Addon{
 			EnableMovies: true,
@@ -356,6 +361,11 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 	if v := getenv("PROWLARR_SEARCH_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Prowlarr.SearchTimeout = d
+		}
+	}
+	if v := getenv("PROWLARR_SEARCH_CACHE_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Prowlarr.SearchCacheTTL = d
 		}
 	}
 	if v := getenv("SEEDSTREM_CLEANUP_SEED_TIME"); v != "" {

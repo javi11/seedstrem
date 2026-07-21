@@ -36,6 +36,10 @@ type ProwlarrSettings struct {
 	// SearchTimeout is the global budget for a discovery search across
 	// indexers; 0 waits for every indexer. See prowlarr.Client.SearchEach.
 	SearchTimeout time.Duration
+	// SearchCacheTTL is how long search results are served from memory
+	// before Prowlarr is queried again for the same search. 0 disables
+	// caching (every request searches live).
+	SearchCacheTTL time.Duration
 }
 
 // AddonSettings toggles which content types the addon serves.
@@ -80,6 +84,7 @@ type Handler struct {
 	indexerCacheAt time.Time
 
 	torrentFiles *torrentFileCache
+	searchCache  *searchCache
 
 	// diskUsage reports (used, total) bytes for a local path. Injectable
 	// for tests; defaults to diskusage.Stat.
@@ -92,7 +97,7 @@ func New(svc *torrents.Service, m *meta.Client, settings func() Settings, versio
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{svc: svc, meta: m, settings: settings, version: version, logger: logger, torrentFiles: newTorrentFileCache(), diskUsage: diskusage.Stat}
+	return &Handler{svc: svc, meta: m, settings: settings, version: version, logger: logger, torrentFiles: newTorrentFileCache(), searchCache: newSearchCache(), diskUsage: diskusage.Stat}
 }
 
 // Router returns the chi router for mounting at /stremio.
@@ -131,6 +136,22 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func (h *Handler) prowlarr(s Settings) *prowlarr.Client {
 	return prowlarr.New(s.Prowlarr.URL, s.Prowlarr.APIKey)
+}
+
+// searchEach wraps prowlarr.Client.SearchEach with the search-result
+// cache: a repeated search within Prowlarr.SearchCacheTTL is answered
+// from memory, and concurrent identical searches share one underlying
+// Prowlarr call. A TTL of 0 disables the cache (live behavior).
+func (h *Handler) searchEach(ctx context.Context, pc *prowlarr.Client, s Settings, query, searchType string, categories, indexerIDs []int) ([]prowlarr.Result, error) {
+	key := searchCacheKey(s.Prowlarr.URL, query, searchType, categories, indexerIDs)
+	results, hit, err := h.searchCache.do(key, s.Prowlarr.SearchCacheTTL, func() ([]prowlarr.Result, error) {
+		return pc.SearchEach(ctx, query, searchType, categories, indexerIDs, s.Prowlarr.SearchTimeout)
+	})
+	if hit {
+		h.logger.Debug("stremio: prowlarr search cache hit",
+			"query", query, "type", searchType, "results", len(results))
+	}
+	return results, err
 }
 
 // cachedIndexers returns the Prowlarr indexer list (with capabilities),
