@@ -2,6 +2,26 @@ package prowlarr
 
 import "testing"
 
+func TestFilterDropsISO(t *testing.T) {
+	gb := int64(1 << 30)
+	in := []Result{
+		{Title: "Movie.2020.1080p.BluRay.ISO", Seeders: 50, Size: 8 * gb},
+		{Title: "Show S01 [ISO]", Seeders: 50, Size: 8 * gb},
+		{Title: "movie.iso", Seeders: 50, Size: 8 * gb},
+		{Title: "Poison 2020 1080p WEB", Seeders: 20, Size: 5 * gb},     // substring "iso", must be kept
+		{Title: "Prison Break 1080p BluRay", Seeders: 20, Size: 5 * gb}, // must be kept
+	}
+	out := Filter(in, Filters{MinSeeders: 1})
+	if len(out) != 2 {
+		t.Fatalf("want 2 kept (non-ISO), got %d: %+v", len(out), out)
+	}
+	for _, r := range out {
+		if r.Title != "Poison 2020 1080p WEB" && r.Title != "Prison Break 1080p BluRay" {
+			t.Errorf("filter dropped a legitimate release or kept an ISO: %q", r.Title)
+		}
+	}
+}
+
 func TestDedup(t *testing.T) {
 	in := []Result{
 		{Title: "A", InfoHash: "aaa", Seeders: 10},
