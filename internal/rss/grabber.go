@@ -205,12 +205,13 @@ func (g *Grabber) Poll(ctx context.Context) error {
 
 // selectGrabs is the pure decision core: given recent releases, live
 // settings, and current disk usage, it returns the releases to grab this
-// cycle. It dedups, applies the seeder/size filters, optionally keeps only
-// freeleech, ranks (freeleech → seeders → size), then walks the ranked
-// list skipping already-owned releases and any that would push disk usage
-// past the threshold, stopping at MaxGrabsPerCycle. have reports whether a
-// release's infohash is already downloaded; a nil have treats nothing as
-// owned.
+// cycle. It dedups (by infohash, then by release title so the same release
+// mirrored across indexers is grabbed once), applies the seeder/size
+// filters, optionally keeps only freeleech, ranks (freeleech → seeders →
+// size), then walks the ranked list skipping already-owned releases and any
+// that would push disk usage past the threshold, stopping at
+// MaxGrabsPerCycle. have reports whether a release's infohash is already
+// downloaded; a nil have treats nothing as owned.
 func selectGrabs(results []prowlarr.Result, s Settings, used, total int64, have func(hash string) bool) []prowlarr.Result {
 	if s.MaxGrabsPerCycle <= 0 {
 		return nil
@@ -227,6 +228,12 @@ func selectGrabs(results []prowlarr.Result, s Settings, used, total int64, have 
 		ranked = fl
 	}
 	ranked = prowlarr.Sort(ranked)
+	// Collapse the same release listed on multiple indexers. Prowlarr's
+	// infohash Dedup misses these because each tracker repacks the .torrent
+	// (different trackers/comment ⇒ different infohash) for the same scene
+	// release. Ranked is already best-first, so keeping the first occurrence
+	// of each normalized title keeps the best-seeded/freeleech copy.
+	ranked = dedupeByReleaseTitle(ranked)
 
 	// Disk limit: bytes we must stay under. limit <= 0 means "no gate".
 	var limit int64
@@ -256,4 +263,41 @@ func selectGrabs(results []prowlarr.Result, s Settings, used, total int64, have 
 		projected += r.Size
 	}
 	return out
+}
+
+// dedupeByReleaseTitle keeps only the first result for each normalized
+// release title, preserving input order. Callers pass an already-ranked
+// slice so the survivor is the best-ranked copy. Results whose title
+// normalizes to empty are always kept (nothing reliable to group on).
+func dedupeByReleaseTitle(results []prowlarr.Result) []prowlarr.Result {
+	seen := make(map[string]struct{}, len(results))
+	out := make([]prowlarr.Result, 0, len(results))
+	for _, r := range results {
+		key := normalizeReleaseTitle(r.Title)
+		if key != "" {
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// normalizeReleaseTitle reduces a release name to a comparison key by
+// lower-casing and keeping only alphanumerics. Scene/P2P release names are
+// otherwise byte-identical across trackers, so this collapses separator and
+// case differences ("The.Matrix.1999.1080p" vs "the matrix 1999 1080p")
+// while keeping genuinely different releases (resolution, group, repack)
+// distinct.
+func normalizeReleaseTitle(title string) string {
+	var b strings.Builder
+	b.Grow(len(title))
+	for _, r := range strings.ToLower(title) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
