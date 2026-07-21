@@ -54,10 +54,15 @@ func Sort(results []Result) []Result {
 	return results
 }
 
-// Filter drops results failing the seeder/size constraints.
+// Filter drops results failing the seeder/size constraints. ISO disc-image
+// releases are always dropped: they are not streamable and only bloat the
+// download disk.
 func Filter(results []Result, f Filters) []Result {
 	out := make([]Result, 0, len(results))
 	for _, r := range results {
+		if isISO(r.Title) {
+			continue
+		}
 		if r.Seeders < f.MinSeeders {
 			continue
 		}
@@ -70,4 +75,20 @@ func Filter(results []Result, f Filters) []Result {
 		out = append(out, r)
 	}
 	return out
+}
+
+// isISO reports whether a release title denotes a disc-image (ISO) release.
+// "ISO" is matched as a standalone token (bounded by non-alphanumeric
+// separators such as ".", " ", "[", "-", or a ".iso" extension) so that
+// titles merely containing the substring — "Poison", "Prison Break" — are
+// not dropped.
+func isISO(title string) bool {
+	for _, tok := range strings.FieldsFunc(title, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
+	}) {
+		if strings.EqualFold(tok, "iso") {
+			return true
+		}
+	}
+	return false
 }
