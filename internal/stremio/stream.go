@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -173,9 +174,19 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 	}
 	cached := h.svc.StoredByHashes(ctx, resultHashes)
 
-	items := make([]streamItem, 0, len(owned)+len(results))
+	// Ready items (content-owned + already-downloaded infohash matches) are
+	// surfaced ahead of fresh candidates and, within that group, ordered by
+	// download progress descending — so instant-playback (cached) streams sit
+	// at the very top, then partially-downloaded, then queued. A stable sort
+	// preserves each source's relative order among equal progress.
+	type readyStream struct {
+		item     streamItem
+		progress float64
+	}
+	ready := make([]readyStream, 0, len(owned)+len(results))
 	for _, t := range owned {
-		items = append(items, h.toOwnedStreamItem(s.ExternalURL, q, t, progress[strings.ToLower(t.Hash)]))
+		p := progress[strings.ToLower(t.Hash)]
+		ready = append(ready, readyStream{h.toOwnedStreamItem(s.ExternalURL, q, t, p), p})
 	}
 	fresh := make([]prowlarr.Result, 0, len(results))
 	for _, res := range results {
@@ -187,11 +198,18 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 		// Already downloaded (e.g. RSS-grabbed): render as a ready stream now
 		// and order it ahead of the fresh candidates below.
 		if tor, ok := cached[lh]; ok {
-			items = append(items, h.toOwnedStreamItem(s.ExternalURL, q, tor, progress[lh]))
+			p := progress[lh]
+			ready = append(ready, readyStream{h.toOwnedStreamItem(s.ExternalURL, q, tor, p), p})
 			ownedHashes[lh] = struct{}{}
 			continue
 		}
 		fresh = append(fresh, res)
+	}
+	sort.SliceStable(ready, func(i, j int) bool { return ready[i].progress > ready[j].progress })
+
+	items := make([]streamItem, 0, len(ready)+len(fresh))
+	for _, r := range ready {
+		items = append(items, r.item)
 	}
 	for _, res := range fresh {
 		// Stash any raw .torrent we already fetched (magnet-less
@@ -563,6 +581,8 @@ func (h *Handler) toStreamItem(externalURL string, q meta.Query, res prowlarr.Re
 	} else if progress >= 1 {
 		detail += "  ✅ ready"
 	}
+	// AIOStreams-visible tag: a fresh candidate carries its indexer name.
+	detail += "\n" + aiostreamsTag(res.Indexer)
 	hints := map[string]any{}
 	if q.IsSeries() || q.IsAnime() {
 		hints["bingeGroup"] = "seedstrem-" + strings.ToLower(q.Source) + "-" + q.ID
@@ -619,6 +639,16 @@ func (h *Handler) toOwnedStreamItem(externalURL string, q meta.Query, tor store.
 		detail += "\n" + summary
 	}
 	detail += "\n⚡ " + status
+	// AIOStreams-visible tag: readiness rides as a plain-text qualifier
+	// (cached / NN% / queued) since AIOStreams drops our custom name.
+	tag := "queued"
+	switch {
+	case progress >= 1:
+		tag = "cached"
+	case progress > 0:
+		tag = fmt.Sprintf("%d%%", int(progress*100))
+	}
+	detail += "\n" + aiostreamsTag(tag)
 
 	hints := map[string]any{}
 	if q.IsSeries() || q.IsAnime() {
@@ -631,6 +661,26 @@ func (h *Handler) toOwnedStreamItem(externalURL string, q meta.Query, tor store.
 		URL:           playURL,
 		BehaviorHints: hints,
 	}
+}
+
+// aiostreamsTag builds a description line that AIOStreams parses as the
+// stream's "indexer" tag — the text following one of its recognized emojis
+// (🌐 ⚙️ 🔗 🔎 🔍 ☁️). AIOStreams reformats streams and discards our custom
+// name, so this is how seedstrem's provenance and readiness survive the
+// chain. Two constraints from AIOStreams' parser:
+//   - the emoji must be ⚙️ (U+2699 U+FE0F) to match its emoji set (the ⚙ used
+//     in the stream name omits the variation selector — don't reuse it here);
+//   - the captured tag excludes emoji, so readiness must be plain text.
+//
+// The tag always leads with "seedstrem"; qualifier adds the indexer name (for
+// fresh candidates) or the readiness word (cached / NN% / queued). An empty
+// qualifier yields just "⚙️ seedstrem" with no dangling separator.
+func aiostreamsTag(qualifier string) string {
+	tag := "⚙️ seedstrem"
+	if qualifier != "" {
+		tag += " · " + qualifier
+	}
+	return tag
 }
 
 func humanSize(b int64) string {
