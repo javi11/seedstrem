@@ -162,15 +162,38 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 	}
 	progress := h.svc.LiveProgress(ctx, hashes)
 
+	// Cache-first: a Prowlarr result we already have downloaded — even one
+	// grabbed in the background without a matching content id (RSS poller) —
+	// is surfaced as a ready stream ahead of brand-new candidates. Matched
+	// by infohash against the store; content-id-owned torrents were already
+	// handled above.
+	resultHashes := make([]string, 0, len(results))
+	for _, res := range results {
+		resultHashes = append(resultHashes, res.InfoHash)
+	}
+	cached := h.svc.StoredByHashes(ctx, resultHashes)
+
 	items := make([]streamItem, 0, len(owned)+len(results))
 	for _, t := range owned {
 		items = append(items, h.toOwnedStreamItem(s.ExternalURL, q, t, progress[strings.ToLower(t.Hash)]))
 	}
+	fresh := make([]prowlarr.Result, 0, len(results))
 	for _, res := range results {
-		// Skip a Prowlarr result already surfaced as an owned entry above.
-		if _, ok := ownedHashes[strings.ToLower(res.InfoHash)]; ok {
+		lh := strings.ToLower(res.InfoHash)
+		// Skip a Prowlarr result already surfaced as a content-owned entry.
+		if _, ok := ownedHashes[lh]; ok {
 			continue
 		}
+		// Already downloaded (e.g. RSS-grabbed): render as a ready stream now
+		// and order it ahead of the fresh candidates below.
+		if tor, ok := cached[lh]; ok {
+			items = append(items, h.toOwnedStreamItem(s.ExternalURL, q, tor, progress[lh]))
+			ownedHashes[lh] = struct{}{}
+			continue
+		}
+		fresh = append(fresh, res)
+	}
+	for _, res := range fresh {
 		// Stash any raw .torrent we already fetched (magnet-less
 		// releases) so the play handler can add it directly instead of a
 		// metadata-less magnet.

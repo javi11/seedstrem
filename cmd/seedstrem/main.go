@@ -23,6 +23,7 @@ import (
 	"github.com/javib/seedstrem/internal/playsession"
 	"github.com/javib/seedstrem/internal/prowlarr"
 	"github.com/javib/seedstrem/internal/qbit"
+	"github.com/javib/seedstrem/internal/rss"
 	"github.com/javib/seedstrem/internal/server"
 	"github.com/javib/seedstrem/internal/store"
 	"github.com/javib/seedstrem/internal/stream"
@@ -151,6 +152,24 @@ func run() error {
 		return cleanup.Settings{SeedTime: cm.Get().Cleanup.SeedTime}
 	}, logger, 30*time.Minute).Run(cleanCtx)
 
+	rssCtx, stopRSS := context.WithCancel(context.Background())
+	defer stopRSS()
+	go rss.New(db, torrentSvc, func() rss.Settings {
+		c := cm.Get()
+		return rss.Settings{
+			Enabled:             c.RSS.Enabled,
+			ProwlarrURL:         c.Prowlarr.URL,
+			ProwlarrAPIKey:      c.Prowlarr.APIKey,
+			Categories:          rssCategories(c),
+			IndexerIDs:          c.Prowlarr.IndexerIDs,
+			Filters:             prowlarr.Filters{MinSeeders: c.Filters.MinSeeders, MinSizeBytes: c.Filters.MinSizeMB << 20, MaxSizeBytes: c.Filters.MaxSizeMB << 20},
+			FreeleechOnly:       c.RSS.FreeleechOnly,
+			MaxGrabsPerCycle:    c.RSS.MaxGrabsPerCycle,
+			DiskPath:            firstLocalMapping(c.Paths.Mappings),
+			MaxDiskUsagePercent: c.Storage.MaxDiskUsagePercent,
+		}
+	}, logger, cfg.RSS.Interval).Run(rssCtx)
+
 	handler := server.New(server.Options{
 		Logger:  logger,
 		Stremio: stremioHandler.Router(),
@@ -195,6 +214,23 @@ func buildDownloadClient(cfg config.Config) downloader.Client {
 		return deluge.New(cfg.Deluge.Host, cfg.Deluge.Port, cfg.Deluge.Username, cfg.Deluge.Password, cfg.Deluge.Label)
 	}
 	return qbit.New(cfg.QBittorrent.URL, cfg.QBittorrent.Username, cfg.QBittorrent.Password, cfg.QBittorrent.Category)
+}
+
+// rssCategories combines the newznab category ids to poll for recent
+// releases, restricted to the content types the addon currently serves so
+// the grabber never fetches categories the addon can't stream.
+func rssCategories(c config.Config) []int {
+	var cats []int
+	if c.Addon.EnableMovies {
+		cats = append(cats, c.Prowlarr.MovieCategories...)
+	}
+	if c.Addon.EnableSeries {
+		cats = append(cats, c.Prowlarr.TVCategories...)
+	}
+	if c.Addon.EnableAnime {
+		cats = append(cats, c.Prowlarr.AnimeCategories...)
+	}
+	return cats
 }
 
 // firstLocalMapping returns the first configured local download root, used

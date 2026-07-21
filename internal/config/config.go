@@ -32,6 +32,7 @@ type Config struct {
 	Stream      Stream      `yaml:"stream"`
 	Cleanup     Cleanup     `yaml:"cleanup"`
 	Seeding     Seeding     `yaml:"seeding"`
+	RSS         RSS         `yaml:"rss"`
 	Log         Log         `yaml:"log"`
 }
 
@@ -161,6 +162,27 @@ type Seeding struct {
 	Full bool `yaml:"full"`
 }
 
+// RSS configures the background grabber that periodically pulls
+// just-released items from the Prowlarr indexers and auto-downloads a
+// filtered subset — primarily to build seeding ratio, and secondarily so
+// the content is already cached when a Stremio stream request arrives.
+// Scope (indexers/categories) and quality/size/seeder filters are reused
+// from the prowlarr.* and filters.* sections rather than duplicated.
+type RSS struct {
+	// Enabled turns the grabber on. Off by default: auto-downloading is a
+	// deliberate departure from seedstrem's on-demand model.
+	Enabled bool `yaml:"enabled"`
+	// Interval is how often the grabber polls Prowlarr for recent
+	// releases. Applied at startup (changing it takes effect on restart).
+	Interval time.Duration `yaml:"interval"`
+	// MaxGrabsPerCycle caps how many new releases are added per poll, to
+	// bound the firehose. 0 disables grabbing (nothing is added).
+	MaxGrabsPerCycle int `yaml:"max_grabs_per_cycle"`
+	// FreeleechOnly restricts grabs to freeleech releases, whose download
+	// does not count against ratio — the safest way to build ratio.
+	FreeleechOnly bool `yaml:"freeleech_only"`
+}
+
 type Log struct {
 	Level string `yaml:"level"`
 }
@@ -218,7 +240,13 @@ func Default() Config {
 			MinProgressForCancel: 0.05,
 		},
 		Seeding: Seeding{Full: true},
-		Log:     Log{Level: "info"},
+		RSS: RSS{
+			Enabled:          false,
+			Interval:         15 * time.Minute,
+			MaxGrabsPerCycle: 5,
+			FreeleechOnly:    false,
+		},
+		Log: Log{Level: "info"},
 	}
 }
 
@@ -314,6 +342,18 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 	setBool("ADDON_ENABLE_SERIES", &cfg.Addon.EnableSeries)
 	setBool("ADDON_ENABLE_ANIME", &cfg.Addon.EnableAnime)
 	setBool("SEEDING_FULL", &cfg.Seeding.Full)
+	setBool("RSS_ENABLED", &cfg.RSS.Enabled)
+	setBool("RSS_FREELEECH_ONLY", &cfg.RSS.FreeleechOnly)
+	if v := getenv("SEEDSTREM_RSS_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.RSS.Interval = d
+		}
+	}
+	if v := getenv("SEEDSTREM_RSS_MAX_GRABS_PER_CYCLE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.RSS.MaxGrabsPerCycle = n
+		}
+	}
 	// Comma-separated int lists, e.g. "2000,2010".
 	setInts := func(key string, dst *[]int) {
 		v := getenv("SEEDSTREM_" + key)
@@ -421,6 +461,12 @@ func (c Config) Validate() error {
 	}
 	if c.Cleanup.MinProgressForCancel < 0 || c.Cleanup.MinProgressForCancel > 1 {
 		errs = append(errs, errors.New("cleanup.min_progress_for_cancel must be between 0 and 1"))
+	}
+	if c.RSS.Enabled && c.RSS.Interval <= 0 {
+		errs = append(errs, errors.New("rss.interval must be positive when rss.enabled is true"))
+	}
+	if c.RSS.MaxGrabsPerCycle < 0 {
+		errs = append(errs, errors.New("rss.max_grabs_per_cycle must not be negative (0 disables grabbing)"))
 	}
 	for i, m := range c.Paths.Mappings {
 		switch {
