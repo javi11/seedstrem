@@ -77,6 +77,25 @@ AIOStreams still selects the title line for filename/quality parsing.
   `seedstrem` (no indexer name available); fresh candidates keep their real
   indexer name.
 
+### Ordering: cached streams first
+
+Today the handler already emits ready items (content-owned + RSS-cached) before
+fresh candidates, but the ready group itself is unsorted — a partially
+downloading torrent can appear above a fully downloaded one. Reorder so instant
+playback is always at the top:
+
+1. **Cached / ready** (`progress ≥ 1`) — fully downloaded.
+2. **Downloading** (`0 < progress < 1`) — sorted by progress descending
+   (closest-to-done first).
+3. **Queued** owned (`progress == 0`).
+4. **Fresh** Prowlarr candidates — kept in their existing Prowlarr sort order
+   (seeders/quality), always after the owned/ready group.
+
+Implementation: build the owned/ready items (content-owned + RSS-cached) into one
+slice, **stable-sort** it by `progress` descending, then append the fresh items
+(unchanged order). A stable sort preserves the existing relative order among
+items with equal progress.
+
 ### What stays unchanged
 
 - The existing `seedstrem ⚡` / `seedstrem ⚙ <indexer>` **name** — untouched, so
@@ -94,6 +113,11 @@ This change is purely **additive**: one new parseable description line.
   `detail`.
 - A small shared helper to build the `⚙️ seedstrem · <qualifier>` line keeps the
   two call sites DRY and testable.
+- The stream handler (`stream` func) — stable-sort the owned/ready items by
+  progress descending before appending fresh candidates (see "Ordering" above).
+  This needs the per-item progress available at sort time; collect ready items as
+  `(streamItem, progress)` pairs (or sort the source torrents by their looked-up
+  progress) before converting/appending.
 
 ## Testing
 
@@ -111,6 +135,10 @@ Table-driven unit tests in `internal/stremio` (Go stdlib `testing`):
    indexer regex to the generated description and asserts the captured group
    equals the expected tag text (`seedstrem · cached`, `seedstrem · Peerflix`,
    etc.) — guards against emoji/spacing regressions.
+8. Ordering: given a mix of cached (`progress 1`), downloading (`0.9`, `0.3`),
+   queued (`0`), and fresh candidates, the handler emits them in the order
+   cached → 0.9 → 0.3 → queued → fresh, and the stable sort preserves relative
+   order among equal-progress items.
 
 ## Risks / notes
 
