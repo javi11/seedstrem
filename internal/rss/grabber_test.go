@@ -94,6 +94,18 @@ func TestSelectGrabs(t *testing.T) {
 			settings:   Settings{MaxGrabsPerCycle: 5},
 			wantHashes: []string{"a"},
 		},
+		{
+			name: "collapses same release mirrored across indexers (different infohash)",
+			// Same scene release on two trackers: byte-identical name modulo
+			// case/separators, but different infohash. Keep the best-seeded.
+			results: []prowlarr.Result{
+				{Title: "The.Matrix.1999.1080p.BluRay.x264-GRP", InfoHash: "h1", MagnetURL: "m1", Seeders: 10, Size: gb},
+				{Title: "the matrix 1999 1080p bluray x264-grp", InfoHash: "h2", MagnetURL: "m2", Seeders: 90, Size: gb},
+				{Title: "Some.Other.Movie.2020.1080p", InfoHash: "h3", MagnetURL: "m3", Seeders: 5, Size: gb},
+			},
+			settings:   Settings{MaxGrabsPerCycle: 5},
+			wantHashes: []string{"h2", "h3"}, // matrix collapsed to the 90-seeder copy
+		},
 	}
 
 	for _, tc := range tests {
@@ -108,6 +120,26 @@ func TestSelectGrabs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNormalizeReleaseTitle(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"The.Matrix.1999.1080p.BluRay.x264-GRP", "thematrix19991080pblurayx264grp"},
+		{"the matrix 1999 1080p bluray x264-grp", "thematrix19991080pblurayx264grp"},
+		{"", ""},
+		{"---", ""},
+	}
+	for _, tc := range tests {
+		if got := normalizeReleaseTitle(tc.in); got != tc.want {
+			t.Errorf("normalizeReleaseTitle(%q) = %q; want %q", tc.in, got, tc.want)
+		}
+	}
+	// Genuinely different releases must not collapse together.
+	if normalizeReleaseTitle("Movie 2020 1080p") == normalizeReleaseTitle("Movie 2020 720p") {
+		t.Error("different resolutions should not normalize equal")
 	}
 }
 
