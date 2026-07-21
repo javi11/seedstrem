@@ -100,6 +100,12 @@ export interface Config {
   stream: { wait_timeout_seconds: number; read_chunk: number };
   cleanup: { seed_time_hours: number; min_progress_for_cancel_percent: number };
   seeding: { full: boolean };
+  rss: {
+    enabled: boolean;
+    interval_minutes: number;
+    max_grabs_per_cycle: number;
+    freeleech_only: boolean;
+  };
   log: { level: string };
 }
 

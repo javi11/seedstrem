@@ -715,6 +715,66 @@ func TestStreamPrioritizesOwnedTorrents(t *testing.T) {
 	}
 }
 
+// TestStreamSurfacesCachedByInfohash verifies that a release already in the
+// store but WITHOUT a matching content id (e.g. one grabbed in the
+// background by the RSS poller) is still surfaced first as a ready stream
+// when a Prowlarr search turns up the same infohash. Unlike content-owned
+// torrents, the Prowlarr search still runs (we can't know the infohash
+// beforehand), and the cached release is ordered ahead of fresh candidates.
+func TestStreamSurfacesCachedByInfohash(t *testing.T) {
+	h := newHarness(t)
+
+	h.fakeDC.Put(&fake.Torrent{
+		Hash: testHash, State: "Paused", Progress: 1,
+		Files: []fake.File{{Name: "The.Matrix.1999.1080p.BluRay.mkv", Size: 8 << 30}},
+	})
+
+	// A grabbed torrent: real infohash + magnet, but no content identity.
+	err := h.db.InsertTorrent(context.Background(), store.Torrent{
+		ID: "GRABBED0000001", Hash: testHash, Name: "The Matrix (grabbed)",
+		Phase: store.PhaseAdded, AddedAt: 1, Magnet: testMagnet(),
+	})
+	if err != nil {
+		t.Fatalf("seed grabbed: %v", err)
+	}
+
+	resp, err := http.Get(h.server.URL + "/stremio/stream/movie/tt1375666.json")
+	if err != nil {
+		t.Fatalf("get stream: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var sr streamResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// The content id doesn't match a stored torrent, so Prowlarr IS searched.
+	if got := h.prowlarrHits.Load(); got == 0 {
+		t.Error("Prowlarr should be searched when no content-id match exists")
+	}
+	// Both results come back; the cached one is surfaced ready, the other is
+	// a fresh fallback.
+	if len(sr.Streams) != 2 {
+		t.Fatalf("want 2 streams, got %d: %+v", len(sr.Streams), sr.Streams)
+	}
+	first := sr.Streams[0]
+	if !strings.Contains(first.Name, "⚡") {
+		t.Errorf("cached release should be surfaced as a ready (⚡) stream first, got %q", first.Name)
+	}
+	if !strings.Contains(first.URL, "/stremio/play/"+testHash) {
+		t.Errorf("cached play URL should target the grabbed infohash: %q", first.URL)
+	}
+	if !strings.Contains(first.URL, "cid=tt1375666") {
+		t.Errorf("cached play URL should carry the requested content id so play backfills it: %q", first.URL)
+	}
+	// The fresh fallback (the other infohash) should be a plain, non-ready
+	// stream.
+	if strings.Contains(sr.Streams[1].Name, "⚡") {
+		t.Errorf("second stream should be a fresh (non-ready) candidate, got %q", sr.Streams[1].Name)
+	}
+}
+
 func TestPlayRedirects(t *testing.T) {
 	h := newHarness(t)
 

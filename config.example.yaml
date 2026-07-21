@@ -119,5 +119,25 @@ seeding:
   # you seed only that file).
   full: true
 
+rss:
+  # Background grabber: periodically pull the just-released items from your
+  # Prowlarr indexers and auto-download a filtered subset. Purpose is to
+  # build seeding ratio (fresh, well-seeded, optionally freeleech releases)
+  # and to warm a cache so content already downloaded shows up first as a
+  # "ready" stream when Stremio requests it. Off by default: this adds
+  # downloads without a play action, unlike the rest of seedstrem.
+  # Scope reuses prowlarr.indexer_ids + the movie/tv/anime categories (only
+  # for the content types enabled under addon.*), and the seeder/size
+  # limits under filters.*. Grabbing is bounded by storage.max_disk_usage_percent
+  # and the seed-time cleanup, which removes grabbed torrents once they have
+  # seeded past cleanup.seed_time.
+  enabled: false
+  # How often to poll Prowlarr (applied at startup; a change needs a restart).
+  interval: 15m
+  # Max new releases added per poll, to bound the firehose. 0 disables grabbing.
+  max_grabs_per_cycle: 5
+  # Only grab freeleech releases (their download doesn't count against ratio).
+  freeleech_only: false
+
 log:
   level: "info" # debug | info | warn | error

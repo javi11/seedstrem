@@ -430,6 +430,25 @@ func (s *Service) OwnedForContent(ctx context.Context, source, ref string, seaso
 	return owned
 }
 
+// StoredByHashes returns the torrents already in the local store whose
+// infohash is among hashes, keyed by lowercase infohash. Unlike
+// OwnedForContent it matches on infohash alone, independent of any Stremio
+// content identity — used to surface torrents the app already downloaded
+// (e.g. grabbed in the background by the RSS poller) as ready streams when
+// a Prowlarr search turns up the same release. Best-effort: any store
+// error yields an empty map rather than failing the stream request.
+func (s *Service) StoredByHashes(ctx context.Context, hashes []string) map[string]store.Torrent {
+	if s == nil || s.store == nil || len(hashes) == 0 {
+		return map[string]store.Torrent{}
+	}
+	stored, err := s.store.TorrentsByHashes(ctx, hashes)
+	if err != nil {
+		s.logger.Warn("torrents: stored-by-hashes lookup", "error", err)
+		return map[string]store.Torrent{}
+	}
+	return stored
+}
+
 // Remove deletes a torrent from qBittorrent and the local store. A torrent
 // already missing on either side is treated as already-removed, not an
 // error.

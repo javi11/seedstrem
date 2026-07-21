@@ -1,0 +1,258 @@
+package rss
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/javib/seedstrem/internal/prowlarr"
+	"github.com/javib/seedstrem/internal/store"
+	"github.com/javib/seedstrem/internal/torrents"
+)
+
+func res(hash string, seeders int, size int64, freeleech bool) prowlarr.Result {
+	return prowlarr.Result{
+		Title:     hash,
+		InfoHash:  hash,
+		MagnetURL: "magnet:?xt=urn:btih:" + hash,
+		Seeders:   seeders,
+		Size:      size,
+		Freeleech: freeleech,
+	}
+}
+
+func hashesOf(rs []prowlarr.Result) []string {
+	out := make([]string, len(rs))
+	for i, r := range rs {
+		out[i] = r.InfoHash
+	}
+	return out
+}
+
+func TestSelectGrabs(t *testing.T) {
+	const gb = 1 << 30
+
+	tests := []struct {
+		name       string
+		results    []prowlarr.Result
+		settings   Settings
+		used, tot  int64
+		have       func(string) bool
+		wantHashes []string
+	}{
+		{
+			name:       "ranks freeleech then seeders and caps per cycle",
+			results:    []prowlarr.Result{res("a", 5, gb, false), res("b", 1, gb, true), res("c", 50, gb, false)},
+			settings:   Settings{MaxGrabsPerCycle: 2},
+			wantHashes: []string{"b", "c"}, // freeleech first, then highest seeders
+		},
+		{
+			name:       "drops below min seeders",
+			results:    []prowlarr.Result{res("a", 0, gb, false), res("b", 10, gb, false)},
+			settings:   Settings{MaxGrabsPerCycle: 5, Filters: prowlarr.Filters{MinSeeders: 1}},
+			wantHashes: []string{"b"},
+		},
+		{
+			name:       "freeleech only keeps freeleech",
+			results:    []prowlarr.Result{res("a", 99, gb, false), res("b", 1, gb, true)},
+			settings:   Settings{MaxGrabsPerCycle: 5, FreeleechOnly: true},
+			wantHashes: []string{"b"},
+		},
+		{
+			name:       "skips already owned",
+			results:    []prowlarr.Result{res("a", 5, gb, false), res("b", 10, gb, false)},
+			settings:   Settings{MaxGrabsPerCycle: 5},
+			have:       func(h string) bool { return h == "b" },
+			wantHashes: []string{"a"},
+		},
+		{
+			name:     "disk over threshold grabs nothing",
+			results:  []prowlarr.Result{res("a", 5, gb, false)},
+			settings: Settings{MaxGrabsPerCycle: 5, MaxDiskUsagePercent: 80},
+			used:     90, tot: 100,
+			wantHashes: nil,
+		},
+		{
+			name: "disk gate drops the oversize but keeps what fits",
+			// limit = 80% of 10GB = 8GB, used = 0. First (6GB) fits; the
+			// 5GB one would push projected to 11GB (skip); 1GB fits.
+			results:  []prowlarr.Result{res("a", 30, 6*gb, false), res("b", 20, 5*gb, false), res("c", 10, 1*gb, false)},
+			settings: Settings{MaxGrabsPerCycle: 5, MaxDiskUsagePercent: 80},
+			used:     0, tot: 10 * gb,
+			wantHashes: []string{"a", "c"},
+		},
+		{
+			name:       "zero max grabs nothing",
+			results:    []prowlarr.Result{res("a", 5, gb, false)},
+			settings:   Settings{MaxGrabsPerCycle: 0},
+			wantHashes: nil,
+		},
+		{
+			name:       "dedups by infohash keeping most seeders",
+			results:    []prowlarr.Result{res("a", 5, gb, false), res("a", 40, gb, false)},
+			settings:   Settings{MaxGrabsPerCycle: 5},
+			wantHashes: []string{"a"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hashesOf(selectGrabs(tc.results, tc.settings, tc.used, tc.tot, tc.have))
+			if len(got) != len(tc.wantHashes) {
+				t.Fatalf("got %v; want %v", got, tc.wantHashes)
+			}
+			for i := range got {
+				if got[i] != tc.wantHashes[i] {
+					t.Fatalf("got %v; want %v", got, tc.wantHashes)
+				}
+			}
+		})
+	}
+}
+
+// --- Poll wiring, with fakes ---
+
+type fakeSearcher struct {
+	results []prowlarr.Result
+	err     error
+	calls   int
+	gotCats []int
+}
+
+func (f *fakeSearcher) Search(_ context.Context, query, searchType string, categories, _ []int) ([]prowlarr.Result, error) {
+	f.calls++
+	f.gotCats = categories
+	if query != "" || searchType != "search" {
+		return nil, errors.New("expected empty query recent search")
+	}
+	return f.results, f.err
+}
+
+type fakeAdder struct{ added []string }
+
+func (f *fakeAdder) EnsureAdded(_ context.Context, magnet string, _ []byte, _ torrents.Selector) (store.Torrent, error) {
+	f.added = append(f.added, magnet)
+	return store.Torrent{}, nil
+}
+
+type fakeOwner struct {
+	owned map[string]bool
+	err   error
+}
+
+func (f *fakeOwner) TorrentsByHashes(_ context.Context, hashes []string) (map[string]store.Torrent, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	out := map[string]store.Torrent{}
+	for _, h := range hashes {
+		lh := strings.ToLower(h)
+		if f.owned[lh] {
+			out[lh] = store.Torrent{Hash: lh}
+		}
+	}
+	return out, nil
+}
+
+func newGrabber(t *testing.T, s Settings, search *fakeSearcher, add *fakeAdder, own *fakeOwner) *Grabber {
+	t.Helper()
+	g := New(own, add, func() Settings { return s }, nil, 0)
+	g.newSearcher = func(_, _ string) searcher { return search }
+	g.diskUsage = func(string) (int64, int64, error) { return 0, 100 << 30, nil }
+	return g
+}
+
+func TestPollGrabsSelectedReleases(t *testing.T) {
+	s := Settings{
+		Enabled: true, ProwlarrURL: "http://prowlarr", Categories: []int{2000},
+		MaxGrabsPerCycle: 2,
+	}
+	search := &fakeSearcher{results: []prowlarr.Result{
+		res("aaa", 5, 1<<30, false), res("bbb", 50, 1<<30, false), res("ccc", 1, 1<<30, false),
+	}}
+	add := &fakeAdder{}
+	own := &fakeOwner{}
+	g := newGrabber(t, s, search, add, own)
+
+	if err := g.Poll(context.Background()); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if search.calls != 1 {
+		t.Errorf("search called %d times; want 1", search.calls)
+	}
+	if len(add.added) != 2 {
+		t.Fatalf("added %d; want 2 (%v)", len(add.added), add.added)
+	}
+}
+
+func TestPollDisabledDoesNothing(t *testing.T) {
+	search := &fakeSearcher{}
+	add := &fakeAdder{}
+	g := newGrabber(t, Settings{Enabled: false, MaxGrabsPerCycle: 5}, search, add, &fakeOwner{})
+	if err := g.Poll(context.Background()); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if search.calls != 0 || len(add.added) != 0 {
+		t.Errorf("disabled grabber acted: calls=%d added=%d", search.calls, len(add.added))
+	}
+}
+
+func TestPollSkipsWhenProwlarrUnconfigured(t *testing.T) {
+	search := &fakeSearcher{}
+	g := newGrabber(t, Settings{Enabled: true, ProwlarrURL: "", Categories: []int{2000}, MaxGrabsPerCycle: 5}, search, &fakeAdder{}, &fakeOwner{})
+	if err := g.Poll(context.Background()); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if search.calls != 0 {
+		t.Errorf("searched despite unconfigured prowlarr")
+	}
+}
+
+func TestPollSkipsAlreadyOwned(t *testing.T) {
+	s := Settings{Enabled: true, ProwlarrURL: "http://prowlarr", Categories: []int{2000}, MaxGrabsPerCycle: 5}
+	search := &fakeSearcher{results: []prowlarr.Result{res("aaa", 5, 1<<30, false), res("bbb", 5, 1<<30, false)}}
+	add := &fakeAdder{}
+	own := &fakeOwner{owned: map[string]bool{"aaa": true}}
+	g := newGrabber(t, s, search, add, own)
+
+	if err := g.Poll(context.Background()); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if len(add.added) != 1 {
+		t.Fatalf("added %d; want 1 (owned should be skipped)", len(add.added))
+	}
+}
+
+func TestPollFailsClosedOnOwnedLookupError(t *testing.T) {
+	s := Settings{Enabled: true, ProwlarrURL: "http://prowlarr", Categories: []int{2000}, MaxGrabsPerCycle: 5}
+	search := &fakeSearcher{results: []prowlarr.Result{res("aaa", 5, 1<<30, false)}}
+	add := &fakeAdder{}
+	own := &fakeOwner{err: errors.New("db locked")}
+	g := newGrabber(t, s, search, add, own)
+
+	if err := g.Poll(context.Background()); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if len(add.added) != 0 {
+		t.Errorf("grabbed despite owned-lookup failure (should fail closed): %v", add.added)
+	}
+}
+
+func TestPollFailsClosedOnDiskError(t *testing.T) {
+	s := Settings{
+		Enabled: true, ProwlarrURL: "http://prowlarr", Categories: []int{2000},
+		MaxGrabsPerCycle: 5, DiskPath: "/data", MaxDiskUsagePercent: 80,
+	}
+	search := &fakeSearcher{results: []prowlarr.Result{res("aaa", 5, 1<<30, false)}}
+	add := &fakeAdder{}
+	g := newGrabber(t, s, search, add, &fakeOwner{})
+	g.diskUsage = func(string) (int64, int64, error) { return 0, 0, errors.New("stat failed") }
+
+	if err := g.Poll(context.Background()); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if len(add.added) != 0 {
+		t.Errorf("grabbed despite disk stat failure: %v", add.added)
+	}
+}

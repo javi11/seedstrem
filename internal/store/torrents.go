@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Phase values for Torrent.Phase.
@@ -102,6 +103,52 @@ func (s *Store) TorrentsByContent(ctx context.Context, source, ref string, seaso
 		torrents = append(torrents, t)
 	}
 	return torrents, rows.Err()
+}
+
+// TorrentsByHashes returns the stored torrents whose infohash is in
+// hashes, keyed by lowercase infohash. Hashes not present in the store are
+// simply absent from the map. Used to surface already-downloaded torrents
+// as cached streams when a Prowlarr search turns up a release we already
+// own (e.g. one grabbed in the background by the RSS poller), independent
+// of any Stremio content identity.
+func (s *Store) TorrentsByHashes(ctx context.Context, hashes []string) (map[string]Torrent, error) {
+	out := make(map[string]Torrent, len(hashes))
+	// Dedupe and drop empties so the IN clause stays minimal and callers can
+	// pass raw, unfiltered result hashes safely.
+	seen := make(map[string]struct{}, len(hashes))
+	placeholders := make([]string, 0, len(hashes))
+	args := make([]any, 0, len(hashes))
+	for _, h := range hashes {
+		lh := strings.ToLower(h)
+		if lh == "" {
+			continue
+		}
+		if _, dup := seen[lh]; dup {
+			continue
+		}
+		seen[lh] = struct{}{}
+		placeholders = append(placeholders, "?")
+		args = append(args, lh)
+	}
+	if len(args) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+torrentCols+` FROM torrents WHERE hash IN (`+strings.Join(placeholders, ",")+`)`,
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("torrents by hashes: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		t, err := scanTorrent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[strings.ToLower(t.Hash)] = t
+	}
+	return out, rows.Err()
 }
 
 // SetTorrentContent records the Stremio content identity a torrent was
