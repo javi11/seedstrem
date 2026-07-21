@@ -539,6 +539,9 @@ func (h *Handler) toStreamItem(externalURL string, q meta.Query, res prowlarr.Re
 	// resolution badge and AIOStreams' grouping resolve cleanly.
 	ql := ParseQuality(res.Title)
 	name := "seedstrem"
+	if res.Indexer != "" {
+		name += " ⚙ " + res.Indexer
+	}
 	if badge := qualityBadge(ql); badge != "" {
 		name += "\n" + badge
 	}
@@ -552,9 +555,6 @@ func (h *Handler) toStreamItem(externalURL string, q meta.Query, res prowlarr.Re
 	detail += fmt.Sprintf("\n👤 %d  💾 %s", res.Seeders, humanSize(res.Size))
 	if res.Freeleech {
 		detail += "  🆓 FL"
-	}
-	if res.Indexer != "" {
-		detail += "  ⚙ " + res.Indexer
 	}
 	// Show live progress for a torrent the user already started so they
 	// can tell it is downloading (and how far along) before pressing play.

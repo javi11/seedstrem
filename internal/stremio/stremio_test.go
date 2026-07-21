@@ -641,6 +641,11 @@ func TestStreamDiscovery(t *testing.T) {
 	if !strings.Contains(sr.Streams[0].Name, "1080p") {
 		t.Errorf("expected resolution badge in name: %q", sr.Streams[0].Name)
 	}
+	// The originating indexer is surfaced in the name label so it stays
+	// visible even when clients truncate the description.
+	if !strings.Contains(sr.Streams[0].Name, "idx1") {
+		t.Errorf("expected indexer in name: %q", sr.Streams[0].Name)
+	}
 	if sr.Streams[0].Description != sr.Streams[0].Title {
 		t.Errorf("description should mirror title: desc=%q title=%q", sr.Streams[0].Description, sr.Streams[0].Title)
 	}
