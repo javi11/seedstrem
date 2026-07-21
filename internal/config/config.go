@@ -126,6 +126,13 @@ type Paths struct {
 type Storage struct {
 	Database            string `yaml:"database"`
 	DeleteFilesOnRemove bool   `yaml:"delete_files_on_remove"`
+	// MaxDiskUsagePercent is the download-disk usage percentage (0..100)
+	// at or above which the addon stops offering new streams; new
+	// releases whose size would push usage past it are also filtered out.
+	// 0 disables the gate. Already-downloaded/downloading content is never
+	// affected. Usage is measured on the first configured paths.mappings
+	// local root.
+	MaxDiskUsagePercent int `yaml:"max_disk_usage_percent"`
 }
 
 type Stream struct {
@@ -266,6 +273,11 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 			cfg.Deluge.Port = n
 		}
 	}
+	if v := getenv("SEEDSTREM_STORAGE_MAX_DISK_USAGE_PERCENT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Storage.MaxDiskUsagePercent = n
+		}
+	}
 	set("PROWLARR_URL", &cfg.Prowlarr.URL)
 	set("PROWLARR_API_KEY", &cfg.Prowlarr.APIKey)
 	set("META_CINEMETA_URL", &cfg.Meta.CinemetaURL)
@@ -371,6 +383,9 @@ func (c Config) Validate() error {
 	}
 	if c.Storage.Database == "" {
 		errs = append(errs, errors.New("storage.database must not be empty"))
+	}
+	if c.Storage.MaxDiskUsagePercent < 0 || c.Storage.MaxDiskUsagePercent > 100 {
+		errs = append(errs, fmt.Errorf("storage.max_disk_usage_percent must be between 0 and 100 (0 disables), got %d", c.Storage.MaxDiskUsagePercent))
 	}
 	if c.Stream.WaitTimeout <= 0 {
 		errs = append(errs, errors.New("stream.wait_timeout must be positive"))

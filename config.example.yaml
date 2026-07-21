@@ -90,6 +90,12 @@ storage:
   database: "/config/seedstrem.db"
   # Also delete the payload files when a torrent is removed via the API.
   delete_files_on_remove: true
+  # Stop offering NEW streams once the download disk is at least this
+  # percent full, and filter out new releases whose size would push usage
+  # past it. Already-downloaded and currently-downloading content is never
+  # affected. Usage is measured on the first paths.mappings local root.
+  # 0 disables the gate.
+  max_disk_usage_percent: 0
 
 stream:
   # How long a stream request waits for missing pieces before answering

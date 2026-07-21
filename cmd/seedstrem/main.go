@@ -120,6 +120,10 @@ func run() error {
 				MaxSizeBytes: c.Filters.MaxSizeMB << 20,
 			},
 			MaxResults: c.Filters.MaxResults,
+			Disk: stremio.DiskSettings{
+				MaxUsagePercent: c.Storage.MaxDiskUsagePercent,
+				Path:            firstLocalMapping(c.Paths.Mappings),
+			},
 		}
 	}, version, logger)
 
@@ -191,6 +195,18 @@ func buildDownloadClient(cfg config.Config) downloader.Client {
 		return deluge.New(cfg.Deluge.Host, cfg.Deluge.Port, cfg.Deluge.Username, cfg.Deluge.Password, cfg.Deluge.Label)
 	}
 	return qbit.New(cfg.QBittorrent.URL, cfg.QBittorrent.Username, cfg.QBittorrent.Password, cfg.QBittorrent.Category)
+}
+
+// firstLocalMapping returns the first configured local download root, used
+// as the path whose disk usage gates new streams. Empty when no mapping is
+// configured, which disables the gate.
+func firstLocalMapping(mappings []config.Mapping) string {
+	for _, m := range mappings {
+		if m.Local != "" {
+			return m.Local
+		}
+	}
+	return ""
 }
 
 func defaultConfigPath() string {

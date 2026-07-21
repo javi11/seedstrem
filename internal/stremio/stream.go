@@ -134,6 +134,13 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 		results = results[:s.MaxResults]
 	}
 
+	// Disk-usage gate: once the download disk is too full, withhold NEW
+	// releases (and drop any whose size would push it past the threshold).
+	// Only these Prowlarr candidates are gated — owned/in-progress
+	// torrents below are always offered so existing content stays
+	// streamable.
+	results = h.applyDiskGate(results, s)
+
 	// Owned torrents (looked up above) are offered first as high-priority
 	// streams; any Prowlarr result below is the fallback. A release present
 	// in both is shown only once, as the owned entry.
@@ -173,6 +180,42 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 		items = append(items, h.toStreamItem(s.ExternalURL, q, res, progress[res.InfoHash]))
 	}
 	writeJSON(w, http.StatusOK, streamResponse{Streams: items})
+}
+
+// applyDiskGate filters NEW Prowlarr candidates against the configured
+// disk-usage threshold: when the download disk is at/over the threshold it
+// returns none, otherwise it drops any release whose size would push usage
+// past the threshold. It fails open — a disabled gate or a measurement
+// error offers the results unfiltered, so playback is never blocked by a
+// stat failure. Owned/in-progress torrents are never passed here.
+func (h *Handler) applyDiskGate(results []prowlarr.Result, s Settings) []prowlarr.Result {
+	if s.Disk.MaxUsagePercent <= 0 || s.Disk.Path == "" || len(results) == 0 {
+		return results
+	}
+	used, total, err := h.diskUsage(s.Disk.Path)
+	if err != nil || total <= 0 {
+		h.logger.Warn("stremio: disk usage check failed; offering streams unfiltered",
+			"path", s.Disk.Path, "error", err)
+		return results
+	}
+	limit := total * int64(s.Disk.MaxUsagePercent) / 100
+	if used >= limit {
+		h.logger.Info("stremio: disk usage over threshold; withholding new streams",
+			"path", s.Disk.Path, "used", used, "total", total, "percent", s.Disk.MaxUsagePercent)
+		return nil
+	}
+	kept := make([]prowlarr.Result, 0, len(results))
+	for _, r := range results {
+		if used+r.Size > limit {
+			continue
+		}
+		kept = append(kept, r)
+	}
+	if len(kept) < len(results) {
+		h.logger.Debug("stremio: disk gate dropped oversized candidates",
+			"kept", len(kept), "total", len(results), "used", used, "limit", limit)
+	}
+	return kept
 }
 
 // contentEnabled reports whether the addon serves this query's content type.

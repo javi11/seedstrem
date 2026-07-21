@@ -125,6 +125,46 @@ func TestValidateCleanup(t *testing.T) {
 	}
 }
 
+func TestApplyEnvMaxDiskUsagePercent(t *testing.T) {
+	cfg := Default()
+	applyEnv(&cfg, func(k string) string {
+		if k == "SEEDSTREM_STORAGE_MAX_DISK_USAGE_PERCENT" {
+			return "85"
+		}
+		return ""
+	})
+	if cfg.Storage.MaxDiskUsagePercent != 85 {
+		t.Errorf("max_disk_usage_percent override failed: %d", cfg.Storage.MaxDiskUsagePercent)
+	}
+}
+
+func TestValidateMaxDiskUsagePercent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		percent int
+		wantErr bool
+	}{
+		{"disabled", 0, false},
+		{"mid", 90, false},
+		{"max", 100, false},
+		{"negative", -1, true},
+		{"over", 101, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Storage.MaxDiskUsagePercent = tc.percent
+			err := cfg.Validate()
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "storage.max_disk_usage_percent") {
+					t.Errorf("percent=%d: expected max_disk_usage_percent error, got %v", tc.percent, err)
+				}
+			} else if err != nil {
+				t.Errorf("percent=%d: expected valid, got %v", tc.percent, err)
+			}
+		})
+	}
+}
+
 func TestValidateAllowsZeroSeedTimeToDisableCleanup(t *testing.T) {
 	cfg := Default()
 	cfg.Cleanup.SeedTime = 0
