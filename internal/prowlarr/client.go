@@ -5,12 +5,14 @@ package prowlarr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/javib/seedstrem/internal/metainfo"
@@ -176,6 +178,93 @@ func (c *Client) Search(ctx context.Context, query, searchType string, categorie
 			continue // no magnet and no infohash — cannot resolve-on-play
 		}
 		out = append(out, res)
+	}
+	return out, nil
+}
+
+// SearchEach runs query as one search per indexer concurrently and returns
+// the union of results from indexers that answered within budget.
+//
+// Prowlarr's aggregate /api/v1/search is all-or-nothing: a single slow
+// indexer stalls the whole response until that indexer's own (non-tunable)
+// internal timeout, and there is no request parameter to cap the search or
+// ask for partial results (see Prowlarr#586). Fanning out one request per
+// indexer under a shared deadline recovers that behavior — indexers still
+// in flight when budget elapses are abandoned and whatever already came
+// back is kept.
+//
+// budget <= 0 waits for every indexer (still isolated one-per-request,
+// capped only by the HTTP client timeout). When indexerIDs is empty the
+// enabled torrent indexers are enumerated once via Indexers — that
+// enumeration is covered by the same budget, so a hung /indexer can't
+// stall the search past the deadline either.
+//
+// A single flaky or slow indexer never sinks the search: per-indexer
+// failures are dropped. An error is returned only when the search cannot
+// start (base URL unset, or indexer enumeration failed) or when every
+// indexer failed for a real reason and nothing was collected. A pure
+// budget/cancel timeout with no results is not an error — it is the
+// deadline doing its job — so it returns (nil, nil).
+func (c *Client) SearchEach(ctx context.Context, query, searchType string, categories, indexerIDs []int, budget time.Duration) ([]Result, error) {
+	if c.baseURL == "" {
+		return nil, fmt.Errorf("prowlarr: base URL not configured")
+	}
+
+	// Derive the budget context first so it also bounds enumeration below.
+	sctx := ctx
+	if budget > 0 {
+		var cancel context.CancelFunc
+		sctx, cancel = context.WithTimeout(ctx, budget)
+		defer cancel()
+	}
+
+	ids := indexerIDs
+	if len(ids) == 0 {
+		infos, err := c.Indexers(sctx)
+		if err != nil {
+			return nil, fmt.Errorf("prowlarr: enumerate indexers: %w", err)
+		}
+		for _, ix := range infos {
+			// Empty protocol is treated as torrent, matching Search's
+			// per-release protocol filter.
+			if ix.Enable && (ix.Protocol == "" || ix.Protocol == "torrent") {
+				ids = append(ids, ix.ID)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	var (
+		mu       sync.Mutex
+		out      []Result
+		errs     []error
+		hardFail bool // at least one indexer failed for a non-timeout reason
+		wg       sync.WaitGroup
+	)
+	for _, id := range ids {
+		wg.Go(func() {
+			res, err := c.Search(sctx, query, searchType, categories, []int{id})
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, fmt.Errorf("indexer %d: %w", id, err))
+				if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+					hardFail = true
+				}
+				return
+			}
+			out = append(out, res...)
+		})
+	}
+	wg.Wait()
+
+	// Surface an error only for a genuine failure that yielded nothing; a
+	// nothing-in-time budget timeout returns (nil, nil) so callers don't
+	// log it as if Prowlarr were down.
+	if len(out) == 0 && hardFail {
+		return nil, fmt.Errorf("prowlarr: all indexers failed: %w", errors.Join(errs...))
 	}
 	return out, nil
 }

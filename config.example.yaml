@@ -52,6 +52,13 @@ prowlarr:
   # Restrict searches to specific Prowlarr indexer ids. Empty = search
   # every enabled indexer.
   indexer_ids: []
+  # Global budget for a discovery search. Prowlarr is queried one indexer
+  # per request concurrently; when this elapses, indexers still in flight
+  # are abandoned and whatever already came back is used. This works around
+  # Prowlarr having no request-level search timeout — a single slow indexer
+  # would otherwise stall the whole response. 0 disables (wait for every
+  # indexer). Override with PROWLARR_SEARCH_TIMEOUT.
+  search_timeout: 15s
 
 addon:
   # Which content types the Stremio addon serves.

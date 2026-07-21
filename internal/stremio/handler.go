@@ -33,6 +33,9 @@ type ProwlarrSettings struct {
 	TVCategories    []int
 	AnimeCategories []int
 	IndexerIDs      []int
+	// SearchTimeout is the global budget for a discovery search across
+	// indexers; 0 waits for every indexer. See prowlarr.Client.SearchEach.
+	SearchTimeout time.Duration
 }
 
 // AddonSettings toggles which content types the addon serves.
@@ -154,4 +157,21 @@ func (h *Handler) cachedIndexers(ctx context.Context, pc *prowlarr.Client) ([]pr
 	h.indexerCacheAt = time.Now()
 	h.indexerCacheMu.Unlock()
 	return indexers, nil
+}
+
+// resolveIndexerIDs returns the configured indexer scope, or — when none is
+// configured — the enabled torrent indexers from the cached list. Passing
+// concrete ids to prowlarr.Client.SearchEach lets the per-indexer fan-out
+// reuse this shared cache instead of re-enumerating Prowlarr on every
+// request. Returns nil when the scope is unconfigured and the cache lookup
+// fails, in which case SearchEach self-enumerates as a last resort.
+func (h *Handler) resolveIndexerIDs(ctx context.Context, pc *prowlarr.Client, s Settings) []int {
+	if len(s.Prowlarr.IndexerIDs) > 0 {
+		return s.Prowlarr.IndexerIDs
+	}
+	indexers, err := h.cachedIndexers(ctx, pc)
+	if err != nil {
+		return nil
+	}
+	return enabledTorrentIDs(indexers)
 }

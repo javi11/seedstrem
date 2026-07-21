@@ -52,12 +52,23 @@ func newHarness(t *testing.T) *harness {
 	t.Cleanup(cinemeta.Close)
 
 	prow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.prowlarrHits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[
-			{"title":"The Matrix 1999 1080p BluRay","magnetUrl":"` + testMagnet() + `","size":8589934592,"seeders":42,"protocol":"torrent","indexer":"idx1"},
-			{"title":"The Matrix 1999 720p","infoHash":"ffffffffffffffffffffffffffffffffffffffff","size":2000000000,"seeders":10,"protocol":"torrent","indexer":"idx2"}
-		]`))
+		switch r.URL.Path {
+		case "/api/v1/indexer":
+			// One enabled torrent indexer; ImdbId-capable so tt queries route
+			// through the id search. SearchEach fans out one request per
+			// indexer, so a realistic indexer list is required.
+			w.Write([]byte(`[
+				{"id":1,"name":"idx1","protocol":"torrent","enable":true,
+				 "capabilities":{"movieSearchParams":["Q","ImdbId"],"tvSearchParams":["Q","ImdbId","Season","Episode"]}}
+			]`))
+		default:
+			h.prowlarrHits.Add(1)
+			w.Write([]byte(`[
+				{"title":"The Matrix 1999 1080p BluRay","magnetUrl":"` + testMagnet() + `","size":8589934592,"seeders":42,"protocol":"torrent","indexer":"idx1"},
+				{"title":"The Matrix 1999 720p","infoHash":"ffffffffffffffffffffffffffffffffffffffff","size":2000000000,"seeders":10,"protocol":"torrent","indexer":"idx2"}
+			]`))
+		}
 	}))
 	t.Cleanup(prow.Close)
 
@@ -373,6 +384,128 @@ func TestStreamSplitsSearchByCapability(t *testing.T) {
 	}
 	if !sawID || !sawText {
 		t.Errorf("expected both id-search and text-fallback results, got: %+v", sr.Streams)
+	}
+}
+
+// TestStreamReturnsPartialResultsWithinSearchTimeout verifies the headline
+// global-timeout behavior end-to-end: with two ImdbId-capable indexers, one
+// of which hangs well past the configured SearchTimeout, the stream request
+// returns promptly with the fast indexer's result rather than blocking on
+// the slow one.
+func TestStreamReturnsPartialResultsWithinSearchTimeout(t *testing.T) {
+	cinemeta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r) // id search covers both indexers; no title lookup needed
+	}))
+	defer cinemeta.Close()
+
+	prow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/indexer":
+			w.Write([]byte(`[
+				{"id":1,"name":"Fast","protocol":"torrent","enable":true,
+				 "capabilities":{"movieSearchParams":["Q","ImdbId"]}},
+				{"id":2,"name":"Slow","protocol":"torrent","enable":true,
+				 "capabilities":{"movieSearchParams":["Q","ImdbId"]}}
+			]`))
+		case "/api/v1/search":
+			if r.URL.Query().Get("indexerIds") == "2" {
+				// The slow indexer hangs past the budget; it must be
+				// abandoned, honoring request cancellation so the test
+				// server shuts down cleanly.
+				select {
+				case <-time.After(3 * time.Second):
+				case <-r.Context().Done():
+					return
+				}
+			}
+			w.Write([]byte(`[{"title":"Fast Indexer Hit","magnetUrl":"` + testMagnet() + `","size":100,"seeders":10,"protocol":"torrent","indexer":"Fast"}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer prow.Close()
+
+	metaClient := meta.New(cinemeta.URL, "")
+	h := New(nil, metaClient, func() Settings {
+		return Settings{
+			Prowlarr: ProwlarrSettings{
+				URL: prow.URL, APIKey: "k", MovieCategories: []int{2000},
+				SearchTimeout: 250 * time.Millisecond,
+			},
+			Addon:      AddonSettings{EnableMovies: true},
+			MaxResults: 20,
+		}
+	}, "test", nil)
+
+	root := chi.NewRouter()
+	root.Mount("/stremio", h.Router())
+	server := httptest.NewServer(root)
+	defer server.Close()
+
+	start := time.Now()
+	resp, err := http.Get(server.URL + "/stremio/stream/movie/tt1375666.json")
+	if err != nil {
+		t.Fatalf("get stream: %v", err)
+	}
+	defer resp.Body.Close()
+	elapsed := time.Since(start)
+
+	var sr streamResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("request should return within the search budget, took %v", elapsed)
+	}
+	if len(sr.Streams) != 1 {
+		t.Fatalf("want 1 partial result (fast indexer only), got %d: %+v", len(sr.Streams), sr.Streams)
+	}
+	if !strings.Contains(sr.Streams[0].Title, "Fast Indexer Hit") {
+		t.Errorf("expected the fast indexer's result, got %q", sr.Streams[0].Title)
+	}
+}
+
+// TestResolveIndexerIDsUsesCachedEnabledTorrentIndexers verifies that an
+// unconfigured indexer scope resolves to the enabled torrent indexers from
+// the shared cache (so SearchEach's per-indexer fan-out doesn't re-enumerate
+// Prowlarr on every request), and that a configured scope passes through
+// untouched.
+func TestResolveIndexerIDsUsesCachedEnabledTorrentIndexers(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/indexer" {
+			hits.Add(1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[
+			{"id":1,"name":"A","protocol":"torrent","enable":true},
+			{"id":2,"name":"B","protocol":"usenet","enable":true},
+			{"id":3,"name":"C","protocol":"torrent","enable":false},
+			{"id":4,"name":"D","protocol":"torrent","enable":true}
+		]`))
+	}))
+	defer srv.Close()
+
+	h := New(nil, meta.New("", ""), func() Settings { return Settings{} }, "test", nil)
+	pc := prowlarr.New(srv.URL, "k")
+
+	// Empty configured scope → enabled torrent indexers only (1 and 4);
+	// usenet (2) and disabled (3) are excluded.
+	got := h.resolveIndexerIDs(context.Background(), pc, Settings{})
+	if len(got) != 2 || got[0] != 1 || got[1] != 4 {
+		t.Fatalf("want enabled torrent indexers [1 4], got %v", got)
+	}
+	// A second resolution reuses the cache — no extra /indexer round-trip.
+	_ = h.resolveIndexerIDs(context.Background(), pc, Settings{})
+	if n := hits.Load(); n != 1 {
+		t.Fatalf("indexer endpoint should be hit once (cached), got %d", n)
+	}
+
+	// A configured scope is returned as-is without touching Prowlarr.
+	got = h.resolveIndexerIDs(context.Background(), pc, Settings{Prowlarr: ProwlarrSettings{IndexerIDs: []int{9}}})
+	if len(got) != 1 || got[0] != 9 {
+		t.Fatalf("configured scope should pass through, got %v", got)
 	}
 }
 

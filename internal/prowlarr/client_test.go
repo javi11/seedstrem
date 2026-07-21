@@ -5,8 +5,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 const hexHash = "0123456789abcdef0123456789abcdef01234567"
@@ -223,4 +227,231 @@ func TestIndexersNoBaseURL(t *testing.T) {
 	if _, err := c.Indexers(context.Background()); err == nil {
 		t.Fatal("expected error when base URL unset")
 	}
+}
+
+// magnetResult returns a JSON search response with a single magnet release
+// whose title carries id so a test can tell which indexer answered.
+func magnetResult(id string) string {
+	return `[{"title":"idx-` + id + `","magnetUrl":"magnet:?xt=urn:btih:` + hexHash + `&dn=x","size":100,"seeders":10,"protocol":"torrent","indexer":"` + id + `"}]`
+}
+
+// TestSearchEachFanOut verifies each indexer is queried in its own request
+// (one indexerIds value per call) and the union of results is returned.
+func TestSearchEachFanOut(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		calls [][]string // indexerIds carried by each /search request
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ids := r.URL.Query()["indexerIds"]
+		mu.Lock()
+		calls = append(calls, ids)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if len(ids) == 1 {
+			w.Write([]byte(magnetResult(ids[0])))
+			return
+		}
+		w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	c := NewWithClient(srv.URL, "k", srv.Client())
+	results, err := c.SearchEach(context.Background(), "q", "search", []int{2000}, []int{3, 7, 9}, time.Second)
+	if err != nil {
+		t.Fatalf("SearchEach: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("want 3 results (one per indexer), got %d: %+v", len(results), results)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 3 {
+		t.Fatalf("want 3 requests (one per indexer), got %d: %v", len(calls), calls)
+	}
+	for _, ids := range calls {
+		if len(ids) != 1 {
+			t.Errorf("each request should carry exactly one indexerId, got %v", ids)
+		}
+	}
+}
+
+// TestSearchEachReturnsPartialsOnBudget verifies that when the global
+// budget elapses, results from indexers that already answered are returned
+// and the slow indexer is dropped without failing the search.
+func TestSearchEachReturnsPartialsOnBudget(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("indexerIds")
+		if id == "2" { // the slow indexer blocks past the budget
+			select {
+			case <-time.After(2 * time.Second):
+			case <-r.Context().Done():
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(magnetResult(id)))
+	}))
+	defer srv.Close()
+
+	c := NewWithClient(srv.URL, "k", srv.Client())
+	results, err := c.SearchEach(context.Background(), "q", "search", nil, []int{1, 2, 3}, 150*time.Millisecond)
+	if err != nil {
+		t.Fatalf("SearchEach should not fail when some indexers answered: %v", err)
+	}
+	// Indexers 1 and 3 answer immediately; indexer 2 is abandoned at budget.
+	got := indexerTitles(results)
+	if len(got) != 2 || !slices.Contains(got, "idx-1") || !slices.Contains(got, "idx-3") {
+		t.Fatalf("want partial results [idx-1 idx-3], got %v", got)
+	}
+	if slices.Contains(got, "idx-2") {
+		t.Errorf("slow indexer 2 should have been dropped, got %v", got)
+	}
+}
+
+// TestSearchEachEnumeratesWhenNoIDs verifies that an empty indexer list
+// triggers enumeration and only enabled torrent indexers are searched.
+func TestSearchEachEnumeratesWhenNoIDs(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		searched []string
+	)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/indexer", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[
+			{"id":1,"name":"Alpha","protocol":"torrent","enable":true},
+			{"id":2,"name":"Beta","protocol":"usenet","enable":true},
+			{"id":3,"name":"Gamma","protocol":"torrent","enable":false},
+			{"id":4,"name":"Delta","protocol":"torrent","enable":true}
+		]`))
+	})
+	mux.HandleFunc("/api/v1/search", func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("indexerIds")
+		mu.Lock()
+		searched = append(searched, id)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(magnetResult(id)))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := NewWithClient(srv.URL, "k", srv.Client())
+	results, err := c.SearchEach(context.Background(), "q", "search", nil, nil, time.Second)
+	if err != nil {
+		t.Fatalf("SearchEach: %v", err)
+	}
+	mu.Lock()
+	sort.Strings(searched)
+	mu.Unlock()
+	// Only enabled torrent indexers (1 and 4); usenet (2) and disabled (3) skipped.
+	if len(searched) != 2 || searched[0] != "1" || searched[1] != "4" {
+		t.Fatalf("want enabled torrent indexers [1 4] searched, got %v", searched)
+	}
+	if len(results) != 2 {
+		t.Errorf("want 2 results, got %d", len(results))
+	}
+}
+
+// TestSearchEachAllFail verifies an error surfaces only when every indexer
+// fails and nothing was collected.
+func TestSearchEachAllFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	c := NewWithClient(srv.URL, "k", srv.Client())
+	if _, err := c.SearchEach(context.Background(), "q", "search", nil, []int{1, 2}, time.Second); err == nil {
+		t.Fatal("expected error when every indexer fails")
+	}
+}
+
+func TestSearchEachNoBaseURL(t *testing.T) {
+	c := New("", "key")
+	if _, err := c.SearchEach(context.Background(), "q", "search", nil, []int{1}, time.Second); err == nil {
+		t.Fatal("expected error when base URL unset")
+	}
+}
+
+// TestSearchEachEnumerationBoundedByBudget verifies the indexer enumeration
+// that happens when no ids are given is itself capped by the budget — a
+// hung /api/v1/indexer must not add the full HTTP-client timeout on top.
+func TestSearchEachEnumerationBoundedByBudget(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/indexer", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(3 * time.Second):
+			w.Write([]byte(`[{"id":1,"protocol":"torrent","enable":true}]`))
+		case <-r.Context().Done():
+		}
+	})
+	mux.HandleFunc("/api/v1/search", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(magnetResult(r.URL.Query().Get("indexerIds"))))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := NewWithClient(srv.URL, "k", srv.Client())
+	start := time.Now()
+	_, err := c.SearchEach(context.Background(), "q", "search", nil, nil, 150*time.Millisecond)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected error when indexer enumeration exceeds budget")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("enumeration should be bounded by the budget (~150ms), took %v", elapsed)
+	}
+}
+
+// TestSearchEachAllTimeoutIsNotError verifies that when every indexer is
+// simply slower than the budget (nothing failed for real), the search
+// returns no results and no error — a too-tight budget is the feature
+// working, not an outage to alarm on.
+func TestSearchEachAllTimeoutIsNotError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(3 * time.Second):
+			w.Write([]byte(magnetResult(r.URL.Query().Get("indexerIds"))))
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+
+	c := NewWithClient(srv.URL, "k", srv.Client())
+	results, err := c.SearchEach(context.Background(), "q", "search", nil, []int{1, 2}, 150*time.Millisecond)
+	if err != nil {
+		t.Fatalf("a pure budget timeout with no results should not be an error, got %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("want no results on total timeout, got %d", len(results))
+	}
+}
+
+// TestSearchEachNoBudget verifies budget <= 0 disables the deadline and the
+// search still runs to completion.
+func TestSearchEachNoBudget(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(magnetResult(r.URL.Query().Get("indexerIds"))))
+	}))
+	defer srv.Close()
+
+	c := NewWithClient(srv.URL, "k", srv.Client())
+	results, err := c.SearchEach(context.Background(), "q", "search", nil, []int{1, 2}, 0)
+	if err != nil {
+		t.Fatalf("SearchEach: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("want 2 results with no budget, got %d", len(results))
+	}
+}
+
+func indexerTitles(results []Result) []string {
+	out := make([]string, 0, len(results))
+	for _, r := range results {
+		out = append(out, r.Title)
+	}
+	sort.Strings(out)
+	return out
 }

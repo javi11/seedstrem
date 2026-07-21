@@ -89,9 +89,11 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		query, categories := buildAnimeSearch(q, title, s.Prowlarr)
+		pc := h.prowlarr(s)
+		ids := h.resolveIndexerIDs(ctx, pc, s)
 		h.logger.Debug("stremio: prowlarr search",
-			"query", query, "type", "search", "categories", categories, "indexers", len(s.Prowlarr.IndexerIDs))
-		results, err = h.prowlarr(s).Search(ctx, query, "search", categories, s.Prowlarr.IndexerIDs)
+			"query", query, "type", "search", "categories", categories, "indexers", len(ids))
+		results, err = pc.SearchEach(ctx, query, "search", categories, ids, s.Prowlarr.SearchTimeout)
 		if err != nil {
 			h.logger.Warn("stremio: prowlarr search failed", "query", query, "error", err)
 			writeJSON(w, http.StatusOK, empty)
@@ -294,14 +296,20 @@ func (h *Handler) ttSearch(ctx context.Context, q meta.Query, s Settings) ([]pro
 	indexers, err := h.cachedIndexers(ctx, pc)
 	if err != nil {
 		h.logger.Debug("stremio: indexer capability lookup failed, searching by id only", "error", err)
-		return pc.Search(ctx, idQuery, searchType, categories, s.Prowlarr.IndexerIDs)
+		return pc.SearchEach(ctx, idQuery, searchType, categories, s.Prowlarr.IndexerIDs, s.Prowlarr.SearchTimeout)
 	}
 
 	imdbCapable, tmdbCapable, textOnly, needsTmdb := splitByIDCapability(indexers, s.Prowlarr.IndexerIDs, q.IsSeries())
 	if len(imdbCapable) == 0 && len(tmdbCapable) == 0 && len(textOnly) == 0 {
 		// Configured ids matched nothing we know about (e.g. stale
 		// config) — same fallback as an unclassifiable capability lookup.
-		return pc.Search(ctx, idQuery, searchType, categories, s.Prowlarr.IndexerIDs)
+		// Reuse the indexer list already fetched above so SearchEach doesn't
+		// re-enumerate.
+		fallbackIDs := s.Prowlarr.IndexerIDs
+		if len(fallbackIDs) == 0 {
+			fallbackIDs = enabledTorrentIDs(indexers)
+		}
+		return pc.SearchEach(ctx, idQuery, searchType, categories, fallbackIDs, s.Prowlarr.SearchTimeout)
 	}
 
 	tmdbQuery := ""
@@ -325,7 +333,7 @@ func (h *Handler) ttSearch(ctx context.Context, q meta.Query, s Settings) ([]pro
 		wg.Go(func() {
 			h.logger.Debug("stremio: prowlarr id search",
 				"query", combinedQuery, "type", searchType, "indexers", len(idBucket))
-			idRes, idErr = pc.Search(ctx, combinedQuery, searchType, categories, idBucket)
+			idRes, idErr = pc.SearchEach(ctx, combinedQuery, searchType, categories, idBucket, s.Prowlarr.SearchTimeout)
 		})
 	}
 	if len(textOnly) > 0 {
@@ -338,7 +346,7 @@ func (h *Handler) ttSearch(ctx context.Context, q meta.Query, s Settings) ([]pro
 			textQuery, textCategories := buildTextSearch(q, title, year, s.Prowlarr)
 			h.logger.Debug("stremio: prowlarr text-fallback search",
 				"query", textQuery, "indexers", len(textOnly))
-			r, err := pc.Search(ctx, textQuery, "search", textCategories, textOnly)
+			r, err := pc.SearchEach(ctx, textQuery, "search", textCategories, textOnly, s.Prowlarr.SearchTimeout)
 			if err != nil {
 				h.logger.Warn("stremio: prowlarr text-fallback search failed", "query", textQuery, "error", err)
 				return
@@ -435,6 +443,19 @@ func combineIDBuckets(imdbCapable, tmdbCapable []int, idQuery, tmdbQuery string)
 // including ones that also support ImdbId — Radarr/Sonarr send both
 // tokens together whenever an indexer understands either, not only when
 // TmdbId is the sole option.
+// enabledTorrentIDs returns the ids of enabled torrent indexers (an empty
+// protocol counts as torrent, matching prowlarr.Client's own per-release
+// filter).
+func enabledTorrentIDs(indexers []prowlarr.IndexerInfo) []int {
+	ids := make([]int, 0, len(indexers))
+	for _, ix := range indexers {
+		if ix.Enable && (ix.Protocol == "" || ix.Protocol == "torrent") {
+			ids = append(ids, ix.ID)
+		}
+	}
+	return ids
+}
+
 func splitByIDCapability(indexers []prowlarr.IndexerInfo, configured []int, isSeries bool) (imdbCapable, tmdbCapable, textOnly []int, needsTmdb bool) {
 	inScope := func(id int) bool {
 		return len(configured) == 0 || slices.Contains(configured, id)
