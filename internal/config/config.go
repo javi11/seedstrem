@@ -86,6 +86,11 @@ type Prowlarr struct {
 	// IndexerIDs scopes searches to specific Prowlarr indexers. Empty
 	// means search every enabled indexer.
 	IndexerIDs []int `yaml:"indexer_ids"`
+	// SearchTimeout is the global budget for a discovery search. Prowlarr
+	// is queried one indexer per request concurrently; when this elapses,
+	// indexers still in flight are abandoned and the results already
+	// returned are used. 0 disables the budget (wait for every indexer).
+	SearchTimeout time.Duration `yaml:"search_timeout"`
 }
 
 // Addon toggles which Stremio content types the addon serves.
@@ -234,6 +239,7 @@ func Default() Config {
 			MovieCategories: []int{2000},
 			TVCategories:    []int{5000},
 			AnimeCategories: []int{5070},
+			SearchTimeout:   15 * time.Second,
 		},
 		Addon: Addon{
 			EnableMovies: true,
@@ -345,6 +351,11 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 	if v := getenv("SEEDSTREM_META_METADATA_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Meta.MetadataTimeout = d
+		}
+	}
+	if v := getenv("PROWLARR_SEARCH_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Prowlarr.SearchTimeout = d
 		}
 	}
 	if v := getenv("SEEDSTREM_CLEANUP_SEED_TIME"); v != "" {
