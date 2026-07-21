@@ -157,13 +157,17 @@ func run() error {
 	go rss.New(db, torrentSvc, func() rss.Settings {
 		c := cm.Get()
 		return rss.Settings{
-			Enabled:             c.RSS.Enabled,
-			ProwlarrURL:         c.Prowlarr.URL,
-			ProwlarrAPIKey:      c.Prowlarr.APIKey,
-			Categories:          rssCategories(c),
-			IndexerIDs:          c.Prowlarr.IndexerIDs,
-			Filters:             prowlarr.Filters{MinSeeders: c.Filters.MinSeeders, MinSizeBytes: c.Filters.MinSizeMB << 20, MaxSizeBytes: c.Filters.MaxSizeMB << 20},
+			Enabled:        c.RSS.Enabled,
+			ProwlarrURL:    c.Prowlarr.URL,
+			ProwlarrAPIKey: c.Prowlarr.APIKey,
+			Categories:     rssCategories(c),
+			IndexerIDs:     c.Prowlarr.IndexerIDs,
+			// RSS uses its own size bounds but inherits the global seeder
+			// floor as a ratio-safety default.
+			Filters:             prowlarr.Filters{MinSeeders: c.Filters.MinSeeders, MinSizeBytes: c.RSS.Filters.MinSizeMB << 20, MaxSizeBytes: c.RSS.Filters.MaxSizeMB << 20},
 			FreeleechOnly:       c.RSS.FreeleechOnly,
+			IncludeKeywords:     c.RSS.Filters.IncludeKeywords,
+			ExcludeKeywords:     c.RSS.Filters.ExcludeKeywords,
 			MaxGrabsPerCycle:    c.RSS.MaxGrabsPerCycle,
 			DiskPath:            firstLocalMapping(c.Paths.Mappings),
 			MaxDiskUsagePercent: c.Storage.MaxDiskUsagePercent,
@@ -220,6 +224,12 @@ func buildDownloadClient(cfg config.Config) downloader.Client {
 // releases, restricted to the content types the addon currently serves so
 // the grabber never fetches categories the addon can't stream.
 func rssCategories(c config.Config) []int {
+	// An explicit RSS category list overrides the addon-derived default,
+	// letting the grabber poll a narrower (or different) set than what the
+	// addon serves.
+	if len(c.RSS.Filters.Categories) > 0 {
+		return c.RSS.Filters.Categories
+	}
 	var cats []int
 	if c.Addon.EnableMovies {
 		cats = append(cats, c.Prowlarr.MovieCategories...)

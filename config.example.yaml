@@ -126,11 +126,12 @@ rss:
   # and to warm a cache so content already downloaded shows up first as a
   # "ready" stream when Stremio requests it. Off by default: this adds
   # downloads without a play action, unlike the rest of seedstrem.
-  # Scope reuses prowlarr.indexer_ids + the movie/tv/anime categories (only
-  # for the content types enabled under addon.*), and the seeder/size
-  # limits under filters.*. Grabbing is bounded by storage.max_disk_usage_percent
-  # and the seed-time cleanup, which removes grabbed torrents once they have
-  # seeded past cleanup.seed_time.
+  # Indexer scope reuses prowlarr.indexer_ids. The seeder floor is inherited
+  # from filters.min_seeders (a ratio-safety default); size, categories, and
+  # title keywords are configured independently under rss.filters below.
+  # Grabbing is bounded by storage.max_disk_usage_percent and the seed-time
+  # cleanup, which removes grabbed torrents once they have seeded past
+  # cleanup.seed_time.
   enabled: false
   # How often to poll Prowlarr (applied at startup; a change needs a restart).
   interval: 15m
@@ -138,6 +139,22 @@ rss:
   max_grabs_per_cycle: 5
   # Only grab freeleech releases (their download doesn't count against ratio).
   freeleech_only: false
+  # RSS-specific filters, independent of the global filters.* used by
+  # on-demand stream search. All are optional; a zero/empty value disables
+  # that constraint (grab-everything).
+  filters:
+    # Release size bounds in MB. 0 min = no lower bound; 0 max = unbounded.
+    min_size_mb: 0
+    max_size_mb: 0
+    # Raw newznab category ids to poll. Empty = all content types enabled
+    # under addon.* (movies/tv/anime), i.e. the default behavior.
+    categories: []
+    # Keep only releases whose title contains at least one of these
+    # (case-insensitive substring). Empty = allow all titles.
+    include_keywords: []
+    # Drop releases whose title contains any of these (case-insensitive).
+    # Takes precedence over include_keywords.
+    exclude_keywords: []
 
 log:
   level: "info" # debug | info | warn | error

@@ -38,10 +38,18 @@ type Settings struct {
 	// IndexerIDs scopes the poll to specific Prowlarr indexers; empty
 	// means every enabled indexer.
 	IndexerIDs []int
-	// Filters constrains releases by seeders/size, reused from filters.*.
+	// Filters constrains releases by seeders and size. Only MinSeeders is
+	// inherited from the global filters.* (a ratio-safety floor); the size
+	// bounds are populated from the independent rss.filters.* section.
 	Filters prowlarr.Filters
 	// FreeleechOnly restricts grabs to freeleech releases (ratio-safe).
 	FreeleechOnly bool
+	// IncludeKeywords keeps only releases whose title contains at least one
+	// of these (case-insensitive substring). Empty allows all titles.
+	IncludeKeywords []string
+	// ExcludeKeywords drops releases whose title contains any of these
+	// (case-insensitive substring). Exclude takes precedence over include.
+	ExcludeKeywords []string
 	// MaxGrabsPerCycle caps additions per poll. 0 disables grabbing.
 	MaxGrabsPerCycle int
 	// DiskPath and MaxDiskUsagePercent gate grabbing on free disk space,
@@ -218,6 +226,7 @@ func selectGrabs(results []prowlarr.Result, s Settings, used, total int64, have 
 	}
 
 	ranked := prowlarr.Filter(prowlarr.Dedup(results), s.Filters)
+	ranked = filterByTitle(ranked, s.IncludeKeywords, s.ExcludeKeywords)
 	if s.FreeleechOnly {
 		fl := make([]prowlarr.Result, 0, len(ranked))
 		for _, r := range ranked {
@@ -263,6 +272,56 @@ func selectGrabs(results []prowlarr.Result, s Settings, used, total int64, have 
 		projected += r.Size
 	}
 	return out
+}
+
+// filterByTitle applies the RSS-specific keyword gates to release titles,
+// matched case-insensitively as substrings. A release is dropped if its
+// title contains any exclude keyword (exclude wins), then kept only if it
+// contains at least one include keyword. Empty lists disable their gate:
+// no includes means "allow all", no excludes means "drop none".
+func filterByTitle(results []prowlarr.Result, include, exclude []string) []prowlarr.Result {
+	// Normalize each keyword list once (lower-case, trimmed, blanks dropped)
+	// rather than per title comparison.
+	inc := normalizeKeywords(include)
+	exc := normalizeKeywords(exclude)
+	if len(inc) == 0 && len(exc) == 0 {
+		return results
+	}
+	out := make([]prowlarr.Result, 0, len(results))
+	for _, r := range results {
+		lower := strings.ToLower(r.Title)
+		if containsAny(lower, exc) {
+			continue
+		}
+		if len(inc) > 0 && !containsAny(lower, inc) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// normalizeKeywords lower-cases and trims each keyword, dropping blanks so a
+// stray empty entry can't later match every title.
+func normalizeKeywords(keywords []string) []string {
+	out := make([]string, 0, len(keywords))
+	for _, kw := range keywords {
+		if kw = strings.TrimSpace(strings.ToLower(kw)); kw != "" {
+			out = append(out, kw)
+		}
+	}
+	return out
+}
+
+// containsAny reports whether lowered contains any of the (already
+// normalized) keywords.
+func containsAny(lowered string, keywords []string) bool {
+	for _, kw := range keywords {
+		if strings.Contains(lowered, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // dedupeByReleaseTitle keeps only the first result for each normalized
