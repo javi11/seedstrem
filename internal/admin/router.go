@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -30,6 +31,7 @@ type Handler struct {
 	config    *config.Manager
 	store     *store.Store
 	dc        *downloader.Swappable
+	svc       *torrents.Service
 	newClient func(config.Config) downloader.Client
 	logger    *slog.Logger
 	version   string
@@ -37,12 +39,13 @@ type Handler struct {
 
 // New creates the admin handler. dc must be the swappable client so
 // download-client connection settings apply live; newClient builds a
-// client for a given config (injected so main owns backend selection).
-func New(cm *config.Manager, st *store.Store, dc *downloader.Swappable, newClient func(config.Config) downloader.Client, version string, logger *slog.Logger) *Handler {
+// client for a given config (injected so main owns backend selection). svc is
+// used to remove torrents on request.
+func New(cm *config.Manager, st *store.Store, dc *downloader.Swappable, svc *torrents.Service, newClient func(config.Config) downloader.Client, version string, logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{config: cm, store: st, dc: dc, newClient: newClient, logger: logger, version: version}
+	return &Handler{config: cm, store: st, dc: dc, svc: svc, newClient: newClient, logger: logger, version: version}
 }
 
 // Router returns the router to mount at /api.
@@ -66,6 +69,7 @@ func (h *Handler) Router() http.Handler {
 		r.Post("/config/prowlarr-indexers", h.prowlarrIndexers)
 		r.Get("/status", h.status)
 		r.Get("/torrents", h.torrents)
+		r.Delete("/torrents/{id}", h.deleteTorrent)
 	})
 	return r
 }
@@ -563,6 +567,35 @@ func (h *Handler) torrents(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+// deleteTorrent removes a tracked torrent from the download client and the
+// local store. Downloaded files are deleted only when delete_files_on_remove
+// is enabled. A torrent that is already gone is treated as success.
+func (h *Handler) deleteTorrent(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing torrent id")
+		return
+	}
+
+	ctx := r.Context()
+	tor, err := h.store.TorrentByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSONError(w, http.StatusNotFound, "torrent not found")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "look up torrent")
+		return
+	}
+
+	if err := h.svc.Remove(ctx, tor); err != nil {
+		h.logger.Warn("admin: delete torrent failed", "id", id, "error", err)
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // testProwlarr probes a Prowlarr instance with a trivial search so the UI

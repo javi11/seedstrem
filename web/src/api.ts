@@ -9,6 +9,10 @@ export class ApiError extends Error {
   }
 }
 
+// Fired on an unexpected 401 (session expired mid-use). The app shell listens
+// and shows a graceful prompt instead of yanking the user to /login silently.
+export const SESSION_EXPIRED_EVENT = "seedstrem:session-expired";
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
@@ -19,7 +23,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (res.status === 401 && !path.endsWith("/session")) {
-    window.location.hash = "#/login";
+    window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
     throw new ApiError(401, "not authenticated");
   }
   if (!res.ok) {
@@ -180,11 +184,6 @@ export const api = {
     ),
   status: () => request<Status>("GET", "/api/status"),
   torrents: () => request<Torrent[]>("GET", "/api/torrents"),
+  deleteTorrent: (id: string) =>
+    request<void>("DELETE", `/api/torrents/${encodeURIComponent(id)}`),
 };
-
-export function formatBytes(n: number): string {
-  if (n <= 0) return "0 B";
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  const i = Math.min(Math.floor(Math.log2(n) / 10), units.length - 1);
-  return `${(n / 2 ** (10 * i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-}

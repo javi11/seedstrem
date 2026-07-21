@@ -1,4 +1,166 @@
 @import "tailwindcss";
 @plugin "daisyui" {
-  themes: dim --default, light;
+  themes: seedstrem-dark --default --prefersdark, seedstrem-light;
+}
+
+/* ---------------------------------------------------------------------------
+   seedstrem theme — a refined dark-first "modern dashboard" palette.
+   Deep navy surfaces, a growth-green accent, and a calm blue primary.
+   Self-hosted & offline-friendly: no external font/asset requests.
+--------------------------------------------------------------------------- */
+@plugin "daisyui/theme" {
+  name: "seedstrem-dark";
+  default: true;
+  prefersdark: true;
+  color-scheme: dark;
+
+  --color-base-100: #171d2b; /* cards / surfaces */
+  --color-base-200: #10151f; /* page background   */
+  --color-base-300: #212a3d; /* elevated / hovers */
+  --color-base-content: #e6ebf5;
+
+  --color-primary: #5b8cff;
+  --color-primary-content: #08101f;
+  --color-secondary: #3ddc97;
+  --color-secondary-content: #062318;
+  --color-accent: #3ddc97;
+  --color-accent-content: #062318;
+  --color-neutral: #212a3d;
+  --color-neutral-content: #c3ccdd;
+
+  --color-info: #5bc8ff;
+  --color-info-content: #04121c;
+  --color-success: #3ddc97;
+  --color-success-content: #062318;
+  --color-warning: #f5b642;
+  --color-warning-content: #241701;
+  --color-error: #f2607a;
+  --color-error-content: #2a0510;
+
+  --radius-selector: 0.75rem;
+  --radius-field: 0.6rem;
+  --radius-box: 0.9rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+}
+
+@plugin "daisyui/theme" {
+  name: "seedstrem-light";
+  default: false;
+  prefersdark: false;
+  color-scheme: light;
+
+  --color-base-100: #ffffff;
+  --color-base-200: #f3f5fa;
+  --color-base-300: #e4e9f2;
+  --color-base-content: #1a2233;
+
+  --color-primary: #3567e6;
+  --color-primary-content: #ffffff;
+  --color-secondary: #17a673;
+  --color-secondary-content: #ffffff;
+  --color-accent: #17a673;
+  --color-accent-content: #ffffff;
+  --color-neutral: #2a3346;
+  --color-neutral-content: #ffffff;
+
+  --color-info: #2a9fd6;
+  --color-info-content: #ffffff;
+  --color-success: #17a673;
+  --color-success-content: #ffffff;
+  --color-warning: #c47f0a;
+  --color-warning-content: #ffffff;
+  --color-error: #d63a5a;
+  --color-error-content: #ffffff;
+
+  --radius-selector: 0.75rem;
+  --radius-field: 0.6rem;
+  --radius-box: 0.9rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Base + atmosphere
+--------------------------------------------------------------------------- */
+:root {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo,
+    Consolas, monospace;
+}
+
+html {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  /* Subtle radial depth so the page never reads as a flat slab. */
+  background-image:
+    radial-gradient(
+      120% 90% at 100% 0%,
+      color-mix(in oklch, var(--color-primary) 12%, transparent) 0%,
+      transparent 55%
+    ),
+    radial-gradient(
+      90% 80% at 0% 100%,
+      color-mix(in oklch, var(--color-accent) 9%, transparent) 0%,
+      transparent 50%
+    );
+  background-attachment: fixed;
+}
+
+/* Tighten heading rhythm for a more designed feel. */
+h1, h2, h3, .tracking-brand {
+  letter-spacing: -0.015em;
+}
+
+/* Quiet, themed scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-base-300) transparent;
+}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb {
+  background: var(--color-base-300);
+  border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+/* A soft "surface" helper: bordered card with a faint top highlight. */
+@utility surface {
+  background: var(--color-base-100);
+  border: 1px solid color-mix(in oklch, var(--color-base-content) 8%, transparent);
+  border-radius: var(--radius-box);
+  box-shadow:
+    0 1px 0 0 color-mix(in oklch, var(--color-base-content) 6%, transparent) inset,
+    0 10px 30px -12px rgb(0 0 0 / 0.45);
+}
+
+/* Live-status pulse dot. */
+@utility pulse-dot {
+  position: relative;
+}
+@keyframes seed-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in oklch, currentColor 55%, transparent); }
+  70% { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* Skeleton shimmer. */
+@keyframes seed-shimmer {
+  to { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; }
 }

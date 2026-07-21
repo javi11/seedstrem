@@ -139,7 +139,7 @@ func run() error {
 		}
 	}, logger)
 
-	adminHandler := admin.New(cm, db, dc, buildDownloadClient, version, logger)
+	adminHandler := admin.New(cm, db, dc, torrentSvc, buildDownloadClient, version, logger)
 
 	syncCtx, stopSync := context.WithCancel(context.Background())
 	defer stopSync()
