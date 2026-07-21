@@ -133,6 +133,9 @@ type configDTO struct {
 		TVCategories    []int  `json:"tv_categories"`
 		AnimeCategories []int  `json:"anime_categories"`
 		IndexerIDs      []int  `json:"indexer_ids"`
+		// SearchTimeoutSeconds is the global search budget; 0 on write keeps
+		// the stored value (a search needs a positive budget).
+		SearchTimeoutSeconds int `json:"search_timeout_seconds"`
 	} `json:"prowlarr"`
 	Addon struct {
 		EnableMovies bool `json:"enable_movies"`
@@ -218,6 +221,7 @@ func toDTO(cfg config.Config) configDTO {
 	if dto.Prowlarr.IndexerIDs == nil {
 		dto.Prowlarr.IndexerIDs = []int{}
 	}
+	dto.Prowlarr.SearchTimeoutSeconds = int(cfg.Prowlarr.SearchTimeout / time.Second)
 	dto.Addon.EnableMovies = cfg.Addon.EnableMovies
 	dto.Addon.EnableSeries = cfg.Addon.EnableSeries
 	dto.Addon.EnableAnime = cfg.Addon.EnableAnime
@@ -308,6 +312,11 @@ func (dto configDTO) apply(cfg config.Config) config.Config {
 	cfg.Prowlarr.TVCategories = dto.Prowlarr.TVCategories
 	cfg.Prowlarr.AnimeCategories = dto.Prowlarr.AnimeCategories
 	cfg.Prowlarr.IndexerIDs = dto.Prowlarr.IndexerIDs
+	// A search needs a positive budget; 0 keeps the stored value, mirroring
+	// the metadata timeout above.
+	if dto.Prowlarr.SearchTimeoutSeconds > 0 {
+		cfg.Prowlarr.SearchTimeout = time.Duration(dto.Prowlarr.SearchTimeoutSeconds) * time.Second
+	}
 	cfg.Addon.EnableMovies = dto.Addon.EnableMovies
 	cfg.Addon.EnableSeries = dto.Addon.EnableSeries
 	cfg.Addon.EnableAnime = dto.Addon.EnableAnime

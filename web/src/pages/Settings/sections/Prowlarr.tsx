@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api, ProwlarrIndexer } from "../../../api";
 import { SectionProps } from "../types";
-import { SectionCard, TextField } from "../fields";
+import { SectionCard, TextField, NumberField } from "../fields";
 
 // Category lists are edited as comma-separated strings for convenience.
 function parseCategories(s: string): number[] {
@@ -84,6 +84,14 @@ export function Prowlarr({ config, update }: SectionProps) {
           onChange={(v) => update((c) => (c.prowlarr.anime_categories = parseCategories(v)))}
         />
       </div>
+
+      <NumberField
+        label="Search timeout (seconds)"
+        min={1}
+        hint="Global budget for a search. Indexers still answering when it elapses are dropped, and partial results are returned."
+        value={config.prowlarr.search_timeout_seconds}
+        onChange={(v) => update((c) => (c.prowlarr.search_timeout_seconds = v))}
+      />
 
       <div className="form-control">
         <span className="label-text">Search indexers</span>

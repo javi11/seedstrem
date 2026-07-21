@@ -74,6 +74,7 @@ export interface Config {
     tv_categories: number[];
     anime_categories: number[];
     indexer_ids: number[];
+    search_timeout_seconds: number;
   };
   addon: {
     enable_movies: boolean;
