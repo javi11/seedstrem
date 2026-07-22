@@ -109,6 +109,11 @@ storage:
   # affected. Usage is measured on the first paths.mappings local root.
   # 0 disables the gate.
   max_disk_usage_percent: 0
+  # Absolute cap, in GB, on used download storage above which the RSS
+  # grabber stops adding new torrents (e.g. 3072 for a 3 TB cap).
+  # Complements max_disk_usage_percent; the more restrictive gate wins.
+  # 0 disables the cap. On-demand streams are never blocked by this.
+  max_download_storage_gb: 0
 
 stream:
   # How long a stream request waits for missing pieces before answering
@@ -124,6 +129,13 @@ cleanup:
   # Download fraction (0..1) a torrent must reach to survive an
   # abandoned/canceled playback session.
   min_progress_for_cancel: 0.05
+  # Seeding ratio at or above which a completed torrent becomes
+  # removal-eligible, OR-ed with seed_time (either one makes it eligible).
+  # 0 disables the ratio trigger.
+  target_ratio: 0
+  # Order in which eligible torrents are removed when cleaning up:
+  # oldest_first (by add time) or lowest_upload (least bytes uploaded).
+  delete_policy: oldest_first
 
 seeding:
   # Download the whole torrent (played file first, the rest afterwards) so
@@ -149,7 +161,15 @@ rss:
   # How often to poll Prowlarr (applied at startup; a change needs a restart).
   interval: 15m
   # Max new releases added per poll, to bound the firehose. 0 disables grabbing.
+  # Grabs are spread across your indexers each cycle (round-robin) so no
+  # single tracker dominates.
   max_grabs_per_cycle: 5
+  # Skip a grab cycle when at least this many torrents are already actively
+  # downloading (progress < 1). 0 disables the gate.
+  max_concurrent_downloads: 0
+  # Skip a grab cycle once the store holds at least this many torrents.
+  # 0 disables the gate.
+  max_active_torrents: 0
   # Only grab freeleech releases (their download doesn't count against ratio).
   freeleech_only: false
   # RSS-specific filters, independent of the global filters.* used by

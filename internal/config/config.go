@@ -143,12 +143,27 @@ type Storage struct {
 	// affected. Usage is measured on the first configured paths.mappings
 	// local root.
 	MaxDiskUsagePercent int `yaml:"max_disk_usage_percent"`
+	// MaxDownloadStorageGB is an absolute cap, in GB, on download-disk used
+	// storage above which the RSS grabber stops adding new torrents. It
+	// complements MaxDiskUsagePercent; whichever gate is more restrictive
+	// wins. 0 disables the cap. Measured on the same first paths.mappings
+	// local root and assumes a dedicated download volume. On-demand streams
+	// are never blocked by this cap.
+	MaxDownloadStorageGB int64 `yaml:"max_download_storage_gb"`
 }
 
 type Stream struct {
 	WaitTimeout time.Duration `yaml:"wait_timeout"`
 	ReadChunk   int64         `yaml:"read_chunk"`
 }
+
+// Delete-order policies for cleanup eviction. DeletePolicyOldestFirst
+// removes the torrent added earliest; DeletePolicyLowestUpload removes the
+// torrent that has uploaded the least.
+const (
+	DeletePolicyOldestFirst  = "oldest_first"
+	DeletePolicyLowestUpload = "lowest_upload"
+)
 
 // Cleanup configures automatic removal of torrents that are no longer
 // worth keeping around.
@@ -159,6 +174,13 @@ type Cleanup struct {
 	// MinProgressForCancel is the download fraction (0..1) a torrent
 	// must reach to survive an abandoned/canceled playback session.
 	MinProgressForCancel float64 `yaml:"min_progress_for_cancel"`
+	// TargetRatio is the seeding ratio at or above which a completed
+	// torrent becomes removal-eligible, OR-ed with SeedTime (either
+	// satisfying makes it eligible). 0 disables the ratio trigger.
+	TargetRatio float64 `yaml:"target_ratio"`
+	// DeletePolicy sets the order in which eligible torrents are removed:
+	// "oldest_first" (default) or "lowest_upload".
+	DeletePolicy string `yaml:"delete_policy"`
 }
 
 // Seeding controls download/seed behavior for ratio management.
@@ -195,6 +217,14 @@ type RSS struct {
 	// is still inherited from filters.min_seeders (a ratio-safety default);
 	// only size/category/title are RSS-specific here.
 	Filters RSSFilters `yaml:"filters"`
+	// MaxConcurrentDownloads caps how many torrents may be actively
+	// downloading (progress < 1) before the grabber skips a cycle rather
+	// than piling on more. 0 disables the gate. Applies to RSS grabs only.
+	MaxConcurrentDownloads int `yaml:"max_concurrent_downloads"`
+	// MaxActiveTorrents caps the total number of managed torrents; the
+	// grabber skips a cycle once the store holds at least this many.
+	// 0 disables the gate. Applies to RSS grabs only.
+	MaxActiveTorrents int `yaml:"max_active_torrents"`
 }
 
 // RSSFilters holds the RSS-grabber-specific filtering knobs. All are
@@ -273,6 +303,7 @@ func Default() Config {
 		Cleanup: Cleanup{
 			SeedTime:             72 * time.Hour,
 			MinProgressForCancel: 0.05,
+			DeletePolicy:         DeletePolicyOldestFirst,
 		},
 		Seeding: Seeding{Full: true},
 		RSS: RSS{
@@ -341,6 +372,11 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 			cfg.Storage.MaxDiskUsagePercent = n
 		}
 	}
+	if v := getenv("SEEDSTREM_STORAGE_MAX_DOWNLOAD_STORAGE_GB"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.Storage.MaxDownloadStorageGB = n
+		}
+	}
 	set("PROWLARR_URL", &cfg.Prowlarr.URL)
 	set("PROWLARR_API_KEY", &cfg.Prowlarr.APIKey)
 	set("META_CINEMETA_URL", &cfg.Meta.CinemetaURL)
@@ -378,6 +414,12 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 			cfg.Cleanup.MinProgressForCancel = f
 		}
 	}
+	if v := getenv("SEEDSTREM_CLEANUP_TARGET_RATIO"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Cleanup.TargetRatio = f
+		}
+	}
+	set("CLEANUP_DELETE_POLICY", &cfg.Cleanup.DeletePolicy)
 	setBool := func(key string, dst *bool) {
 		if v := getenv("SEEDSTREM_" + key); v != "" {
 			*dst = v == "1" || strings.EqualFold(v, "true")
@@ -397,6 +439,16 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 	if v := getenv("SEEDSTREM_RSS_MAX_GRABS_PER_CYCLE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.RSS.MaxGrabsPerCycle = n
+		}
+	}
+	if v := getenv("SEEDSTREM_RSS_MAX_CONCURRENT_DOWNLOADS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.RSS.MaxConcurrentDownloads = n
+		}
+	}
+	if v := getenv("SEEDSTREM_RSS_MAX_ACTIVE_TORRENTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.RSS.MaxActiveTorrents = n
 		}
 	}
 	// Comma-separated int lists, e.g. "2000,2010".
@@ -502,6 +554,9 @@ func (c Config) Validate() error {
 	if c.Storage.MaxDiskUsagePercent < 0 || c.Storage.MaxDiskUsagePercent > 100 {
 		errs = append(errs, fmt.Errorf("storage.max_disk_usage_percent must be between 0 and 100 (0 disables), got %d", c.Storage.MaxDiskUsagePercent))
 	}
+	if c.Storage.MaxDownloadStorageGB < 0 {
+		errs = append(errs, fmt.Errorf("storage.max_download_storage_gb must not be negative (0 disables the cap), got %d", c.Storage.MaxDownloadStorageGB))
+	}
 	if c.Stream.WaitTimeout <= 0 {
 		errs = append(errs, errors.New("stream.wait_timeout must be positive"))
 	}
@@ -537,6 +592,17 @@ func (c Config) Validate() error {
 	if c.Cleanup.MinProgressForCancel < 0 || c.Cleanup.MinProgressForCancel > 1 {
 		errs = append(errs, errors.New("cleanup.min_progress_for_cancel must be between 0 and 1"))
 	}
+	if c.Cleanup.TargetRatio < 0 {
+		errs = append(errs, errors.New("cleanup.target_ratio must not be negative (0 disables the ratio trigger)"))
+	}
+	switch c.Cleanup.DeletePolicy {
+	// Empty means the Default() value (oldest_first); accept it so a config
+	// predating this field still validates.
+	case "", DeletePolicyOldestFirst, DeletePolicyLowestUpload:
+	default:
+		errs = append(errs, fmt.Errorf("cleanup.delete_policy must be %q or %q, got %q",
+			DeletePolicyOldestFirst, DeletePolicyLowestUpload, c.Cleanup.DeletePolicy))
+	}
 	if c.RSS.Enabled && c.RSS.Interval <= 0 {
 		errs = append(errs, errors.New("rss.interval must be positive when rss.enabled is true"))
 	}
@@ -548,6 +614,12 @@ func (c Config) Validate() error {
 	}
 	if c.RSS.MaxGrabsPerCycle < 0 {
 		errs = append(errs, errors.New("rss.max_grabs_per_cycle must not be negative (0 disables grabbing)"))
+	}
+	if c.RSS.MaxConcurrentDownloads < 0 {
+		errs = append(errs, errors.New("rss.max_concurrent_downloads must not be negative (0 disables the gate)"))
+	}
+	if c.RSS.MaxActiveTorrents < 0 {
+		errs = append(errs, errors.New("rss.max_active_torrents must not be negative (0 disables the gate)"))
 	}
 	for i, m := range c.Paths.Mappings {
 		switch {

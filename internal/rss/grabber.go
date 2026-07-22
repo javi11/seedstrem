@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/javib/seedstrem/internal/diskusage"
+	"github.com/javib/seedstrem/internal/downloader"
 	"github.com/javib/seedstrem/internal/prowlarr"
 	"github.com/javib/seedstrem/internal/store"
 	"github.com/javib/seedstrem/internal/torrents"
@@ -52,15 +53,31 @@ type Settings struct {
 	ExcludeKeywords []string
 	// MaxGrabsPerCycle caps additions per poll. 0 disables grabbing.
 	MaxGrabsPerCycle int
+	// SearchTimeout is the global budget for the per-indexer fan-out
+	// (prowlarr.Client.SearchEach); 0 waits for every indexer.
+	SearchTimeout time.Duration
+	// MaxConcurrentDownloads skips a cycle (or trims its budget) once this
+	// many torrents are already downloading (progress < 1). 0 disables.
+	MaxConcurrentDownloads int
+	// MaxActiveTorrents skips a cycle (or trims its budget) once the store
+	// holds at least this many torrents. 0 disables.
+	MaxActiveTorrents int
 	// DiskPath and MaxDiskUsagePercent gate grabbing on free disk space,
 	// mirroring the stream handler's disk gate. 0 percent disables it.
 	DiskPath            string
 	MaxDiskUsagePercent int
+	// MaxDownloadStorageBytes is an absolute cap on used download storage;
+	// grabbing stops when used bytes reach it. Complements the percent gate
+	// (the more restrictive wins). 0 disables.
+	MaxDownloadStorageBytes int64
 }
 
-// searcher is the slice of *prowlarr.Client the grabber depends on.
+// searcher is the slice of *prowlarr.Client the grabber depends on. It fans
+// out one request per indexer (SearchEach) so a slow or failing indexer
+// can't blank the whole cycle and every indexer's recent releases are
+// represented.
 type searcher interface {
-	Search(ctx context.Context, query, searchType string, categories, indexerIDs []int) ([]prowlarr.Result, error)
+	SearchEach(ctx context.Context, query, searchType string, categories, indexerIDs []int, budget time.Duration) ([]prowlarr.Result, error)
 }
 
 // downloadAdder is the slice of *torrents.Service used to add a grabbed
@@ -70,16 +87,25 @@ type downloadAdder interface {
 	EnsureAdded(ctx context.Context, magnet string, torrentFile []byte, sel torrents.Selector) (store.Torrent, error)
 }
 
-// ownedLookup reports which of the given infohashes are already stored (as
-// a map keyed by lowercase infohash), so the grabber skips re-adding them.
-// Batched to avoid a per-candidate query each poll cycle.
-type ownedLookup interface {
+// storeReader is the slice of *store.Store the grabber depends on:
+// TorrentsByHashes reports which candidate infohashes are already stored
+// (batched, keyed by lowercase infohash) so re-adds are skipped, and
+// AllTorrents backs the active-torrent/concurrent-download admission gates.
+type storeReader interface {
 	TorrentsByHashes(ctx context.Context, hashes []string) (map[string]store.Torrent, error)
+	AllTorrents(ctx context.Context) ([]store.Torrent, error)
+}
+
+// downloadStater is the slice of downloader.Client used to count how many
+// managed torrents are still downloading, for the concurrent-download gate.
+type downloadStater interface {
+	Torrents(ctx context.Context, hashes []string) ([]downloader.TorrentInfo, error)
 }
 
 // Grabber periodically polls Prowlarr and grabs recent releases.
 type Grabber struct {
-	store    ownedLookup
+	store    storeReader
+	dc       downloadStater
 	svc      downloadAdder
 	settings func() Settings
 	logger   *slog.Logger
@@ -91,8 +117,9 @@ type Grabber struct {
 }
 
 // New builds a Grabber. interval is fixed at startup (mirroring syncer and
-// cleanup); changing rss.interval takes effect on the next restart.
-func New(st ownedLookup, svc downloadAdder, settings func() Settings, logger *slog.Logger, interval time.Duration) *Grabber {
+// cleanup); changing rss.interval takes effect on the next restart. dc may
+// be nil when the concurrent-download gate is never used.
+func New(st storeReader, dc downloadStater, svc downloadAdder, settings func() Settings, logger *slog.Logger, interval time.Duration) *Grabber {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -101,6 +128,7 @@ func New(st ownedLookup, svc downloadAdder, settings func() Settings, logger *sl
 	}
 	return &Grabber{
 		store:       st,
+		dc:          dc,
 		svc:         svc,
 		settings:    settings,
 		logger:      logger,
@@ -142,17 +170,32 @@ func (g *Grabber) Poll(ctx context.Context) error {
 		return nil
 	}
 
+	// Admission gates (RSS grabs only — on-demand streams are never
+	// blocked): trim this cycle's budget by the number of active torrents
+	// and in-flight downloads. maxGrabs starts at the configured cap and is
+	// lowered by whichever gate has the least headroom; 0 headroom skips.
+	maxGrabs, skip, err := g.gateBudget(ctx, s)
+	if err != nil {
+		// Fail closed: if we can't measure the limits, don't pile on.
+		g.logger.Warn("rss: admission gate check failed; skipping grab cycle", "error", err)
+		return nil
+	}
+	if skip {
+		return nil
+	}
+
 	// An empty query triggers Prowlarr's recent-releases (RSS) behavior for
 	// each indexer, reusing all the normalization/magnet-synthesis in the
-	// existing client.
+	// existing client. SearchEach fans out per indexer so a slow/failing one
+	// can't blank the cycle.
 	results, err := g.newSearcher(s.ProwlarrURL, s.ProwlarrAPIKey).
-		Search(ctx, "", "search", s.Categories, s.IndexerIDs)
+		SearchEach(ctx, "", "search", s.Categories, s.IndexerIDs, s.SearchTimeout)
 	if err != nil {
 		return fmt.Errorf("rss: fetch recent releases: %w", err)
 	}
 
 	var used, total int64
-	if s.MaxDiskUsagePercent > 0 {
+	if s.MaxDiskUsagePercent > 0 || s.MaxDownloadStorageBytes > 0 {
 		if s.DiskPath == "" {
 			// A configured threshold with no measurable path can't gate
 			// anything — surface it so an unbounded auto-downloader isn't
@@ -190,7 +233,10 @@ func (g *Grabber) Poll(ctx context.Context) error {
 		return ok
 	}
 
-	grabs := selectGrabs(results, s, used, total, have)
+	// Apply the gate-trimmed budget without mutating the live settings.
+	sel := s
+	sel.MaxGrabsPerCycle = maxGrabs
+	grabs := selectGrabs(results, sel, used, total, have)
 	if len(grabs) == 0 {
 		g.logger.Debug("rss: nothing to grab this cycle", "candidates", len(results))
 		return nil
@@ -211,15 +257,85 @@ func (g *Grabber) Poll(ctx context.Context) error {
 	return nil
 }
 
+// gateBudget applies the RSS-only admission gates (max active torrents, max
+// concurrent downloads) and returns the trimmed per-cycle grab budget. skip
+// is true when a gate has no headroom (grab nothing this cycle). Both gates
+// need the managed-torrent list, fetched once when either is enabled; when
+// both are disabled the configured MaxGrabsPerCycle passes through untouched.
+func (g *Grabber) gateBudget(ctx context.Context, s Settings) (maxGrabs int, skip bool, err error) {
+	maxGrabs = s.MaxGrabsPerCycle
+	if s.MaxActiveTorrents <= 0 && s.MaxConcurrentDownloads <= 0 {
+		return maxGrabs, false, nil
+	}
+
+	stored, err := g.store.AllTorrents(ctx)
+	if err != nil {
+		return 0, false, fmt.Errorf("active-torrent lookup: %w", err)
+	}
+
+	if s.MaxActiveTorrents > 0 {
+		room := s.MaxActiveTorrents - len(stored)
+		if room <= 0 {
+			g.logger.Debug("rss: at max active torrents; skipping grab cycle",
+				"active", len(stored), "limit", s.MaxActiveTorrents)
+			return 0, true, nil
+		}
+		if room < maxGrabs {
+			maxGrabs = room
+		}
+	}
+
+	if s.MaxConcurrentDownloads > 0 {
+		downloading, err := g.countDownloading(ctx, stored)
+		if err != nil {
+			return 0, false, fmt.Errorf("downloading-count lookup: %w", err)
+		}
+		room := s.MaxConcurrentDownloads - downloading
+		if room <= 0 {
+			g.logger.Debug("rss: at max concurrent downloads; skipping grab cycle",
+				"downloading", downloading, "limit", s.MaxConcurrentDownloads)
+			return 0, true, nil
+		}
+		if room < maxGrabs {
+			maxGrabs = room
+		}
+	}
+	return maxGrabs, false, nil
+}
+
+// countDownloading reports how many of the stored torrents are still
+// downloading (Progress < 1), per the download client's live view.
+func (g *Grabber) countDownloading(ctx context.Context, stored []store.Torrent) (int, error) {
+	if len(stored) == 0 || g.dc == nil {
+		return 0, nil
+	}
+	hashes := make([]string, len(stored))
+	for i, t := range stored {
+		hashes[i] = t.Hash
+	}
+	infos, err := g.dc.Torrents(ctx, hashes)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, in := range infos {
+		if in.Progress < 1 {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // selectGrabs is the pure decision core: given recent releases, live
 // settings, and current disk usage, it returns the releases to grab this
 // cycle. It dedups (by infohash, then by release title so the same release
 // mirrored across indexers is grabbed once), applies the seeder/size
 // filters, optionally keeps only freeleech, ranks (freeleech → seeders →
-// size), then walks the ranked list skipping already-owned releases and any
-// that would push disk usage past the threshold, stopping at
-// MaxGrabsPerCycle. have reports whether a release's infohash is already
-// downloaded; a nil have treats nothing as owned.
+// size), then hands out the per-cycle budget round-robin across indexers so
+// no single tracker dominates — skipping already-owned releases and any that
+// would push disk usage past the limit, stopping at MaxGrabsPerCycle. have
+// reports whether a release's infohash is already downloaded; a nil have
+// treats nothing as owned.
 func selectGrabs(results []prowlarr.Result, s Settings, used, total int64, have func(hash string) bool) []prowlarr.Result {
 	if s.MaxGrabsPerCycle <= 0 {
 		return nil
@@ -245,33 +361,80 @@ func selectGrabs(results []prowlarr.Result, s Settings, used, total int64, have 
 	ranked = dedupeByReleaseTitle(ranked)
 
 	// Disk limit: bytes we must stay under. limit <= 0 means "no gate".
+	limit := diskLimit(s, total)
+	if limit > 0 && used >= limit {
+		return nil // disk already at/over the limit: grab nothing
+	}
+
+	// Spread the budget across indexers: group the ranked candidates by
+	// indexer (first-seen order, ranked within each group) and take one
+	// grabbable release per indexer per round. Falls back to plain ranked
+	// order when everything is on a single indexer.
+	groups := groupByIndexer(ranked)
+	out := make([]prowlarr.Result, 0, s.MaxGrabsPerCycle)
+	projected := used
+	cursors := make([]int, len(groups))
+	for len(out) < s.MaxGrabsPerCycle {
+		progressed := false
+		for gi := range groups {
+			if len(out) >= s.MaxGrabsPerCycle {
+				break
+			}
+			grp := groups[gi]
+			for cursors[gi] < len(grp) {
+				r := grp[cursors[gi]]
+				cursors[gi]++
+				if r.InfoHash == "" {
+					continue // nothing to dedup/track on
+				}
+				if have != nil && have(r.InfoHash) {
+					continue // already downloaded
+				}
+				if limit > 0 && projected+r.Size > limit {
+					continue // would push disk usage past the limit
+				}
+				out = append(out, r)
+				projected += r.Size
+				progressed = true
+				break
+			}
+		}
+		if !progressed {
+			break // every group exhausted
+		}
+	}
+	return out
+}
+
+// diskLimit resolves the effective byte ceiling from the percent gate and
+// the absolute byte cap, returning the more restrictive of the two enabled
+// limits (0 = no gate).
+func diskLimit(s Settings, total int64) int64 {
 	var limit int64
 	if s.MaxDiskUsagePercent > 0 && total > 0 {
 		limit = total * int64(s.MaxDiskUsagePercent) / 100
-		if used >= limit {
-			return nil // disk already at/over the threshold: grab nothing
-		}
 	}
+	if s.MaxDownloadStorageBytes > 0 && (limit == 0 || s.MaxDownloadStorageBytes < limit) {
+		limit = s.MaxDownloadStorageBytes
+	}
+	return limit
+}
 
-	out := make([]prowlarr.Result, 0, s.MaxGrabsPerCycle)
-	projected := used
+// groupByIndexer buckets ranked results by indexer, preserving the first-seen
+// order of indexers and the ranked order within each bucket.
+func groupByIndexer(ranked []prowlarr.Result) [][]prowlarr.Result {
+	order := make(map[string]int, len(ranked))
+	var groups [][]prowlarr.Result
 	for _, r := range ranked {
-		if len(out) >= s.MaxGrabsPerCycle {
-			break
+		gi, ok := order[r.Indexer]
+		if !ok {
+			gi = len(groups)
+			order[r.Indexer] = gi
+			groups = append(groups, nil)
 		}
-		if r.InfoHash == "" {
-			continue // nothing to dedup/track on
-		}
-		if have != nil && have(r.InfoHash) {
-			continue // already downloaded
-		}
-		if limit > 0 && projected+r.Size > limit {
-			continue // would push disk usage past the threshold
-		}
-		out = append(out, r)
-		projected += r.Size
+		groups[gi] = append(groups[gi], r)
 	}
-	return out
+	return groups
 }
 
 // filterByTitle applies the RSS-specific keyword gates to release titles,

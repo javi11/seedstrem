@@ -46,7 +46,21 @@ export function Rss({ config, update }: SectionProps) {
           min={0}
           value={config.rss.max_grabs_per_cycle}
           onChange={(v) => update((c) => (c.rss.max_grabs_per_cycle = v))}
-          hint="Caps how many new releases are added each poll."
+          hint="Caps how many new releases are added each poll. Spread across your indexers (round-robin) so no single tracker dominates."
+        />
+        <NumberField
+          label="Max concurrent downloads (0 = no limit)"
+          min={0}
+          value={config.rss.max_concurrent_downloads}
+          onChange={(v) => update((c) => (c.rss.max_concurrent_downloads = v))}
+          hint="Skip (or trim) a grab cycle when this many torrents are already downloading."
+        />
+        <NumberField
+          label="Max active torrents (0 = no limit)"
+          min={0}
+          value={config.rss.max_active_torrents}
+          onChange={(v) => update((c) => (c.rss.max_active_torrents = v))}
+          hint="Stop grabbing once the total number of managed torrents reaches this."
         />
       </div>
 

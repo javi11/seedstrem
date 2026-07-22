@@ -97,14 +97,22 @@ export interface Config {
     database: string;
     delete_files_on_remove: boolean;
     max_disk_usage_percent: number;
+    max_download_storage_gb: number;
   };
   stream: { wait_timeout_seconds: number; read_chunk: number };
-  cleanup: { seed_time_hours: number; min_progress_for_cancel_percent: number };
+  cleanup: {
+    seed_time_hours: number;
+    min_progress_for_cancel_percent: number;
+    target_ratio: number;
+    delete_policy: string;
+  };
   seeding: { full: boolean };
   rss: {
     enabled: boolean;
     interval_minutes: number;
     max_grabs_per_cycle: number;
+    max_concurrent_downloads: number;
+    max_active_torrents: number;
     freeleech_only: boolean;
     filters: {
       min_size_mb: number;

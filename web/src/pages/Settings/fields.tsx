@@ -58,6 +58,7 @@ interface NumberFieldProps {
   onChange: (v: number) => void;
   min?: number;
   max?: number;
+  step?: number;
   placeholder?: string;
   hint?: ReactNode;
 }
@@ -68,6 +69,7 @@ export function NumberField({
   onChange,
   min,
   max,
+  step,
   placeholder,
   hint,
 }: NumberFieldProps) {
@@ -79,10 +81,44 @@ export function NumberField({
         className="input input-bordered"
         min={min}
         max={max}
+        step={step}
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
       />
+      {hint && <span className="label-text-alt mt-1 text-base-content/60">{hint}</span>}
+    </label>
+  );
+}
+
+interface SelectFieldOption {
+  value: string;
+  label: string;
+}
+
+interface SelectFieldProps {
+  label: string;
+  value: string;
+  options: SelectFieldOption[];
+  onChange: (v: string) => void;
+  hint?: ReactNode;
+}
+
+export function SelectField({ label, value, options, onChange, hint }: SelectFieldProps) {
+  return (
+    <label className="form-control">
+      <span className="label-text mb-1">{label}</span>
+      <select
+        className="select select-bordered"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
       {hint && <span className="label-text-alt mt-1 text-base-content/60">{hint}</span>}
     </label>
   );

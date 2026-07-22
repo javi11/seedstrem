@@ -157,27 +157,32 @@ type configDTO struct {
 		Mappings []config.Mapping `json:"mappings"`
 	} `json:"paths"`
 	Storage struct {
-		Database            string `json:"database"`
-		DeleteFilesOnRemove bool   `json:"delete_files_on_remove"`
-		MaxDiskUsagePercent int    `json:"max_disk_usage_percent"`
+		Database             string `json:"database"`
+		DeleteFilesOnRemove  bool   `json:"delete_files_on_remove"`
+		MaxDiskUsagePercent  int    `json:"max_disk_usage_percent"`
+		MaxDownloadStorageGB int64  `json:"max_download_storage_gb"`
 	} `json:"storage"`
 	Stream struct {
 		WaitTimeoutSeconds int   `json:"wait_timeout_seconds"`
 		ReadChunk          int64 `json:"read_chunk"`
 	} `json:"stream"`
 	Cleanup struct {
-		SeedTimeHours               int `json:"seed_time_hours"`
-		MinProgressForCancelPercent int `json:"min_progress_for_cancel_percent"`
+		SeedTimeHours               int     `json:"seed_time_hours"`
+		MinProgressForCancelPercent int     `json:"min_progress_for_cancel_percent"`
+		TargetRatio                 float64 `json:"target_ratio"`
+		DeletePolicy                string  `json:"delete_policy"`
 	} `json:"cleanup"`
 	Seeding struct {
 		Full bool `json:"full"`
 	} `json:"seeding"`
 	RSS struct {
-		Enabled          bool `json:"enabled"`
-		IntervalMinutes  int  `json:"interval_minutes"`
-		MaxGrabsPerCycle int  `json:"max_grabs_per_cycle"`
-		FreeleechOnly    bool `json:"freeleech_only"`
-		Filters          struct {
+		Enabled                bool `json:"enabled"`
+		IntervalMinutes        int  `json:"interval_minutes"`
+		MaxGrabsPerCycle       int  `json:"max_grabs_per_cycle"`
+		MaxConcurrentDownloads int  `json:"max_concurrent_downloads"`
+		MaxActiveTorrents      int  `json:"max_active_torrents"`
+		FreeleechOnly          bool `json:"freeleech_only"`
+		Filters                struct {
 			MinSizeMB       int64    `json:"min_size_mb"`
 			MaxSizeMB       int64    `json:"max_size_mb"`
 			Categories      []int    `json:"categories"`
@@ -238,14 +243,19 @@ func toDTO(cfg config.Config) configDTO {
 	dto.Storage.Database = cfg.Storage.Database
 	dto.Storage.DeleteFilesOnRemove = cfg.Storage.DeleteFilesOnRemove
 	dto.Storage.MaxDiskUsagePercent = cfg.Storage.MaxDiskUsagePercent
+	dto.Storage.MaxDownloadStorageGB = cfg.Storage.MaxDownloadStorageGB
 	dto.Stream.WaitTimeoutSeconds = int(cfg.Stream.WaitTimeout / time.Second)
 	dto.Stream.ReadChunk = cfg.Stream.ReadChunk
 	dto.Cleanup.SeedTimeHours = int(cfg.Cleanup.SeedTime / time.Hour)
 	dto.Cleanup.MinProgressForCancelPercent = int(cfg.Cleanup.MinProgressForCancel * 100)
+	dto.Cleanup.TargetRatio = cfg.Cleanup.TargetRatio
+	dto.Cleanup.DeletePolicy = cfg.Cleanup.DeletePolicy
 	dto.Seeding.Full = cfg.Seeding.Full
 	dto.RSS.Enabled = cfg.RSS.Enabled
 	dto.RSS.IntervalMinutes = int(cfg.RSS.Interval / time.Minute)
 	dto.RSS.MaxGrabsPerCycle = cfg.RSS.MaxGrabsPerCycle
+	dto.RSS.MaxConcurrentDownloads = cfg.RSS.MaxConcurrentDownloads
+	dto.RSS.MaxActiveTorrents = cfg.RSS.MaxActiveTorrents
 	dto.RSS.FreeleechOnly = cfg.RSS.FreeleechOnly
 	dto.RSS.Filters.MinSizeMB = cfg.RSS.Filters.MinSizeMB
 	dto.RSS.Filters.MaxSizeMB = cfg.RSS.Filters.MaxSizeMB
@@ -342,6 +352,8 @@ func (dto configDTO) apply(cfg config.Config) config.Config {
 	// 0 is a meaningful, settable value (disables the disk-usage gate), so
 	// it is always applied rather than treated as "keep existing value".
 	cfg.Storage.MaxDiskUsagePercent = dto.Storage.MaxDiskUsagePercent
+	// 0 meaningfully disables the absolute storage cap; always applied.
+	cfg.Storage.MaxDownloadStorageGB = dto.Storage.MaxDownloadStorageGB
 	if dto.Stream.WaitTimeoutSeconds > 0 {
 		cfg.Stream.WaitTimeout = time.Duration(dto.Stream.WaitTimeoutSeconds) * time.Second
 	}
@@ -356,6 +368,13 @@ func (dto configDTO) apply(cfg config.Config) config.Config {
 	}
 	// Likewise 0 meaningfully disables the abandoned-download check.
 	cfg.Cleanup.MinProgressForCancel = float64(dto.Cleanup.MinProgressForCancelPercent) / 100
+	// 0 meaningfully disables the ratio trigger; always applied.
+	cfg.Cleanup.TargetRatio = dto.Cleanup.TargetRatio
+	// Empty = keep the stored policy (older clients don't send the field);
+	// Validate rejects any non-empty value outside the allowed set.
+	if dto.Cleanup.DeletePolicy != "" {
+		cfg.Cleanup.DeletePolicy = dto.Cleanup.DeletePolicy
+	}
 	cfg.Seeding.Full = dto.Seeding.Full
 	cfg.RSS.Enabled = dto.RSS.Enabled
 	// Interval is only meaningful when positive; 0 keeps the stored value so
@@ -365,6 +384,9 @@ func (dto configDTO) apply(cfg config.Config) config.Config {
 	}
 	// 0 is a meaningful, settable value (disables grabbing), so always apply.
 	cfg.RSS.MaxGrabsPerCycle = dto.RSS.MaxGrabsPerCycle
+	// 0 meaningfully disables these gates; always applied.
+	cfg.RSS.MaxConcurrentDownloads = dto.RSS.MaxConcurrentDownloads
+	cfg.RSS.MaxActiveTorrents = dto.RSS.MaxActiveTorrents
 	cfg.RSS.FreeleechOnly = dto.RSS.FreeleechOnly
 	// RSS filters: sizes are always applied (0 = no bound / unbounded), and
 	// the list fields replace the stored values wholesale.

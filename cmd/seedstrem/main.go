@@ -151,12 +151,17 @@ func run() error {
 	cleanCtx, stopClean := context.WithCancel(context.Background())
 	defer stopClean()
 	go cleanup.New(db, dc, torrentSvc, sessions, func() cleanup.Settings {
-		return cleanup.Settings{SeedTime: cm.Get().Cleanup.SeedTime}
+		c := cm.Get()
+		return cleanup.Settings{
+			SeedTime:     c.Cleanup.SeedTime,
+			TargetRatio:  c.Cleanup.TargetRatio,
+			DeletePolicy: c.Cleanup.DeletePolicy,
+		}
 	}, logger, 30*time.Minute).Run(cleanCtx)
 
 	rssCtx, stopRSS := context.WithCancel(context.Background())
 	defer stopRSS()
-	go rss.New(db, torrentSvc, func() rss.Settings {
+	go rss.New(db, dc, torrentSvc, func() rss.Settings {
 		c := cm.Get()
 		return rss.Settings{
 			Enabled:        c.RSS.Enabled,
@@ -166,13 +171,17 @@ func run() error {
 			IndexerIDs:     c.Prowlarr.IndexerIDs,
 			// RSS uses its own size bounds but inherits the global seeder
 			// floor as a ratio-safety default.
-			Filters:             prowlarr.Filters{MinSeeders: c.Filters.MinSeeders, MinSizeBytes: c.RSS.Filters.MinSizeMB << 20, MaxSizeBytes: c.RSS.Filters.MaxSizeMB << 20},
-			FreeleechOnly:       c.RSS.FreeleechOnly,
-			IncludeKeywords:     c.RSS.Filters.IncludeKeywords,
-			ExcludeKeywords:     c.RSS.Filters.ExcludeKeywords,
-			MaxGrabsPerCycle:    c.RSS.MaxGrabsPerCycle,
-			DiskPath:            firstLocalMapping(c.Paths.Mappings),
-			MaxDiskUsagePercent: c.Storage.MaxDiskUsagePercent,
+			Filters:                 prowlarr.Filters{MinSeeders: c.Filters.MinSeeders, MinSizeBytes: c.RSS.Filters.MinSizeMB << 20, MaxSizeBytes: c.RSS.Filters.MaxSizeMB << 20},
+			FreeleechOnly:           c.RSS.FreeleechOnly,
+			IncludeKeywords:         c.RSS.Filters.IncludeKeywords,
+			ExcludeKeywords:         c.RSS.Filters.ExcludeKeywords,
+			MaxGrabsPerCycle:        c.RSS.MaxGrabsPerCycle,
+			SearchTimeout:           c.Prowlarr.SearchTimeout,
+			MaxConcurrentDownloads:  c.RSS.MaxConcurrentDownloads,
+			MaxActiveTorrents:       c.RSS.MaxActiveTorrents,
+			DiskPath:                firstLocalMapping(c.Paths.Mappings),
+			MaxDiskUsagePercent:     c.Storage.MaxDiskUsagePercent,
+			MaxDownloadStorageBytes: c.Storage.MaxDownloadStorageGB << 30,
 		}
 	}, logger, cfg.RSS.Interval).Run(rssCtx)
 

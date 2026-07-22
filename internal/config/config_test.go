@@ -312,3 +312,70 @@ func TestValidateDownloader(t *testing.T) {
 		t.Errorf("deluge fields must not be required for qbittorrent: %v", err)
 	}
 }
+
+func TestDefaultDeletePolicy(t *testing.T) {
+	if got := Default().Cleanup.DeletePolicy; got != DeletePolicyOldestFirst {
+		t.Errorf("default delete_policy = %q, want %q", got, DeletePolicyOldestFirst)
+	}
+}
+
+func TestApplyEnvDiskManagementFields(t *testing.T) {
+	env := map[string]string{
+		"SEEDSTREM_STORAGE_MAX_DOWNLOAD_STORAGE_GB": "3072",
+		"SEEDSTREM_CLEANUP_TARGET_RATIO":            "1.5",
+		"SEEDSTREM_CLEANUP_DELETE_POLICY":           DeletePolicyLowestUpload,
+		"SEEDSTREM_RSS_MAX_CONCURRENT_DOWNLOADS":    "8",
+		"SEEDSTREM_RSS_MAX_ACTIVE_TORRENTS":         "300",
+	}
+	cfg := Default()
+	applyEnv(&cfg, func(k string) string { return env[k] })
+
+	if cfg.Storage.MaxDownloadStorageGB != 3072 {
+		t.Errorf("max_download_storage_gb = %d, want 3072", cfg.Storage.MaxDownloadStorageGB)
+	}
+	if cfg.Cleanup.TargetRatio != 1.5 {
+		t.Errorf("target_ratio = %v, want 1.5", cfg.Cleanup.TargetRatio)
+	}
+	if cfg.Cleanup.DeletePolicy != DeletePolicyLowestUpload {
+		t.Errorf("delete_policy = %q, want %q", cfg.Cleanup.DeletePolicy, DeletePolicyLowestUpload)
+	}
+	if cfg.RSS.MaxConcurrentDownloads != 8 {
+		t.Errorf("max_concurrent_downloads = %d, want 8", cfg.RSS.MaxConcurrentDownloads)
+	}
+	if cfg.RSS.MaxActiveTorrents != 300 {
+		t.Errorf("max_active_torrents = %d, want 300", cfg.RSS.MaxActiveTorrents)
+	}
+}
+
+func TestValidateDiskManagementFields(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Config)
+		want   string // substring expected in error; "" means must be valid
+	}{
+		{"negative storage cap", func(c *Config) { c.Storage.MaxDownloadStorageGB = -1 }, "storage.max_download_storage_gb"},
+		{"zero storage cap ok", func(c *Config) { c.Storage.MaxDownloadStorageGB = 0 }, ""},
+		{"negative target ratio", func(c *Config) { c.Cleanup.TargetRatio = -0.1 }, "cleanup.target_ratio"},
+		{"zero target ratio ok", func(c *Config) { c.Cleanup.TargetRatio = 0 }, ""},
+		{"bad delete policy", func(c *Config) { c.Cleanup.DeletePolicy = "random" }, "cleanup.delete_policy"},
+		{"empty delete policy ok", func(c *Config) { c.Cleanup.DeletePolicy = "" }, ""},
+		{"lowest_upload ok", func(c *Config) { c.Cleanup.DeletePolicy = DeletePolicyLowestUpload }, ""},
+		{"negative concurrent", func(c *Config) { c.RSS.MaxConcurrentDownloads = -1 }, "rss.max_concurrent_downloads"},
+		{"negative active", func(c *Config) { c.RSS.MaxActiveTorrents = -1 }, "rss.max_active_torrents"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			tc.mutate(&cfg)
+			err := cfg.Validate()
+			if tc.want == "" {
+				if err != nil {
+					t.Errorf("expected valid, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("expected error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
