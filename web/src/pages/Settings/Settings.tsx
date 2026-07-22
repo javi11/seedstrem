@@ -14,6 +14,7 @@ import { Seeding } from "./sections/Seeding";
 import { Rss } from "./sections/Rss";
 import { PathMappings } from "./sections/PathMappings";
 import { Server } from "./sections/Server";
+import { Storage } from "./sections/Storage";
 import { Streaming } from "./sections/Streaming";
 
 const SECTIONS: SectionDef[] = [
@@ -24,6 +25,7 @@ const SECTIONS: SectionDef[] = [
   { id: "metadata", label: "Metadata", icon: "🎬", group: "Addon", restart: true },
   { id: "seeding", label: "Seeding & cleanup", icon: "♺", group: "System" },
   { id: "rss", label: "RSS auto-grab", icon: "📡", group: "System" },
+  { id: "storage", label: "Storage & disk", icon: "🗄", group: "System" },
   { id: "paths", label: "Path mappings", icon: "🗺", group: "System" },
   { id: "server", label: "Server", icon: "🖥", group: "System", restart: true },
   { id: "streaming", label: "Streaming", icon: "⇄", group: "System" },
@@ -37,6 +39,7 @@ const COMPONENTS: Record<string, ComponentType<SectionProps>> = {
   metadata: Metadata,
   seeding: Seeding,
   rss: Rss,
+  storage: Storage,
   paths: PathMappings,
   server: Server,
   streaming: Streaming,

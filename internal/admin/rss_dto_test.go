@@ -51,6 +51,51 @@ func TestConfigDTORoundTripsRSS(t *testing.T) {
 	}
 }
 
+func TestConfigDTORoundTripsDiskManagement(t *testing.T) {
+	cfg := config.Default()
+	cfg.Storage.MaxDownloadStorageGB = 3072
+	cfg.Cleanup.TargetRatio = 1.5
+	cfg.Cleanup.DeletePolicy = config.DeletePolicyLowestUpload
+	cfg.RSS.MaxConcurrentDownloads = 8
+	cfg.RSS.MaxActiveTorrents = 300
+
+	dto := toDTO(cfg)
+	if dto.Storage.MaxDownloadStorageGB != 3072 {
+		t.Errorf("toDTO storage.max_download_storage_gb = %d; want 3072", dto.Storage.MaxDownloadStorageGB)
+	}
+	if dto.Cleanup.TargetRatio != 1.5 || dto.Cleanup.DeletePolicy != config.DeletePolicyLowestUpload {
+		t.Errorf("toDTO cleanup = %+v", dto.Cleanup)
+	}
+	if dto.RSS.MaxConcurrentDownloads != 8 || dto.RSS.MaxActiveTorrents != 300 {
+		t.Errorf("toDTO rss gates = %+v", dto.RSS)
+	}
+
+	got := dto.apply(config.Default())
+	if got.Storage.MaxDownloadStorageGB != 3072 {
+		t.Errorf("apply storage.max_download_storage_gb = %d; want 3072", got.Storage.MaxDownloadStorageGB)
+	}
+	if got.Cleanup.TargetRatio != 1.5 || got.Cleanup.DeletePolicy != config.DeletePolicyLowestUpload {
+		t.Errorf("apply cleanup = %+v", got.Cleanup)
+	}
+	if got.RSS.MaxConcurrentDownloads != 8 || got.RSS.MaxActiveTorrents != 300 {
+		t.Errorf("apply rss gates = %+v", got.RSS)
+	}
+}
+
+func TestApplyEmptyDeletePolicyKeepsStored(t *testing.T) {
+	// A client that doesn't send delete_policy (empty) must not blank the
+	// stored default.
+	current := config.Default()
+	current.Cleanup.DeletePolicy = config.DeletePolicyLowestUpload
+
+	var dto configDTO
+	dto.Cleanup.DeletePolicy = ""
+
+	if got := dto.apply(current).Cleanup.DeletePolicy; got != config.DeletePolicyLowestUpload {
+		t.Errorf("delete_policy = %q; want kept %q", got, config.DeletePolicyLowestUpload)
+	}
+}
+
 func TestApplyRSSZeroIntervalKeepsStored(t *testing.T) {
 	// A client clearing the interval (0) must not produce an invalid <=0
 	// interval — the stored value is kept.
