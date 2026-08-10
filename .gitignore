@@ -17,6 +17,10 @@ web/dist/*
 config.yaml
 !config.example.yaml
 
+# Python
+__pycache__/
+*.pyc
+
 # Editor/OS
 .DS_Store
 .idea/
