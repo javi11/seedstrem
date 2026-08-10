@@ -117,11 +117,20 @@ func (c *client) do(ctx context.Context, fn func(context.Context) error) error {
 }
 
 // isDaemonError reports whether err came back from a live daemon (an
-// RPC-level failure, possibly already mapped to ErrTorrentNotFound) as
-// opposed to a transport failure that should drop the connection.
+// RPC-level failure, possibly already mapped to ErrTorrentNotFound or
+// ErrHintDeclined) as opposed to a transport failure that should drop
+// the connection.
+//
+// ErrHintDeclined belongs here: the daemon answered, the plugin just
+// said "not this window". It is also the one daemon answer a caller
+// retries within milliseconds, so misreading it as a transport failure
+// redials the daemon on every retry — during the first seconds after an
+// add, when the availability poller shares that same connection and the
+// playability grace is already running out.
 func isDaemonError(err error) bool {
 	return errors.As(err, new(delugerpc.RPCError)) ||
-		errors.Is(err, downloader.ErrTorrentNotFound)
+		errors.Is(err, downloader.ErrTorrentNotFound) ||
+		errors.Is(err, downloader.ErrHintDeclined)
 }
 
 func (c *client) cachedFlags(hash string) flags {

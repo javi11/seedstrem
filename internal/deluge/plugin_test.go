@@ -107,6 +107,30 @@ func TestPrioritizePiecesDeclinedReportsHintDeclined(t *testing.T) {
 	}
 }
 
+func TestPrioritizePiecesDeclinedKeepsConnection(t *testing.T) {
+	// A decline is the daemon answering, not the transport failing: the
+	// connection must survive it. Dropping it here reconnects on every
+	// retry of the fast decline loop — right after an add, while the
+	// availability poller shares the same connection and the playability
+	// grace is ticking.
+	now := time.Unix(1_000_000, 0)
+	p := &pluginAPI{fakeAPI: newFakeAPI(), apiVersion: 1, prioritizeFalse: true}
+	p.plugins = []string{"Seedstream"}
+	c := newPluginClient(p, &now)
+
+	for range 3 {
+		if err := c.PrioritizePieces(context.Background(), "abc123", 10, 20); !errors.Is(err, downloader.ErrHintDeclined) {
+			t.Fatalf("err = %v, want ErrHintDeclined", err)
+		}
+	}
+	if n := countRPC(p.fakeAPI, "close"); n != 0 {
+		t.Errorf("connection closed %d times by declined hints, want 0", n)
+	}
+	if n := countRPC(p.fakeAPI, "connect"); n != 1 {
+		t.Errorf("connected %d times, want 1 (no reconnect churn)", n)
+	}
+}
+
 func TestPrioritizePiecesPassesDeadlineParams(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	p := &pluginAPI{fakeAPI: newFakeAPI(), apiVersion: 1}
