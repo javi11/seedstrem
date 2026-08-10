@@ -195,3 +195,25 @@ func TestPrioritizePiecesOldAPIVersionUnsupported(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNotSupported for api_version 0", err)
 	}
 }
+
+func TestPrioritizeAcceptedReadsPluginReply(t *testing.T) {
+	tests := []struct {
+		name string
+		res  rencode.List
+		want bool
+	}{
+		{"accepted", rencode.NewList(true), true},
+		{"declined", rencode.NewList(false), false},
+		// A reply that isn't a bool at all (older or patched plugin)
+		// must not be read as a refusal.
+		{"empty", rencode.List{}, true},
+		{"non-bool", rencode.NewList(int64(1)), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := prioritizeAccepted(tt.res); got != tt.want {
+				t.Fatalf("prioritizeAccepted() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

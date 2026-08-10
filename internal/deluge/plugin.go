@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -86,6 +87,18 @@ func (c *client) probePlugin(ctx context.Context) bool {
 	return err == nil && v >= 1
 }
 
+// prioritizeAccepted reports whether prioritize_range returned truthy.
+// An empty reply counts as accepted: only an explicit False means the
+// plugin declined the window.
+func prioritizeAccepted(res rencode.List) bool {
+	values := res.Values()
+	if len(values) == 0 {
+		return true
+	}
+	ok, isBool := values[0].(bool)
+	return !isBool || ok
+}
+
 // toInt widens the integer types go-rencode may decode a Python int into.
 func toInt(v any) (int, error) {
 	switch n := v.(type) {
@@ -113,7 +126,16 @@ func (c *client) PrioritizePieces(ctx context.Context, hash string, first, last 
 			return downloader.ErrNotSupported
 		}
 		args := rencode.NewList(strings.ToLower(hash), first, last, prioritizeDeadlineMS, prioritizeStepMS)
-		if _, err := c.rpc.RPC(ctx, "seedstream.prioritize_range", args, rencode.Dictionary{}); err != nil {
+		res, err := c.rpc.RPC(ctx, "seedstream.prioritize_range", args, rencode.Dictionary{})
+		if err == nil && !prioritizeAccepted(res) {
+			// The daemon answered, but the plugin declined the window
+			// (unknown torrent, metadata not in yet, per-piece failure).
+			// Not an error — the stream layer re-hints while it waits —
+			// but silence here once hid a whole class of no-op hints.
+			slog.Default().Debug("deluge: plugin declined piece prioritization",
+				"hash", hash, "first", first, "last", last)
+		}
+		if err != nil {
 			if errors.As(err, new(delugerpc.RPCError)) {
 				// The daemon answered but the call failed — most likely
 				// the plugin was disabled since the last probe. Re-probe
