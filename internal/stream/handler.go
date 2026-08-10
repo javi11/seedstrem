@@ -202,9 +202,11 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	blocked := &blockedRange{}
 	pr := &partialReader{
 		ctx:        ctx,
 		file:       f,
+		blocked:    blocked,
 		size:       file.Size,
 		fileOffset: fileOffset,
 		pieceSize:  props.PieceSize,
@@ -228,20 +230,21 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 			// backends (Deluge + Seedstream plugin) to deadline-fetch the
 			// awaited window plus readahead, re-hinting periodically while
 			// the wait lasts. Reads of pieces already on disk never hint.
-			return h.avail.WaitForRangeHint(ctx, hash, first, last, settings.WaitTimeout, prioRefreshInterval, func() {
-				h.prio.request(ctx, hash, first, last+readaheadPieces(props.PieceSize))
+			return h.avail.WaitForRangeHint(ctx, hash, first, last, settings.WaitTimeout, prioRefreshInterval, func() bool {
+				return h.prio.request(ctx, hash, first, last+readaheadPieces(props.PieceSize))
 			})
 		},
 	}
 	defer pr.Close()
 
 	// Heartbeat: while the partial-file serve runs, log the torrent's
-	// overall download progress and whether the head piece (backing byte 0)
-	// is on disk yet, so we can see whether the torrent is actually pulling
-	// bytes during a first-play stall or sitting idle. Stops when the serve
-	// returns (stopBeat) or the client disconnects (ctx).
+	// overall download progress and whether the pieces the reader is
+	// blocked on are on disk yet, so we can see whether the torrent is
+	// actually pulling bytes during a stall or feeding some other file.
+	// Stops when the serve returns (stopBeat) or the client disconnects
+	// (ctx).
 	stopBeat := make(chan struct{})
-	go h.heartbeat(ctx, stopBeat, tor.Hash, file.Index, headFirst, headLast)
+	go h.heartbeat(ctx, stopBeat, tor.Hash, file.Index, blocked)
 
 	serveStart := time.Now()
 	http.ServeContent(w, r, path.Base(file.Name), time.Time{}, pr)
@@ -287,8 +290,8 @@ func (h *Handler) waitStreamReady(ctx context.Context, hash string, headFirst, h
 		wg.Add(1)
 		go func(i, first, last int) {
 			defer wg.Done()
-			errs[i] = h.avail.WaitForRangeHint(ctx, hash, first, last, grace, prioRefreshInterval, func() {
-				h.prio.request(ctx, hash, first, last)
+			errs[i] = h.avail.WaitForRangeHint(ctx, hash, first, last, grace, prioRefreshInterval, func() bool {
+				return h.prio.request(ctx, hash, first, last)
 			})
 		}(i, rng[0], rng[1])
 	}
@@ -327,19 +330,28 @@ func (h *Handler) waitForFile(ctx context.Context, hash string, file downloader.
 	}
 }
 
-// headStallBeats is how many consecutive heartbeats (3s apart) the head
-// pieces may stay off disk before the piece picker is kicked.
+// headStallBeats is how many consecutive heartbeats the awaited pieces
+// may stay off disk before the piece picker is kicked.
 const headStallBeats = 3
+
+// heartbeatInterval is the beat period. A var so tests can shrink it.
+var heartbeatInterval = 3 * time.Second
 
 // heartbeat logs the torrent's download progress and a piece-bitfield
 // summary every few seconds until the serve finishes (stop closed) or
-// the client disconnects (ctx). If the head pieces the player is waiting
-// on stay off disk for headStallBeats consecutive beats while the rest
-// of the torrent downloads, it kicks libtorrent's piece picker
+// the client disconnects (ctx). If the pieces the reader is currently
+// blocked on stay off disk for headStallBeats consecutive beats while
+// the rest of the torrent downloads, it kicks libtorrent's piece picker
 // (sequential + first/last toggled off and back on) so the stuck piece
 // is re-requested from healthy peers.
-func (h *Handler) heartbeat(ctx context.Context, stop <-chan struct{}, hash string, fileIndex, headFirst, headLast int) {
-	ticker := time.NewTicker(3 * time.Second)
+//
+// The watched range comes from the reader rather than being fixed at
+// the file's head: past the first read the head is permanently on disk,
+// so a head-gated detector reports "healthy" through any mid-file
+// starvation — which is exactly when a season pack strands a viewer,
+// the played file frozen while the swarm feeds pieces elsewhere.
+func (h *Handler) heartbeat(ctx context.Context, stop <-chan struct{}, hash string, fileIndex int, blocked *blockedRange) {
+	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 	stalledBeats := 0
 	for {
@@ -361,16 +373,19 @@ func (h *Handler) heartbeat(ctx context.Context, stop <-chan struct{}, hash stri
 					}
 				}
 			}
-			sum, sumErr := h.avail.Summary(ctx, hash, headFirst, headLast)
-			haveHead := sumErr == nil && sum.HeadState == downloader.PieceHave
+			first, last, waiting := blocked.get()
+			sum, sumErr := h.avail.Summary(ctx, hash, first, last)
+			// Only a blocked reader can be starving: with the read
+			// flowing there is nothing to chase and nothing to kick.
+			stalled := waiting && (sumErr != nil || sum.HeadState != downloader.PieceHave)
 			h.logger.Debug("stream: download heartbeat",
 				"hash", hash, "progress", progress, "fileProgress", fileProgress,
-				"headPieces", [2]int{headFirst, headLast}, "headOnDisk", haveHead,
-				"headState", pieceStateName(sum.HeadState), "lastState", pieceStateName(sum.LastState),
+				"blockedOn", [2]int{first, last}, "readerBlocked", waiting, "stalled", stalled,
+				"blockedState", pieceStateName(sum.HeadState), "lastState", pieceStateName(sum.LastState),
 				"pieces", sum.TotalPieces, "have", sum.Have, "downloading", sum.Downloading,
 				"frontier", sum.FirstMissing, "summaryErr", sumErr)
 
-			if haveHead {
+			if !stalled {
 				stalledBeats = 0
 				continue
 			}
@@ -378,11 +393,11 @@ func (h *Handler) heartbeat(ctx context.Context, stop <-chan struct{}, hash stri
 			// A piece deadline is a far more surgical unstick than the
 			// picker reset below; the kick stays as the fallback for
 			// backends without piece prioritization.
-			h.prio.request(ctx, hash, headFirst, headLast)
+			h.prio.request(ctx, hash, first, last)
 			if stalledBeats >= headStallBeats && h.svc.KickStreamingPrioThrottled(ctx, hash) {
-				h.logger.Warn("stream: head stalled, kicking piece picker",
-					"hash", hash, "headPieces", [2]int{headFirst, headLast},
-					"headState", pieceStateName(sum.HeadState), "frontier", sum.FirstMissing,
+				h.logger.Warn("stream: reader stalled, kicking piece picker",
+					"hash", hash, "blockedOn", [2]int{first, last},
+					"blockedState", pieceStateName(sum.HeadState), "frontier", sum.FirstMissing,
 					"stalledBeats", stalledBeats)
 			}
 		}

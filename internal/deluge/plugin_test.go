@@ -16,9 +16,10 @@ import (
 // pluginAPI extends fakeAPI with scriptable RPC responses.
 type pluginAPI struct {
 	*fakeAPI
-	apiVersion     int
-	prioritizeErr  error
-	prioritizeArgs []any // args of the last prioritize_range call
+	apiVersion      int
+	prioritizeErr   error
+	prioritizeFalse bool  // reply False: the plugin declined the window
+	prioritizeArgs  []any // args of the last prioritize_range call
 }
 
 func (p *pluginAPI) RPC(_ context.Context, method string, args rencode.List, _ rencode.Dictionary) (rencode.List, error) {
@@ -30,6 +31,9 @@ func (p *pluginAPI) RPC(_ context.Context, method string, args rencode.List, _ r
 		p.prioritizeArgs = args.Values()
 		if p.prioritizeErr != nil {
 			return rencode.List{}, p.prioritizeErr
+		}
+		if p.prioritizeFalse {
+			return rencode.NewList(false), nil
 		}
 		return rencode.NewList(true), nil
 	}
@@ -80,6 +84,26 @@ func TestPrioritizePiecesWithoutPlugin(t *testing.T) {
 	}
 	if n := countRPC(p.fakeAPI, "prioritize_range"); n != 1 {
 		t.Errorf("prioritize_range called %d times, want 1", n)
+	}
+}
+
+func TestPrioritizePiecesDeclinedReportsHintDeclined(t *testing.T) {
+	// A declined window (typically "torrent not registered yet", the
+	// answer during the first moments after an add) must be reported as
+	// ErrHintDeclined, not as a delivered hint — the caller retries on
+	// its next poll instead of waiting out the re-hint interval. It is
+	// not ErrNotSupported: the backend is capable, this call just missed.
+	now := time.Unix(1_000_000, 0)
+	p := &pluginAPI{fakeAPI: newFakeAPI(), apiVersion: 1, prioritizeFalse: true}
+	p.plugins = []string{"Seedstream"}
+	c := newPluginClient(p, &now)
+
+	err := c.PrioritizePieces(context.Background(), "abc123", 10, 20)
+	if !errors.Is(err, downloader.ErrHintDeclined) {
+		t.Fatalf("err = %v, want ErrHintDeclined", err)
+	}
+	if errors.Is(err, downloader.ErrNotSupported) {
+		t.Error("a declined window must not read as an unsupported backend")
 	}
 }
 

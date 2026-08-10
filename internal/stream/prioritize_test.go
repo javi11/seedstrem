@@ -121,6 +121,38 @@ func TestPrioritizerBacksOffWhenUnsupported(t *testing.T) {
 	}
 }
 
+func TestPrioritizerRetriesDeclinedHint(t *testing.T) {
+	// A hint the plugin declined (torrent not registered yet — the usual
+	// answer in the first moments after an add) never reached libtorrent,
+	// so it must neither be reported as accepted nor occupy the dedup
+	// slot that would suppress the immediate retry.
+	spy := &prioSpy{err: downloader.ErrHintDeclined}
+	p := newPrioritizer(spy, nil)
+	now := time.Unix(1_000_000, 0)
+	p.now = func() time.Time { return now }
+	ctx := context.Background()
+
+	if p.request(ctx, "abc", 10, 20) {
+		t.Error("declined hint reported as accepted")
+	}
+	if p.request(ctx, "abc", 10, 20) { // identical range, well within prioMinInterval
+		t.Error("declined hint reported as accepted on retry")
+	}
+	if spy.count() != 2 {
+		t.Fatalf("calls = %d, want 2 (a declined hint is retried, not deduped)", spy.count())
+	}
+
+	// Once the plugin accepts, normal dedup resumes.
+	spy.err = nil
+	if !p.request(ctx, "abc", 10, 20) {
+		t.Error("accepted hint reported as declined")
+	}
+	p.request(ctx, "abc", 10, 20)
+	if spy.count() != 3 {
+		t.Fatalf("calls = %d, want 3 (dedup resumes after acceptance)", spy.count())
+	}
+}
+
 func TestPrioritizerSwallowsOtherErrors(t *testing.T) {
 	spy := &prioSpy{err: errors.New("transport down")}
 	p := newPrioritizer(spy, nil)

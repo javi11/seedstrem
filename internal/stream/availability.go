@@ -196,9 +196,17 @@ func (a *Availability) WaitForRange(ctx context.Context, hash string, first, las
 // range that is already available returns without hinting at all:
 // re-deadlining pieces already on disk floods the daemon's request
 // queue for nothing.
-func (a *Availability) WaitForRangeHint(ctx context.Context, hash string, first, last int, timeout, refreshEvery time.Duration, hint func()) error {
+//
+// hint reports whether the window actually reached the piece picker. A
+// hint that did not is retried on the very next poll rather than after
+// refreshEvery: the first hint of a play fires moments after the add,
+// which is exactly when the backend is most likely to decline it, and
+// spending a third of the playability grace waiting to re-ask is how a
+// stream that was seconds from playable ends up on the placeholder.
+func (a *Availability) WaitForRangeHint(ctx context.Context, hash string, first, last int, timeout, refreshEvery time.Duration, hint func() bool) error {
 	deadline := a.now().Add(timeout)
 	var lastHint time.Time
+	hinted := false
 	for {
 		have, err := a.HaveRange(ctx, hash, first, last)
 		if err != nil {
@@ -207,9 +215,9 @@ func (a *Availability) WaitForRangeHint(ctx context.Context, hash string, first,
 		if have {
 			return nil
 		}
-		if hint != nil && (lastHint.IsZero() || a.now().Sub(lastHint) >= refreshEvery) {
+		if hint != nil && (!hinted || a.now().Sub(lastHint) >= refreshEvery) {
 			lastHint = a.now()
-			hint()
+			hinted = hint()
 		}
 		if !a.now().Before(deadline) {
 			return ErrWaitTimeout

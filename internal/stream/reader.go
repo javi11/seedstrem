@@ -26,6 +26,7 @@ type partialReader struct {
 	pieceSize  int64
 	hash       string
 	waitFor    waitFunc
+	blocked    *blockedRange // published for the heartbeat's stall detector
 	chunkSize  int64
 	complete   bool // torrent already finished: skip piece checks
 
@@ -55,7 +56,13 @@ func (pr *partialReader) Read(p []byte) (int, error) {
 			pr.logger.Debug("stream: first read waiting for head pieces",
 				"hash", pr.hash, "offset", pr.offset, "pieces", [2]int{first, last})
 		}
-		if err := pr.waitFor(pr.ctx, pr.hash, first, last); err != nil {
+		// Publish what this read is waiting for, so a heartbeat can tell
+		// a starving reader from a healthy one no matter how far into
+		// the file playback has moved.
+		pr.blocked.enter(first, last)
+		err := pr.waitFor(pr.ctx, pr.hash, first, last)
+		pr.blocked.leave()
+		if err != nil {
 			if pr.logger != nil {
 				pr.logger.Debug("stream: piece wait failed",
 					"hash", pr.hash, "offset", pr.offset, "pieces", [2]int{first, last},

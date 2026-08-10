@@ -29,6 +29,7 @@ const (
 
 type streamEnv struct {
 	handler http.Handler
+	h       *Handler
 	fake    *fake.Server
 	avail   *Availability
 	content []byte
@@ -78,7 +79,7 @@ func newStreamEnv(t *testing.T, pieceStates []int, fileProgress float64) *stream
 	settings := func() Settings { return Settings{WaitTimeout: 5 * time.Second, ReadChunk: pieceSize} }
 	h := NewHandler(st, f, svc, resolver, avail, playsession.New(), settings, nil)
 
-	return &streamEnv{handler: h.Router(), fake: f, avail: avail, content: content, dir: dir}
+	return &streamEnv{handler: h.Router(), h: h, fake: f, avail: avail, content: content, dir: dir}
 }
 
 // fakeClock replaces avail's clock with a mutex-guarded fake (the
@@ -463,5 +464,73 @@ func TestServeSilencesPrioritizationWhenUnsupported(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("prioritizePieces called %d times, want 1 (backoff after ErrNotSupported)", count)
+	}
+}
+
+// TestHeartbeatWatchesRangeReaderIsBlockedOn covers the mid-playback
+// stall: once playback has moved past the file's head, the head pieces
+// are on disk forever, so a detector gated on them can never fire again
+// no matter how long the reader starves. The heartbeat must follow the
+// reader.
+func TestHeartbeatWatchesRangeReaderIsBlockedOn(t *testing.T) {
+	// Head piece (0) on disk, playback blocked at piece 2.
+	e := newStreamEnv(t, []int{2, 2, 0, 0}, 0.5)
+	e.fake.SetPrioritizeErr(nil) // capable backend, like Deluge + plugin
+
+	prev := heartbeatInterval
+	heartbeatInterval = time.Millisecond
+	t.Cleanup(func() { heartbeatInterval = prev })
+
+	blocked := &blockedRange{}
+	blocked.enter(2, 2)
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.h.heartbeat(context.Background(), stop, testHash, 0, blocked)
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if strings.Contains(strings.Join(e.fake.Calls(), "\n"), "prioritizePieces hash="+testHash+" first=2 last=2") {
+			break
+		}
+		select {
+		case <-deadline:
+			close(stop)
+			<-done
+			t.Fatalf("stall on pieces [2,2] never detected; calls: %v", e.fake.Calls())
+		case <-time.After(time.Millisecond):
+		}
+	}
+	close(stop)
+	<-done
+}
+
+// A reader that is not blocked is not stalled: no pieces to chase, so
+// the heartbeat must stay quiet rather than deadline-fetch at random.
+func TestHeartbeatQuietWhenReaderNotBlocked(t *testing.T) {
+	e := newStreamEnv(t, []int{2, 2, 0, 0}, 0.5)
+	e.fake.SetPrioritizeErr(nil)
+
+	prev := heartbeatInterval
+	heartbeatInterval = time.Millisecond
+	t.Cleanup(func() { heartbeatInterval = prev })
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.h.heartbeat(context.Background(), stop, testHash, 0, &blockedRange{})
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	<-done
+
+	for _, c := range e.fake.Calls() {
+		if strings.Contains(c, "prioritizePieces") {
+			t.Errorf("hinted while no reader was blocked: %q", c)
+		}
 	}
 }
