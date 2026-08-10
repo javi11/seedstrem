@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -256,6 +257,76 @@ func TestPlaceholderWaitHintsHeadAndTailTogether(t *testing.T) {
 	}
 	if !haveTail {
 		t.Errorf("tail range was never prioritized during the gate: %v", e.fake.Calls())
+	}
+}
+
+func TestPlaceholderGraceExtendsWhileAwaitedPiecesInFlight(t *testing.T) {
+	// Head and tail are already requested from a peer (downloading), they
+	// are just slower than the base grace — the normal case for a cold
+	// add, where the swarm has not formed yet when the gate starts
+	// counting. Sending the viewer to the placeholder while the pieces
+	// they need are in flight throws away a play that was about to work.
+	e := newStreamEnv(t, []int{1, 1, 1, 1}, 0)
+	start := time.Unix(1000, 0)
+	fakeClock(e, func() {
+		// Arrive past the base grace but inside the extended budget.
+		if e.avail.now().Sub(start) >= readyGrace+3*time.Second {
+			e.fake.Update(testHash, func(tor *fake.Torrent) {
+				for i := range tor.PieceStates {
+					tor.PieceStates[i] = 2
+				}
+			})
+		}
+	})
+
+	w := e.get(t, "")
+	if !bytes.Equal(w.Body.Bytes(), e.content) {
+		t.Errorf("body = %d bytes, want the real stream (placeholder served instead of waiting out in-flight pieces)", w.Body.Len())
+	}
+}
+
+func TestPlaceholderGraceNotExtendedWhenAwaitedPiecesMissing(t *testing.T) {
+	// Nothing is in flight: the swarm is not serving these pieces at all
+	// (super-seeding seeder). Waiting longer cannot help, so the grace
+	// must not be extended — the viewer sees the placeholder promptly.
+	e := newStreamEnv(t, []int{0, 0, 0, 0}, 0)
+	start := time.Unix(1000, 0)
+	fakeClock(e, nil)
+
+	w := e.get(t, "")
+	if want := placeholderFor(0); !bytes.Equal(w.Body.Bytes(), want) {
+		t.Fatalf("body = %d bytes, want the downloading placeholder", w.Body.Len())
+	}
+	if waited := e.avail.now().Sub(start); waited >= readyGrace+readyGraceExtension {
+		t.Errorf("gate waited %s on pieces nobody is sending, want ~%s", waited, readyGrace)
+	}
+}
+
+func TestPlaceholderLogsPieceDiagnosis(t *testing.T) {
+	// The gate is the one place that decides a play is not viable, and
+	// until now it logged only the piece numbers — leaving "the swarm is
+	// slow" and "the hints never reached the picker" indistinguishable
+	// after the fact. The decision must record the piece states it saw.
+	e := newStreamEnv(t, []int{0, 0, 0, 0}, 0)
+	var logs bytes.Buffer
+	e.h.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	fakeClock(e, nil)
+
+	e.get(t, "")
+
+	line := ""
+	for _, l := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(l, "serving downloading placeholder") {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("no placeholder decision logged: %s", logs.String())
+	}
+	for _, want := range []string{"headState=missing", "tailState=missing", "frontier=0", "have=0"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("placeholder log missing %q: %s", want, line)
+		}
 	}
 }
 
