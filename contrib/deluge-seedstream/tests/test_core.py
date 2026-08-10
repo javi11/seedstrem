@@ -96,22 +96,32 @@ from deluge_seedstream import core as seedstream_core  # noqa: E402
 
 
 class FakeStatus:
+    """Mirrors libtorrent's torrent_status.
+
+    num_pieces is the number of pieces *already downloaded* (not the
+    torrent's piece count); pieces is the full have-bitfield.
+    """
+
     def __init__(self, num_pieces, pieces):
         self.num_pieces = num_pieces
         self.pieces = pieces
 
 
 class FakeTorrentFile:
-    def __init__(self, piece_length):
+    def __init__(self, piece_length, num_pieces):
         self._piece_length = piece_length
+        self._num_pieces = num_pieces
 
     def piece_length(self):
         return self._piece_length
 
+    def num_pieces(self):
+        return self._num_pieces
+
 
 class FakeHandle:
     def __init__(self, num_pieces=100, piece_length=2 * 1024 * 1024):
-        self.num_pieces = num_pieces
+        self.total_pieces = num_pieces
         self._piece_length = piece_length
         self.pieces = [False] * num_pieces
         self.deadlines = {}       # piece -> deadline_ms
@@ -119,11 +129,17 @@ class FakeHandle:
         self.reset_calls = []     # pieces whose deadline was reset
         self._flags = 0
 
+    def have(self, *pieces):
+        """Mark pieces as downloaded."""
+        for piece in pieces:
+            self.pieces[piece] = True
+
     def status(self):
-        return FakeStatus(self.num_pieces, list(self.pieces))
+        downloaded = sum(1 for have in self.pieces if have)
+        return FakeStatus(downloaded, list(self.pieces))
 
     def torrent_file(self):
-        return FakeTorrentFile(self._piece_length)
+        return FakeTorrentFile(self._piece_length, self.total_pieces)
 
     def flags(self):
         return self._flags
@@ -173,7 +189,20 @@ class FakeCore:
         self.session = session
 
 
-def new_plugin(handle=None, session=None):
+class Clock:
+    """Monotonic clock stand-in the window TTL can be driven with."""
+
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, secs):
+        self.t += secs
+
+
+def new_plugin(handle=None, session=None, clock=None):
     import deluge.component as component
     tm = FakeTorrentManager()
     if handle is not None:
@@ -183,6 +212,8 @@ def new_plugin(handle=None, session=None):
     component._registry['TorrentManager'] = tm
     component._registry['Core'] = FakeCore(session)
     plugin = seedstream_core.Core('Seedstream')
+    if clock is not None:
+        plugin._now = clock
     plugin.enable()
     return plugin, session
 
@@ -210,19 +241,88 @@ class SessionTuningTests(unittest.TestCase):
         self.assertEqual(len(session.applied), 2)
 
 
+class PieceCountTests(unittest.TestCase):
+    """The torrent's piece count comes from the metadata, never from
+    torrent_status.num_pieces (which counts downloaded pieces)."""
+
+    def test_prioritizes_before_any_piece_is_downloaded(self):
+        handle = FakeHandle()  # 100 pieces, none downloaded
+        plugin, _ = new_plugin(handle)
+
+        self.assertTrue(plugin.prioritize_range('hash1', 0, 3, 500, 50))
+        self.assertEqual(handle.deadlines, {0: 500, 1: 550, 2: 600, 3: 650})
+
+    def test_range_is_not_clamped_to_the_downloaded_piece_count(self):
+        handle = FakeHandle()
+        handle.have(0, 1, 2, 3, 4)
+        plugin, _ = new_plugin(handle)
+
+        # The tail of the file must stay the tail: clamping to the five
+        # downloaded pieces would re-prioritize what is already on disk.
+        self.assertTrue(plugin.prioritize_range('hash1', 98, 99, 500, 50))
+        self.assertEqual(sorted(handle.deadlines), [98, 99])
+
+    def test_missing_metadata_is_reported_as_failure(self):
+        handle = FakeHandle(num_pieces=0)
+        handle.torrent_file = lambda: None
+        plugin, _ = new_plugin(handle)
+
+        self.assertFalse(plugin.prioritize_range('hash1', 0, 3))
+
+
 class WindowClearingTests(unittest.TestCase):
-    def test_new_window_clears_stale_pieces_of_previous_window(self):
+    def test_concurrent_windows_do_not_clear_each_other(self):
+        # The playability gate hints the file's head and tail at the same
+        # time, and the reader hints its readahead on top: none of them
+        # may drop the deadlines another one just set.
         handle = FakeHandle()
         plugin, _ = new_plugin(handle)
 
-        plugin.prioritize_range('hash1', 10, 20)
-        plugin.prioritize_range('hash1', 18, 30)
+        plugin.prioritize_range('hash1', 0, 0, 500, 50)
+        plugin.prioritize_range('hash1', 99, 99, 500, 50)
 
-        # Pieces 10-17 left the window: deadline dropped, priority normal.
+        self.assertEqual(handle.reset_calls, [])
+        self.assertEqual(sorted(handle.deadlines), [0, 99])
+
+    def test_window_is_cleared_once_it_expires(self):
+        clock = Clock()
+        handle = FakeHandle()
+        plugin, _ = new_plugin(handle, clock=clock)
+
+        plugin.prioritize_range('hash1', 10, 20)
+        clock.advance(seedstream_core.WINDOW_TTL_SECS + 1)
+        plugin.update()
+
+        for piece in range(10, 21):
+            self.assertIn(piece, handle.reset_calls, f'piece {piece} not reset')
+            self.assertEqual(handle.priorities.get(piece), seedstream_core.NORMAL_PRIORITY)
+
+    def test_refreshing_a_window_keeps_it_alive(self):
+        clock = Clock()
+        handle = FakeHandle()
+        plugin, _ = new_plugin(handle, clock=clock)
+
+        plugin.prioritize_range('hash1', 10, 20)
+        clock.advance(seedstream_core.WINDOW_TTL_SECS - 1)
+        plugin.prioritize_range('hash1', 10, 20)
+        clock.advance(seedstream_core.WINDOW_TTL_SECS - 1)
+        plugin.update()
+
+        self.assertEqual(handle.reset_calls, [])
+
+    def test_expiring_window_keeps_pieces_a_live_window_still_covers(self):
+        clock = Clock()
+        handle = FakeHandle()
+        plugin, _ = new_plugin(handle, clock=clock)
+
+        plugin.prioritize_range('hash1', 10, 20)
+        clock.advance(seedstream_core.WINDOW_TTL_SECS - 1)
+        plugin.prioritize_range('hash1', 18, 30)
+        clock.advance(2)
+        plugin.update()  # the 10-20 window expired, 18-30 has not
+
         for piece in range(10, 18):
             self.assertIn(piece, handle.reset_calls, f'piece {piece} not reset')
-            self.assertEqual(handle.priorities.get(piece), 4)
-        # Pieces still inside the new window must NOT have been reset.
         for piece in range(18, 31):
             self.assertNotIn(piece, handle.reset_calls, f'piece {piece} reset')
 
@@ -276,6 +376,7 @@ class WindowClearingTests(unittest.TestCase):
         self.assertEqual(handle.reset_calls, [])
 
     def test_stale_window_clearing_survives_per_piece_errors(self):
+        clock = Clock()
         handle = FakeHandle()
 
         original = handle.reset_piece_deadline
@@ -286,9 +387,10 @@ class WindowClearingTests(unittest.TestCase):
             original(piece)
 
         handle.reset_piece_deadline = flaky_reset
-        plugin, _ = new_plugin(handle)
+        plugin, _ = new_plugin(handle, clock=clock)
 
         plugin.prioritize_range('hash1', 10, 20)
+        clock.advance(seedstream_core.WINDOW_TTL_SECS + 1)
         plugin.prioritize_range('hash1', 40, 50)
 
         # Best-effort: pieces after the failing one are still cleared.

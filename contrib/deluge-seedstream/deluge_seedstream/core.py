@@ -17,6 +17,7 @@
 # timer; sequential download is restored FOCUS_SECS after the last one.
 
 import logging
+import time
 
 from twisted.internet import reactor
 
@@ -27,7 +28,7 @@ from deluge.plugins.pluginbase import CorePluginBase
 
 log = logging.getLogger(__name__)
 
-API_VERSION = 3
+API_VERSION = 4
 
 # Default deadline for the first prioritized piece, and the stagger added
 # per subsequent piece so they arrive roughly in playback order.
@@ -53,6 +54,18 @@ DEADLINE_MAX_PIECES = 8
 TOP_PRIORITY = 7
 NORMAL_PRIORITY = 4
 
+# How long a prioritized window survives without being re-requested.
+# Windows are tracked per range rather than one-per-torrent because
+# seedstrem hints several ranges of the same torrent at once — the
+# playability gate hints the file's head and its tail concurrently, and
+# the reader hints its readahead window on top. With a single slot each
+# call reset the deadlines the previous one had just set, so which range
+# actually stayed prioritized came down to call ordering. seedstrem
+# re-sends a hint every ~5s for as long as a read is blocked on it, so
+# two missed refreshes mean playback moved on and the window's deadlines
+# can be dropped.
+WINDOW_TTL_SECS = 12
+
 # libtorrent's default max_out_request_queue (500 blocks ≈ 8 MiB in
 # flight per peer) starves fast links: with the queue permanently full,
 # new requests — including the time-critical head/tail pieces this
@@ -64,12 +77,15 @@ MAX_OUT_REQUEST_QUEUE = 3000
 
 
 class Core(CorePluginBase):
+    # Injectable for tests.
+    _now = staticmethod(time.monotonic)
+
     def enable(self):
         # torrent_id -> twisted DelayedCall restoring sequential download.
         self._focus = {}
-        # torrent_id -> (first, last) window last passed to
-        # prioritize_range, so a new window can clear the deadlines and
-        # priorities the previous one left behind.
+        # torrent_id -> {(first, last): expiry}: every window currently
+        # prioritized for that torrent. Expired windows give up the
+        # deadlines and priorities they set (see WINDOW_TTL_SECS).
         self._windows = {}
         self._saved_queue = None
         self._tune_session()
@@ -110,7 +126,8 @@ class Core(CorePluginBase):
     def update(self):
         # Deluge calls this ~once a second: prune window bookkeeping for
         # torrents that were removed without a final clear_range, so the
-        # per-torrent dicts don't grow for the daemon's lifetime.
+        # per-torrent dicts don't grow for the daemon's lifetime, and
+        # release the windows nobody is refreshing any more.
         try:
             torrents = component.get('TorrentManager').torrents
         except Exception:
@@ -118,6 +135,8 @@ class Core(CorePluginBase):
         for torrent_id in list(self._windows):
             if torrent_id not in torrents:
                 del self._windows[torrent_id]
+                continue
+            self._expire_windows(torrent_id)
 
     def _handle(self, torrent_id):
         """Return the raw libtorrent handle for a torrent, or None."""
@@ -201,17 +220,39 @@ class Core(CorePluginBase):
                 return i
         return None
 
-    def _clear_stale_window(self, torrent_id, handle, first, last):
-        """Reset deadline/priority on old-window pieces outside [first, last]."""
-        prev = self._windows.get(torrent_id)
-        if prev is None:
-            return
-        for piece in range(prev[0], prev[1] + 1):
-            if first <= piece <= last:
-                continue
-            # Best-effort per piece: the calls are independent, and the
-            # window entry is overwritten right after this returns, so a
-            # piece skipped here would keep its stale deadline forever.
+    @staticmethod
+    def _total_pieces(handle, status):
+        """The torrent's piece count, or 0 without metadata.
+
+        NOT torrent_status.num_pieces: libtorrent counts the pieces
+        already *downloaded* there. Reading it as the total made every
+        hint a no-op on a fresh torrent (0 downloaded pieces read as "no
+        metadata yet") and clamped later ones into the downloaded
+        prefix, so the file's tail was never actually prioritized.
+        """
+        try:
+            torrent_file = handle.torrent_file()
+            if torrent_file is not None:
+                total = int(torrent_file.num_pieces())
+                if total > 0:
+                    return total
+        except Exception:
+            pass
+        try:
+            return len(status.pieces or ())
+        except Exception:
+            return 0
+
+    def _reset_pieces(self, torrent_id, handle, pieces):
+        """Drop deadline and top priority on pieces, best-effort.
+
+        Per piece, because the calls are independent and the bookkeeping
+        that would let us retry is dropped by the caller: a piece skipped
+        on an error would keep its stale deadline forever. Reports
+        whether every piece was reset.
+        """
+        ok = True
+        for piece in pieces:
             try:
                 handle.reset_piece_deadline(piece)
                 handle.piece_priority(piece, NORMAL_PRIORITY)
@@ -221,6 +262,39 @@ class Core(CorePluginBase):
                     piece,
                     torrent_id,
                 )
+                ok = False
+        return ok
+
+    def _expire_windows(self, torrent_id, handle=None):
+        """Release windows past their TTL.
+
+        Only pieces no surviving window still covers are reset: expired
+        deadlines libtorrent could not meet keep re-requesting blocks
+        redundantly forever, eating outstanding-request-queue slots the
+        live windows need.
+        """
+        windows = self._windows.get(torrent_id)
+        if not windows:
+            return
+        now = self._now()
+        expired = [rng for rng, expiry in windows.items() if expiry <= now]
+        if not expired:
+            return
+        for rng in expired:
+            del windows[rng]
+        if not windows:
+            del self._windows[torrent_id]
+
+        if handle is None:
+            handle = self._handle(torrent_id)
+        if handle is None:
+            return
+        stale = set()
+        for first, last in expired:
+            stale.update(range(first, last + 1))
+        for first, last in windows:
+            stale.difference_update(range(first, last + 1))
+        self._reset_pieces(torrent_id, handle, sorted(stale))
 
     @export
     def api_version(self):
@@ -244,13 +318,13 @@ class Core(CorePluginBase):
             log.debug('seedstream.prioritize_range: unknown torrent %s', torrent_id)
             return False
         status = handle.status()
-        num_pieces = int(getattr(status, 'num_pieces', 0) or 0)
-        if num_pieces <= 0:
+        total_pieces = self._total_pieces(handle, status)
+        if total_pieces <= 0:
             log.debug('seedstream.prioritize_range: %s has no metadata yet', torrent_id)
             return False
 
-        first = max(0, min(int(first), num_pieces - 1))
-        last = max(first, min(int(last), num_pieces - 1))
+        first = max(0, min(int(first), total_pieces - 1))
+        last = max(first, min(int(last), total_pieces - 1))
         deadline_ms = max(0, int(deadline_ms))
         step_ms = max(0, int(step_ms))
 
@@ -258,12 +332,13 @@ class Core(CorePluginBase):
         if frontier is not None and first - frontier > FOCUS_MARGIN_PIECES:
             self._focus_window(torrent_id, handle)
 
-        # Clear what the previous window set on pieces that left the
-        # window: deadlines libtorrent could not meet keep re-requesting
-        # blocks redundantly forever, eating outstanding-request-queue
-        # slots the *current* window needs.
-        self._clear_stale_window(torrent_id, handle, first, last)
-        self._windows[torrent_id] = (first, last)
+        # Release the windows nobody refreshed in a while, then (re-)arm
+        # this one. Concurrent windows of the same torrent coexist: this
+        # call must never drop what another live window set.
+        self._expire_windows(torrent_id, handle)
+        self._windows.setdefault(torrent_id, {})[(first, last)] = (
+            self._now() + WINDOW_TTL_SECS
+        )
 
         deadline_pieces = self._deadline_pieces(handle)
         for i, piece in enumerate(range(first, last + 1)):
@@ -294,36 +369,24 @@ class Core(CorePluginBase):
     def clear_range(self, torrent_id, first, last):
         """Drop the deadlines previously set on pieces [first, last].
 
-        The tracked prioritize_range window is cleared as well even when
-        it doesn't match the caller's range (stale or racing RPC call):
-        its bookkeeping is dropped here, so this is the last chance to
-        reset those deadlines.
+        Every tracked prioritize_range window of the torrent is cleared
+        as well, even when none matches the caller's range (stale or
+        racing RPC call): their bookkeeping is dropped here, so this is
+        the last chance to reset those deadlines.
         """
         self._unfocus(torrent_id)
-        window = self._windows.pop(torrent_id, None)
+        windows = self._windows.pop(torrent_id, {})
         handle = self._handle(torrent_id)
         if handle is None:
             return False
         status = handle.status()
-        num_pieces = int(getattr(status, 'num_pieces', 0) or 0)
-        if num_pieces <= 0:
+        total_pieces = self._total_pieces(handle, status)
+        if total_pieces <= 0:
             return False
 
-        first = max(0, min(int(first), num_pieces - 1))
-        last = max(first, min(int(last), num_pieces - 1))
+        first = max(0, min(int(first), total_pieces - 1))
+        last = max(first, min(int(last), total_pieces - 1))
         pieces = set(range(first, last + 1))
-        if window is not None:
-            pieces.update(range(window[0], window[1] + 1))
-        ok = True
-        for piece in sorted(pieces):
-            try:
-                handle.reset_piece_deadline(piece)
-                handle.piece_priority(piece, NORMAL_PRIORITY)
-            except Exception:
-                log.exception(
-                    'seedstream.clear_range: reset_piece_deadline(%d) failed for %s',
-                    piece,
-                    torrent_id,
-                )
-                ok = False
-        return ok
+        for window_first, window_last in windows:
+            pieces.update(range(window_first, window_last + 1))
+        return self._reset_pieces(torrent_id, handle, sorted(pieces))

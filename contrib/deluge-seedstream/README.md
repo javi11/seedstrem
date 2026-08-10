@@ -15,7 +15,7 @@ seek prioritization is skipped.
 
 | Method | Purpose |
 | --- | --- |
-| `seedstream.api_version()` | returns `3`; used for detection |
+| `seedstream.api_version()` | returns `4`; used for detection |
 | `seedstream.prioritize_range(torrent_id, first, last, deadline_ms=3000, step_ms=50)` | staggered `set_piece_deadline` on the first ~8 MiB of `[first, last]`, top piece priority on the rest (clamped) |
 | `seedstream.clear_range(torrent_id, first, last)` | `reset_piece_deadline` on the range, ends focus mode |
 
@@ -42,10 +42,32 @@ starves fast links: with the queue permanently full, new requests —
 including the deadline'd head/tail pieces — cannot be issued, and the
 daemon log floods with `outstanding_request_limit_reached` warnings.
 
-Each `prioritize_range` call also remembers its window per torrent and,
-on the next call, resets the deadline/priority of pieces that left the
-window, so unmet deadlines from superseded windows stop re-requesting
-blocks redundantly and eating queue slots.
+Each `prioritize_range` call also remembers its window, so the deadlines
+and priorities it set can be released again — see below for how those
+windows are tracked.
+
+### Concurrent windows & correct piece count (api_version 4)
+
+Windows are tracked **per range**, not one per torrent. seedstrem hints
+several ranges of the same torrent at once: the playability gate hints
+the file's head and its tail concurrently, and the reader hints its
+readahead window on top. With a single slot per torrent, each call reset
+the deadlines the previous one had just set, so which range actually
+stayed prioritized came down to call ordering — the head piece a player
+needs first would routinely lose its deadline moments after getting one.
+
+Windows now coexist and expire 12s after their last refresh (seedstrem
+re-hints every ~5s while a read is blocked). Expiry resets only the
+pieces no live window still covers, so unmet deadlines stop
+re-requesting blocks redundantly and eating queue slots.
+
+The torrent's piece count is also read from the metadata
+(`torrent_file().num_pieces()`) rather than from
+`torrent_status.num_pieces`, which counts pieces *already downloaded*.
+Reading it as the total made every hint a no-op on a fresh torrent
+(0 downloaded pieces looked like "no metadata yet") and clamped later
+ranges into the downloaded prefix, so the file's tail was never actually
+prioritized.
 
 ## Tests
 
