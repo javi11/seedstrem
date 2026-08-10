@@ -178,9 +178,20 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.waitStreamReady(ctx, tor.Hash, headFirst, headLast, tailFirst, tailLast, grace) {
 		servedPlaceholder = true
+		// The piece states behind the decision, not just the piece
+		// numbers: "downloading" means the swarm was serving them and the
+		// grace was too short, "missing" means the window never reached
+		// the picker (declined hint, super-seeding peer, no peers at all).
+		// Without them a placeholder in the log is undiagnosable after
+		// the fact — the heartbeat that would show it only starts once
+		// this gate passes.
+		head, tail, sum, sumErr := h.awaitedStates(ctx, tor.Hash, headFirst, headLast, tailFirst, tailLast)
 		h.logger.Info("stream: head/tail pieces not available, serving downloading placeholder",
 			"hash", tor.Hash, "progress", file.Progress,
-			"headPieces", [2]int{headFirst, headLast}, "tailPieces", [2]int{tailFirst, tailLast})
+			"headPieces", [2]int{headFirst, headLast}, "tailPieces", [2]int{tailFirst, tailLast},
+			"headState", pieceStateName(head), "tailState", pieceStateName(tail),
+			"pieces", sum.TotalPieces, "have", sum.Have, "downloading", sum.Downloading,
+			"frontier", sum.FirstMissing, "summaryErr", sumErr)
 		servePlaceholder(w, r, file.Progress)
 		return
 	}
@@ -265,9 +276,26 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 // request timeout turns the wait into a hard error.
 const readyGrace = 12 * time.Second
 
+// readyGraceExtension / readyGraceMax extend the gate while the awaited
+// pieces are already in flight.
+const (
+	readyGraceExtension = 6 * time.Second
+	readyGraceMax       = 30 * time.Second
+)
+
 // waitStreamReady reports whether the file's head and tail pieces are
 // on disk, waiting up to grace for them to arrive (grace 0 = check the
 // current state only).
+//
+// When grace runs out the wait is extended in readyGraceExtension slices
+// — up to readyGraceMax in total — for as long as every awaited range is
+// at least in flight. A piece libtorrent has already requested from a
+// peer is one the swarm is willing to serve, so the only thing between
+// the viewer and playback is time; bailing out then trades a play that
+// was about to work for a "come back later" clip. That is the common
+// shape of a cold add, where the gate starts counting before a swarm
+// exists. A range that is still plain missing gets no extension: nobody
+// is sending it, and waiting longer cannot change that.
 func (h *Handler) waitStreamReady(ctx context.Context, hash string, headFirst, headLast, tailFirst, tailLast int, grace time.Duration) bool {
 	if grace <= 0 {
 		haveHead, _ := h.avail.HaveRange(ctx, hash, headFirst, headLast)
@@ -277,6 +305,40 @@ func (h *Handler) waitStreamReady(ctx context.Context, hash string, headFirst, h
 		haveTail, _ := h.avail.HaveRange(ctx, hash, tailFirst, tailLast)
 		return haveTail
 	}
+	spent := time.Duration(0)
+	for slice := grace; ; slice = readyGraceExtension {
+		if h.waitHeadAndTail(ctx, hash, headFirst, headLast, tailFirst, tailLast, slice) {
+			return true
+		}
+		spent += slice
+		if spent+readyGraceExtension > readyGraceMax {
+			return false
+		}
+		head, tail, _, err := h.awaitedStates(ctx, hash, headFirst, headLast, tailFirst, tailLast)
+		if err != nil || head == downloader.PieceMissing || tail == downloader.PieceMissing {
+			return false
+		}
+		h.logger.Debug("stream: extending playability grace, awaited pieces in flight",
+			"hash", hash, "waited", spent, "headState", pieceStateName(head), "tailState", pieceStateName(tail))
+	}
+}
+
+// awaitedStates reports the worst piece state across the head range and
+// across the tail range, plus a bitfield summary of the whole torrent.
+func (h *Handler) awaitedStates(ctx context.Context, hash string, headFirst, headLast, tailFirst, tailLast int) (head, tail downloader.PieceState, sum Summary, err error) {
+	sum, err = h.avail.Summary(ctx, hash, headFirst, headLast)
+	if err != nil {
+		return downloader.PieceMissing, downloader.PieceMissing, Summary{}, err
+	}
+	tailSum, err := h.avail.Summary(ctx, hash, tailFirst, tailLast)
+	if err != nil {
+		return downloader.PieceMissing, downloader.PieceMissing, Summary{}, err
+	}
+	return sum.HeadState, tailSum.HeadState, sum, nil
+}
+
+// waitHeadAndTail waits up to grace for both ranges to land on disk.
+func (h *Handler) waitHeadAndTail(ctx context.Context, hash string, headFirst, headLast, tailFirst, tailLast int, grace time.Duration) bool {
 	// Deadline-fetch the head and tail on capable backends when they are
 	// missing: first/last-piece priority covers them eventually, but an
 	// explicit deadline makes the MKV cues arrive deterministically fast.
