@@ -130,10 +130,13 @@ func (c *client) PrioritizePieces(ctx context.Context, hash string, first, last 
 		if err == nil && !prioritizeAccepted(res) {
 			// The daemon answered, but the plugin declined the window
 			// (unknown torrent, metadata not in yet, per-piece failure).
-			// Not an error — the stream layer re-hints while it waits —
-			// but silence here once hid a whole class of no-op hints.
+			// Reported as ErrHintDeclined rather than success so the
+			// stream layer retries on its next poll: treating it as
+			// delivered cost a declined first hint the full re-hint
+			// interval, which is most of a play's playability grace.
 			slog.Default().Debug("deluge: plugin declined piece prioritization",
 				"hash", hash, "first", first, "last", last)
+			return fmt.Errorf("deluge prioritize pieces %s: %w", hash, downloader.ErrHintDeclined)
 		}
 		if err != nil {
 			if errors.As(err, new(delugerpc.RPCError)) {

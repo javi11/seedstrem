@@ -22,6 +22,16 @@ var ErrTorrentNotFound = errors.New("torrent not found in download client")
 // interface assertion could not express across hot-swaps.
 var ErrNotSupported = errors.New("operation not supported by download client")
 
+// ErrHintDeclined is returned by PrioritizePieces when the backend
+// understood the call but did not apply the window (torrent not
+// registered yet, metadata still incoming, per-piece failure). Unlike
+// ErrNotSupported it says nothing about the backend's capabilities: the
+// same call moments later usually succeeds, so callers must retry
+// promptly rather than back off. The distinction matters most right
+// after an add, when the first hint of a play — the one the playability
+// grace depends on — is the one most likely to be declined.
+var ErrHintDeclined = errors.New("download client declined piece prioritization")
+
 // Client is the download-client surface used by seedstrem.
 type Client interface {
 	AddMagnet(ctx context.Context, magnet string, opts AddOptions) error

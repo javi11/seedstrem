@@ -64,10 +64,14 @@ func newPrioritizer(dc downloader.Client, logger *slog.Logger) *prioritizer {
 }
 
 // request asks the backend to fetch pieces [first, last] of hash ahead
-// of the sequential order, deduplicated and rate-limited per range.
-func (p *prioritizer) request(ctx context.Context, hash string, first, last int) {
+// of the sequential order, deduplicated and rate-limited per range. It
+// reports whether the hint was actually delivered: a false return means
+// the window never reached the piece picker (declined, unsupported, RPC
+// failure, or suppressed by dedup) and the caller should try again
+// promptly rather than assume the pieces are now on their way.
+func (p *prioritizer) request(ctx context.Context, hash string, first, last int) bool {
 	if p == nil || first > last {
-		return
+		return false
 	}
 	now := p.now()
 	key := prioKey{hash: hash, first: first, last: last}
@@ -75,11 +79,11 @@ func (p *prioritizer) request(ctx context.Context, hash string, first, last int)
 	p.mu.Lock()
 	if now.Before(p.unsupportedUntil) {
 		p.mu.Unlock()
-		return
+		return false
 	}
 	if at, ok := p.last[key]; ok && now.Sub(at) < prioMinInterval {
 		p.mu.Unlock()
-		return
+		return false
 	}
 	if len(p.last) >= prioMaxEntries {
 		for k, at := range p.last {
@@ -95,6 +99,15 @@ func (p *prioritizer) request(ctx context.Context, hash string, first, last int)
 	switch {
 	case err == nil:
 		p.logger.Debug("stream: prioritized pieces", "hash", hash, "first", first, "last", last)
+		return true
+	case errors.Is(err, downloader.ErrHintDeclined):
+		// Never reached the picker, and the backend is perfectly capable
+		// — so drop the dedup entry too, or the immediate retry this
+		// return asks for would be suppressed as a duplicate.
+		p.mu.Lock()
+		delete(p.last, key)
+		p.mu.Unlock()
+		p.logger.Debug("stream: piece prioritization declined", "hash", hash, "first", first, "last", last)
 	case errors.Is(err, downloader.ErrNotSupported):
 		p.mu.Lock()
 		p.unsupportedUntil = now.Add(prioUnsupportedBackoff)
@@ -102,6 +115,7 @@ func (p *prioritizer) request(ctx context.Context, hash string, first, last int)
 	default:
 		p.logger.Debug("stream: prioritize pieces failed", "hash", hash, "first", first, "last", last, "error", err)
 	}
+	return false
 }
 
 // readaheadPieces is how many pieces past the requested range get

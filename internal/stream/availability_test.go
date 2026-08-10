@@ -111,7 +111,7 @@ func TestWaitForRangeHintRehintsWhileWaiting(t *testing.T) {
 	}
 
 	hints := 0
-	err := a.WaitForRangeHint(context.Background(), testHash, 0, 0, 12*time.Second, 5*time.Second, func() { hints++ })
+	err := a.WaitForRangeHint(context.Background(), testHash, 0, 0, 12*time.Second, 5*time.Second, func() bool { hints++; return true })
 	if !errors.Is(err, ErrWaitTimeout) {
 		t.Fatalf("want ErrWaitTimeout, got %v", err)
 	}
@@ -122,12 +122,52 @@ func TestWaitForRangeHintRehintsWhileWaiting(t *testing.T) {
 	}
 }
 
+func TestWaitForRangeHintRetriesDeclinedHintOnNextPoll(t *testing.T) {
+	// The first hint of a play lands ~70ms after the torrent was added,
+	// when the plugin still declines it. Waiting the full refresh
+	// interval to try again burns a third of the playability grace on a
+	// hint that was never delivered, so a declined hint re-fires on the
+	// next poll instead.
+	for _, tt := range []struct {
+		name      string
+		accepted  bool
+		wantHints int
+	}{
+		{"accepted hint refreshes on interval", true, 1},
+		{"declined hint retries every poll", false, 8},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a, f := newAvail(t)
+			f.Put(&fake.Torrent{Hash: testHash, PieceStates: []int{0}})
+
+			now := time.Unix(1000, 0)
+			a.now = func() time.Time { return now }
+			a.sleep = func(_ context.Context, d time.Duration) error {
+				now = now.Add(d)
+				return nil
+			}
+
+			hints := 0
+			// 2s window, 5s refresh: an accepted hint fires once, so any
+			// extra hint is the declined-retry path and nothing else.
+			err := a.WaitForRangeHint(context.Background(), testHash, 0, 0, 2*time.Second, 5*time.Second,
+				func() bool { hints++; return tt.accepted })
+			if !errors.Is(err, ErrWaitTimeout) {
+				t.Fatalf("want ErrWaitTimeout, got %v", err)
+			}
+			if hints != tt.wantHints {
+				t.Errorf("hints = %d, want %d", hints, tt.wantHints)
+			}
+		})
+	}
+}
+
 func TestWaitForRangeHintSkipsAvailableRange(t *testing.T) {
 	a, f := newAvail(t)
 	f.Put(&fake.Torrent{Hash: testHash, PieceStates: []int{2, 2}})
 
 	hints := 0
-	if err := a.WaitForRangeHint(context.Background(), testHash, 0, 1, time.Second, 5*time.Second, func() { hints++ }); err != nil {
+	if err := a.WaitForRangeHint(context.Background(), testHash, 0, 1, time.Second, 5*time.Second, func() bool { hints++; return true }); err != nil {
 		t.Fatalf("WaitForRangeHint: %v", err)
 	}
 	if hints != 0 {
