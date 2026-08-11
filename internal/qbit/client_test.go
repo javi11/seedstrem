@@ -38,6 +38,7 @@ func TestConvertTorrent(t *testing.T) {
 		State:       qbt.TorrentState("downloading"),
 		Progress:    0.42,
 		Size:        1000,
+		Completed:   420,
 		DlSpeed:     500,
 		NumSeeds:    7,
 		SavePath:    "/downloads",
@@ -54,6 +55,9 @@ func TestConvertTorrent(t *testing.T) {
 	}
 	if info.SeedingTime != time.Hour {
 		t.Errorf("seeding time = %v, want 1h (converted from seconds)", info.SeedingTime)
+	}
+	if info.Completed != 420 {
+		t.Errorf("completed = %d, want 420", info.Completed)
 	}
 }
 

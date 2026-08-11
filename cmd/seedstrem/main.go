@@ -258,12 +258,7 @@ func rssCategories(c config.Config) []int {
 // as the path whose disk usage gates new streams. Empty when no mapping is
 // configured, which disables the gate.
 func firstLocalMapping(mappings []config.Mapping) string {
-	for _, m := range mappings {
-		if m.Local != "" {
-			return m.Local
-		}
-	}
-	return ""
+	return config.Paths{Mappings: mappings}.FirstLocal()
 }
 
 func defaultConfigPath() string {

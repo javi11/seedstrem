@@ -52,6 +52,14 @@ export function Dashboard() {
   // Older backends only report the qbittorrent key.
   const downloaderStatus = status.downloader ?? status.qbittorrent;
   const downloaderName = status.downloader?.type === "deluge" ? "Deluge" : "qBittorrent";
+  const trackedTorrents = Object.values(status.torrents ?? {}).reduce((a, b) => a + b, 0);
+  const freeSpace = status.disk?.free;
+  const freeSpaceHint =
+    freeSpace === undefined
+      ? "unavailable"
+      : status.disk?.free_source === "local"
+        ? "on host"
+        : `on ${downloaderName}`;
 
   return (
     <div className="flex flex-col gap-6">
@@ -94,6 +102,18 @@ export function Dashboard() {
           value={formatBytes(status.total_uploaded ?? 0)}
           hint="total seeded"
           accent="success"
+        />
+        <StatCard
+          label="Used"
+          value={formatBytes(status.disk?.used ?? 0)}
+          hint={`across ${trackedTorrents} torrent${trackedTorrents === 1 ? "" : "s"}`}
+          accent="default"
+        />
+        <StatCard
+          label="Free space"
+          value={freeSpace === undefined ? "—" : formatBytes(freeSpace)}
+          hint={freeSpaceHint}
+          accent="default"
         />
       </div>
 

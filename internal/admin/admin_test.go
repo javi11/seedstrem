@@ -23,6 +23,7 @@ const adminPassword = "test-admin-pw"
 
 type env struct {
 	handler   http.Handler
+	h         *Handler
 	config    *config.Manager
 	fake      *fake.Server
 	swappable *downloader.Swappable
@@ -55,7 +56,7 @@ func newEnv(t *testing.T) *env {
 		return torrents.Settings{DeleteFilesOnRemove: c.Storage.DeleteFilesOnRemove}
 	}, nil)
 	h := New(cm, st, dc, svc, newClient, "test", nil)
-	return &env{handler: h.Router(), config: cm, fake: f, swappable: dc, store: st, t: t}
+	return &env{handler: h.Router(), h: h, config: cm, fake: f, swappable: dc, store: st, t: t}
 }
 
 func (e *env) login(t *testing.T) {

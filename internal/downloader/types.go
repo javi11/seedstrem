@@ -9,11 +9,15 @@ type TorrentInfo struct {
 	State    string  // normalized to the canonical StateXxx constants below
 	Progress float64 // 0..1
 	Size     int64   // wanted (selected) size
-	DlSpeed  int64
-	NumSeeds int64
-	Uploaded int64   // total bytes uploaded (for ratio tracking)
-	Ratio    float64 // upload/download ratio reported by the client
-	SavePath string
+	// Completed is the bytes of wanted data already on disk. Together
+	// across torrents it is seedstrem's on-disk footprint, which the
+	// admin status endpoint reports.
+	Completed int64
+	DlSpeed   int64
+	NumSeeds  int64
+	Uploaded  int64   // total bytes uploaded (for ratio tracking)
+	Ratio     float64 // upload/download ratio reported by the client
+	SavePath  string
 	// ContentPath is the client's current on-disk location of the
 	// content: the temp/incomplete folder while downloading, the final
 	// path once complete. For single-file torrents it is the file itself.

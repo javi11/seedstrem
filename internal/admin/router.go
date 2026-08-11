@@ -17,6 +17,7 @@ import (
 
 	"github.com/javib/seedstrem/internal/config"
 	"github.com/javib/seedstrem/internal/deluge"
+	"github.com/javib/seedstrem/internal/diskusage"
 	"github.com/javib/seedstrem/internal/downloader"
 	"github.com/javib/seedstrem/internal/prowlarr"
 	"github.com/javib/seedstrem/internal/qbit"
@@ -35,6 +36,11 @@ type Handler struct {
 	newClient func(config.Config) downloader.Client
 	logger    *slog.Logger
 	version   string
+
+	// diskUsage reports (used, total) bytes for a local path. Injectable
+	// for tests; defaults to diskusage.Stat. Used only as the fallback
+	// when the download client cannot report its own free space.
+	diskUsage func(path string) (used, total int64, err error)
 }
 
 // New creates the admin handler. dc must be the swappable client so
@@ -45,7 +51,7 @@ func New(cm *config.Manager, st *store.Store, dc *downloader.Swappable, svc *tor
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{config: cm, store: st, dc: dc, svc: svc, newClient: newClient, logger: logger, version: version}
+	return &Handler{config: cm, store: st, dc: dc, svc: svc, newClient: newClient, logger: logger, version: version, diskUsage: diskusage.Stat}
 }
 
 // Router returns the router to mount at /api.
@@ -512,6 +518,39 @@ func effectiveType(cfg config.Config) string {
 	return config.DownloaderQBittorrent
 }
 
+// diskInfo reports seedstrem's on-disk footprint plus the space still
+// available for downloads. free comes from the download client when it can
+// answer — that is the filesystem the client actually writes to, which is
+// not necessarily one seedstrem can stat — and falls back to a local
+// statfs on the configured download root otherwise. When neither source
+// answers, free is omitted rather than guessed; used is still reported,
+// since it comes from data already in hand.
+//
+// used + free is deliberately not a disk total: used is seedstrem's
+// footprint, free is the whole filesystem's headroom. Neither backend can
+// report a total, so no percentage is possible.
+func (h *Handler) diskInfo(ctx context.Context, cfg config.Config, used int64) map[string]any {
+	disk := map[string]any{"used": used}
+
+	if free, err := h.dc.FreeSpace(ctx); err == nil {
+		disk["free"] = free
+		disk["free_source"] = "client"
+		return disk
+	}
+
+	path := cfg.Paths.FirstLocal()
+	if path == "" {
+		return disk
+	}
+	localUsed, total, err := h.diskUsage(path)
+	if err != nil {
+		return disk
+	}
+	disk["free"] = total - localUsed
+	disk["free_source"] = "local"
+	return disk
+}
+
 func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	cfg := h.config.Get()
 
@@ -530,7 +569,7 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	}
 
 	counts := map[string]int{}
-	var totalUploaded int64
+	var totalUploaded, diskUsed int64
 	if stored, err := h.store.AllTorrents(ctx); err == nil {
 		live := h.liveByHash(ctx, stored)
 		for _, tor := range stored {
@@ -538,6 +577,7 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 			status := torrents.DeriveStatus(tor.Phase, info.State, tor.Error != "" || !inQbit, info.Size > 0, info.Progress)
 			counts[status]++
 			totalUploaded += info.Uploaded
+			diskUsed += info.Completed
 		}
 	}
 
@@ -551,6 +591,7 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 		"downloader":     dlStatus,
 		"torrents":       counts,
 		"total_uploaded": totalUploaded,
+		"disk":           h.diskInfo(ctx, cfg, diskUsed),
 	})
 }
 

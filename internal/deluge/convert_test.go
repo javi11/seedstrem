@@ -48,6 +48,7 @@ func TestConvertTorrent(t *testing.T) {
 		DownloadLocation:    "/downloads/current",
 		SeedingTime:         3600,
 		TotalSize:           1000,
+		TotalDone:           420,
 	}
 	info := convertTorrent("abc123", ts)
 	if info.Hash != "abc123" {
@@ -70,6 +71,9 @@ func TestConvertTorrent(t *testing.T) {
 	}
 	if info.SeedingTime.Hours() != 1 {
 		t.Errorf("seeding time = %v, want 1h", info.SeedingTime)
+	}
+	if info.Completed != 420 {
+		t.Errorf("completed = %d, want 420 (from TotalDone)", info.Completed)
 	}
 }
 

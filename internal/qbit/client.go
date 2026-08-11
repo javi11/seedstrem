@@ -101,6 +101,7 @@ func convertTorrent(t qbt.Torrent) downloader.TorrentInfo {
 		State:       normalizeState(string(t.State)),
 		Progress:    t.Progress,
 		Size:        t.Size,
+		Completed:   t.Completed,
 		DlSpeed:     t.DlSpeed,
 		NumSeeds:    t.NumSeeds,
 		Uploaded:    t.Uploaded,
@@ -291,6 +292,17 @@ func (c *client) IncompleteFileHints(ctx context.Context) (downloader.Incomplete
 // per-piece priority primitive (qBittorrent#13612).
 func (c *client) PrioritizePieces(context.Context, string, int, int) error {
 	return downloader.ErrNotSupported
+}
+
+// FreeSpace reads qBittorrent's own free-space figure out of the sync
+// endpoint's server state. rid 0 asks for a full update, which is the
+// only variant that reliably carries server_state.
+func (c *client) FreeSpace(ctx context.Context) (int64, error) {
+	main, err := c.qb.SyncMainDataCtx(ctx, 0)
+	if err != nil {
+		return 0, fmt.Errorf("qbit sync maindata: %w", err)
+	}
+	return main.ServerState.FreeSpaceOnDisk, nil
 }
 
 func (c *client) Version(ctx context.Context) (string, error) {

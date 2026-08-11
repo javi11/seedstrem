@@ -41,16 +41,17 @@ func normalizeState(raw string) string {
 // the client fills them from its best-effort cache.
 func convertTorrent(hash string, ts *delugerpc.TorrentStatus) downloader.TorrentInfo {
 	info := downloader.TorrentInfo{
-		Hash:     strings.ToLower(hash),
-		Name:     ts.Name,
-		State:    normalizeState(ts.State),
-		Progress: float64(ts.Progress) / 100,
-		Size:     wantedSize(ts),
-		DlSpeed:  ts.DownloadPayloadRate,
-		NumSeeds: ts.NumSeeds,
-		Uploaded: ts.TotalUploaded,
-		Ratio:    float64(ts.Ratio),
-		SavePath: savePath(ts),
+		Hash:      strings.ToLower(hash),
+		Name:      ts.Name,
+		State:     normalizeState(ts.State),
+		Progress:  float64(ts.Progress) / 100,
+		Size:      wantedSize(ts),
+		Completed: ts.TotalDone,
+		DlSpeed:   ts.DownloadPayloadRate,
+		NumSeeds:  ts.NumSeeds,
+		Uploaded:  ts.TotalUploaded,
+		Ratio:     float64(ts.Ratio),
+		SavePath:  savePath(ts),
 		// Deluge has no content-path concept; while downloading, files
 		// live under SavePath with their final names.
 		ContentPath: "",

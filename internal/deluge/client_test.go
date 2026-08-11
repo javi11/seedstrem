@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/gdm85/go-rencode"
@@ -24,6 +25,9 @@ type fakeAPI struct {
 
 	setFilePriorities map[string][]int
 	torrentOptions    []string
+
+	freeSpace    int64
+	freeSpaceErr error
 }
 
 func newFakeAPI() *fakeAPI {
@@ -114,6 +118,11 @@ func (f *fakeAPI) ResumeTorrents(_ context.Context, ids ...string) error {
 }
 
 func (f *fakeAPI) DaemonVersion(context.Context) (string, error) { return "2.1.1", nil }
+
+func (f *fakeAPI) GetFreeSpace(_ context.Context, path string) (int64, error) {
+	f.record("getFreeSpace path=%s", path)
+	return f.freeSpace, f.freeSpaceErr
+}
 
 func (f *fakeAPI) GetEnabledPlugins(context.Context) ([]string, error) { return f.plugins, nil }
 
@@ -283,5 +292,33 @@ func TestVersionPrefix(t *testing.T) {
 	}
 	if v != "deluge 2.1.1" {
 		t.Errorf("version = %q", v)
+	}
+}
+
+func TestFreeSpace(t *testing.T) {
+	f := newFakeAPI()
+	f.freeSpace = 4096
+	c := newTestClient(f)
+
+	got, err := c.FreeSpace(context.Background())
+	if err != nil {
+		t.Fatalf("FreeSpace: %v", err)
+	}
+	if got != 4096 {
+		t.Errorf("free space = %d, want 4096", got)
+	}
+	// The default download location is requested, i.e. an empty path.
+	if !slices.Contains(f.calls, "getFreeSpace path=") {
+		t.Errorf("calls = %v, want a getFreeSpace with an empty path", f.calls)
+	}
+}
+
+func TestFreeSpaceError(t *testing.T) {
+	f := newFakeAPI()
+	f.freeSpaceErr = errors.New("boom")
+	c := newTestClient(f)
+
+	if _, err := c.FreeSpace(context.Background()); err == nil {
+		t.Fatal("FreeSpace: want error, got nil")
 	}
 }
