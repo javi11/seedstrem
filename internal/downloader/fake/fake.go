@@ -61,6 +61,10 @@ type Server struct {
 	// prioritizeErr is returned by PrioritizePieces; defaults to
 	// downloader.ErrNotSupported like the qBittorrent backend.
 	prioritizeErr error
+	// freeSpace/freeSpaceErr back FreeSpace. The error defaults to
+	// ErrNotSupported so tests opt in to a capable backend explicitly.
+	freeSpace    int64
+	freeSpaceErr error
 }
 
 // SetHints sets the value returned by IncompleteFileHints.
@@ -78,6 +82,21 @@ func (s *Server) SetPrioritizeErr(err error) {
 	s.prioritizeErr = err
 }
 
+// SetFreeSpace makes FreeSpace report n bytes and clears any error.
+func (s *Server) SetFreeSpace(n int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.freeSpace = n
+	s.freeSpaceErr = nil
+}
+
+// SetFreeSpaceErr sets the error returned by FreeSpace.
+func (s *Server) SetFreeSpaceErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.freeSpaceErr = err
+}
+
 var _ downloader.Client = (*Server)(nil)
 
 // New creates an empty fake.
@@ -85,6 +104,7 @@ func New() *Server {
 	return &Server{
 		torrents:      map[string]*Torrent{},
 		prioritizeErr: downloader.ErrNotSupported,
+		freeSpaceErr:  downloader.ErrNotSupported,
 	}
 }
 
@@ -359,6 +379,12 @@ func (s *Server) PrioritizePieces(_ context.Context, hash string, first, last in
 	defer s.mu.Unlock()
 	s.record("prioritizePieces hash=%s first=%d last=%d", hash, first, last)
 	return s.prioritizeErr
+}
+
+func (s *Server) FreeSpace(context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.freeSpace, s.freeSpaceErr
 }
 
 func (s *Server) Version(context.Context) (string, error) {

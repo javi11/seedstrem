@@ -87,6 +87,10 @@ func (s *Swappable) PrioritizePieces(ctx context.Context, hash string, first, la
 	return s.get().PrioritizePieces(ctx, hash, first, last)
 }
 
+func (s *Swappable) FreeSpace(ctx context.Context) (int64, error) {
+	return s.get().FreeSpace(ctx)
+}
+
 func (s *Swappable) Version(ctx context.Context) (string, error) {
 	return s.get().Version(ctx)
 }

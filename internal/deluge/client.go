@@ -33,6 +33,7 @@ type api interface {
 	PieceStates(ctx context.Context, hash string) ([]int, error)
 	ResumeTorrents(ctx context.Context, ids ...string) error
 	DaemonVersion(ctx context.Context) (string, error)
+	GetFreeSpace(ctx context.Context, path string) (int64, error)
 	GetEnabledPlugins(ctx context.Context) ([]string, error)
 	RPC(ctx context.Context, method string, args rencode.List, kwargs rencode.Dictionary) (rencode.List, error)
 }
@@ -463,6 +464,21 @@ func (c *client) Delete(ctx context.Context, hash string, deleteFiles bool) erro
 // their final names — no temp dir, no extension.
 func (c *client) IncompleteFileHints(context.Context) (downloader.IncompleteHints, error) {
 	return downloader.IncompleteHints{}, nil
+}
+
+// FreeSpace asks the daemon for free space at its default download
+// location; core.get_free_space treats an empty path as "the default".
+func (c *client) FreeSpace(ctx context.Context) (int64, error) {
+	var free int64
+	err := c.do(ctx, func(ctx context.Context) error {
+		n, err := c.rpc.GetFreeSpace(ctx, "")
+		if err != nil {
+			return fmt.Errorf("deluge free space: %w", err)
+		}
+		free = n
+		return nil
+	})
+	return free, err
 }
 
 func (c *client) Version(ctx context.Context) (string, error) {

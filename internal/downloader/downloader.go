@@ -66,5 +66,13 @@ type Client interface {
 	// ErrNotSupported.
 	PrioritizePieces(ctx context.Context, hash string, first, last int) error
 
+	// FreeSpace reports the bytes still available on the download
+	// client's own filesystem. It is the client's view, not seedstrem's:
+	// the two differ whenever the client runs on another host. Backends
+	// without the concept return ErrNotSupported. Neither supported
+	// backend can report the filesystem *total*, so callers get headroom
+	// only — not a percentage.
+	FreeSpace(ctx context.Context) (int64, error)
+
 	Version(ctx context.Context) (string, error)
 }
