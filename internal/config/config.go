@@ -133,6 +133,19 @@ type Paths struct {
 	Mappings []Mapping `yaml:"mappings"`
 }
 
+// FirstLocal returns the first configured local download root — the path
+// whose filesystem usage gates streams and RSS grabs, and whose free
+// space the admin API falls back to when the download client cannot
+// report its own. Empty when no mapping is configured.
+func (p Paths) FirstLocal() string {
+	for _, m := range p.Mappings {
+		if m.Local != "" {
+			return m.Local
+		}
+	}
+	return ""
+}
+
 type Storage struct {
 	Database            string `yaml:"database"`
 	DeleteFilesOnRemove bool   `yaml:"delete_files_on_remove"`
