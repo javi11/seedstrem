@@ -115,6 +115,15 @@ func (a *Availability) states(ctx context.Context, hash string) ([]downloader.Pi
 // polling) instead of failing hard. This is what makes the first play
 // wait gracefully rather than erroring until a manual retry.
 func (a *Availability) HaveRange(ctx context.Context, hash string, first, last int) (bool, error) {
+	return a.RangeAtLeast(ctx, hash, first, last, downloader.PieceHave)
+}
+
+// RangeAtLeast reports whether every piece in [first, last] has reached
+// at least state min (missing < downloading < have). With min
+// PieceDownloading it answers "is the swarm at least serving this
+// range?" — the playability gate's relaxed tail condition. Ranges past
+// the known bitfield report false (not ready yet), like HaveRange.
+func (a *Availability) RangeAtLeast(ctx context.Context, hash string, first, last int, min downloader.PieceState) (bool, error) {
 	states, err := a.states(ctx, hash)
 	if err != nil {
 		return false, err
@@ -126,7 +135,7 @@ func (a *Availability) HaveRange(ctx context.Context, hash string, first, last i
 		return false, nil
 	}
 	for i := first; i <= last; i++ {
-		if states[i] != downloader.PieceHave {
+		if states[i] < min {
 			return false, nil
 		}
 	}
@@ -204,11 +213,22 @@ func (a *Availability) WaitForRange(ctx context.Context, hash string, first, las
 // spending a third of the playability grace waiting to re-ask is how a
 // stream that was seconds from playable ends up on the placeholder.
 func (a *Availability) WaitForRangeHint(ctx context.Context, hash string, first, last int, timeout, refreshEvery time.Duration, hint func() bool) error {
+	return a.WaitForRangeAtLeast(ctx, hash, first, last, downloader.PieceHave, timeout, refreshEvery, hint)
+}
+
+// WaitForRangeAtLeast is WaitForRangeHint generalized to a minimum piece
+// state: it returns as soon as every piece in the range has reached min.
+// The playability gate waits on the tail with min PieceDownloading — a
+// tail the swarm is already serving will land while the head plays, so
+// there is no reason to hold headers (and risk the placeholder) for it.
+// Hinting semantics are unchanged: the range is (re-)hinted until the
+// wait ends, since a deadline is what keeps an in-flight piece coming.
+func (a *Availability) WaitForRangeAtLeast(ctx context.Context, hash string, first, last int, min downloader.PieceState, timeout, refreshEvery time.Duration, hint func() bool) error {
 	deadline := a.now().Add(timeout)
 	var lastHint time.Time
 	hinted := false
 	for {
-		have, err := a.HaveRange(ctx, hash, first, last)
+		have, err := a.RangeAtLeast(ctx, hash, first, last, min)
 		if err != nil {
 			return err
 		}
