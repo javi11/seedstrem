@@ -138,6 +138,15 @@ export interface Status {
   downloader: { type: string; connected: boolean; version?: string; error?: string };
   torrents: Record<string, number>;
   total_uploaded: number;
+  // used is seedstrem's own footprint; free is the whole filesystem's
+  // headroom, reported by the download client or, when it cannot answer,
+  // by a local statfs. They do not sum to a disk total, so there is no
+  // percentage to show. free is absent when neither source answered.
+  disk?: {
+    used: number;
+    free?: number;
+    free_source?: "client" | "local";
+  };
 }
 
 export interface TorrentLink {
