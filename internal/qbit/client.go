@@ -101,6 +101,7 @@ func convertTorrent(t qbt.Torrent) downloader.TorrentInfo {
 		State:       normalizeState(string(t.State)),
 		Progress:    t.Progress,
 		Size:        t.Size,
+		Completed:   t.Completed,
 		DlSpeed:     t.DlSpeed,
 		NumSeeds:    t.NumSeeds,
 		Uploaded:    t.Uploaded,

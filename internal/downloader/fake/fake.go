@@ -30,6 +30,7 @@ type Torrent struct {
 	Name        string
 	State       string
 	Progress    float64
+	Completed   int64
 	DlSpeed     int64
 	NumSeeds    int64
 	Uploaded    int64
@@ -222,6 +223,7 @@ func toTorrentInfo(t *Torrent) downloader.TorrentInfo {
 		Name:        t.Name,
 		State:       t.State,
 		Progress:    t.Progress,
+		Completed:   t.Completed,
 		DlSpeed:     t.DlSpeed,
 		NumSeeds:    t.NumSeeds,
 		Uploaded:    t.Uploaded,
