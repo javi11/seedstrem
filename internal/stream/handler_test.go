@@ -228,6 +228,38 @@ func TestServeTailMissingServesPlaceholder(t *testing.T) {
 	}
 }
 
+func TestServeTailInFlightServesStream(t *testing.T) {
+	// Head on disk, tail (MKV cues) requested from a peer but not landed
+	// yet — the tail of every cold add's success path. A tail already in
+	// flight is one the swarm is willing to serve, so the gate must open
+	// and let the player's tail probe block in partialReader as ordinary
+	// buffering, instead of burning the whole grace and serving the
+	// placeholder.
+	e := newStreamEnv(t, []int{2, 2, 2, 1}, 0.75)
+	fakeClock(e, nil)
+
+	w := e.get(t, "bytes=0-2047")
+	if w.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d body len=%d; want 206 with the real stream", w.Code, w.Body.Len())
+	}
+	if !bytes.Equal(w.Body.Bytes(), e.content[:2048]) {
+		t.Error("body mismatch: want the real stream, not the placeholder")
+	}
+}
+
+func TestHeadProbeTailInFlightReportsStream(t *testing.T) {
+	// The instant HEAD probe (grace 0) must apply the same relaxed gate:
+	// head on disk + tail in flight is a playable stream.
+	e := newStreamEnv(t, []int{2, 2, 2, 1}, 0.75)
+
+	req := httptest.NewRequest(http.MethodHead, "/"+testToken+"/movie.mkv", nil)
+	w := httptest.NewRecorder()
+	e.handler.ServeHTTP(w, req)
+	if got := w.Header().Get("Content-Type"); got != "video/x-matroska" {
+		t.Errorf("Content-Type = %q, want the real stream's video/x-matroska", got)
+	}
+}
+
 func TestPlaceholderWaitHintsHeadAndTailTogether(t *testing.T) {
 	// Neither head nor tail ever arrives (super-seeding seeder). The
 	// playability gate must deadline-hint BOTH ranges from the start of

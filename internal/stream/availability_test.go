@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/javib/seedstrem/internal/downloader"
 	"github.com/javib/seedstrem/internal/downloader/fake"
 )
 
@@ -52,6 +53,56 @@ func TestHaveRange(t *testing.T) {
 		if have != tt.want {
 			t.Errorf("HaveRange(%d,%d) = %v; want %v", tt.first, tt.last, have, tt.want)
 		}
+	}
+}
+
+func TestRangeAtLeast(t *testing.T) {
+	a, f := newAvail(t)
+	f.Put(&fake.Torrent{Hash: testHash, PieceStates: []int{2, 2, 1, 0}})
+
+	ctx := context.Background()
+	tests := []struct {
+		first, last int
+		min         downloader.PieceState
+		want        bool
+	}{
+		{0, 2, downloader.PieceDownloading, true},  // in flight counts
+		{0, 3, downloader.PieceDownloading, false}, // piece 3 is plain missing
+		{2, 2, downloader.PieceHave, false},        // downloading is not on disk
+		{0, 1, downloader.PieceHave, true},
+		{0, 10, downloader.PieceDownloading, false}, // past known states → not ready yet
+	}
+	for _, tt := range tests {
+		got, err := a.RangeAtLeast(ctx, testHash, tt.first, tt.last, tt.min)
+		if err != nil {
+			t.Fatalf("RangeAtLeast(%d,%d,%d): %v", tt.first, tt.last, tt.min, err)
+		}
+		if got != tt.want {
+			t.Errorf("RangeAtLeast(%d,%d,%d) = %v; want %v", tt.first, tt.last, tt.min, got, tt.want)
+		}
+	}
+}
+
+func TestWaitForRangeAtLeastReturnsOnceInFlight(t *testing.T) {
+	// A piece the swarm starts serving (missing → downloading) satisfies
+	// a min-state-downloading wait without ever landing on disk.
+	a, f := newAvail(t)
+	f.Put(&fake.Torrent{Hash: testHash, PieceStates: []int{0}})
+
+	now := time.Unix(1000, 0)
+	a.now = func() time.Time { return now }
+	var sleeps atomic.Int32
+	a.sleep = func(_ context.Context, d time.Duration) error {
+		now = now.Add(d)
+		if sleeps.Add(1) == 2 {
+			f.Update(testHash, func(tor *fake.Torrent) { tor.PieceStates = []int{1} })
+		}
+		return nil
+	}
+
+	err := a.WaitForRangeAtLeast(context.Background(), testHash, 0, 0, downloader.PieceDownloading, 10*time.Second, 0, nil)
+	if err != nil {
+		t.Fatalf("WaitForRangeAtLeast: %v", err)
 	}
 }
 

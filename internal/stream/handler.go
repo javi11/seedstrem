@@ -164,8 +164,9 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Playability gate: a player needs the file's head (container header)
-	// and tail (MKV cues/seek index) before it can start at all. Give
-	// them a short grace to arrive; when they don't — typically a
+	// on disk, and the tail (MKV cues/seek index) on disk or at least in
+	// flight, before it can start at all. Give them a short grace; when
+	// they don't get there — typically a
 	// super-seeding initial seeder handing out pieces in its own order,
 	// which no client-side flag can override — serve the bundled
 	// "still downloading, come back later" clip instead of leaving the
@@ -283,9 +284,16 @@ const (
 	readyGraceMax       = 30 * time.Second
 )
 
-// waitStreamReady reports whether the file's head and tail pieces are
-// on disk, waiting up to grace for them to arrive (grace 0 = check the
-// current state only).
+// waitStreamReady reports whether playback can start: the head pieces
+// on disk, and the tail pieces (MKV cues) on disk *or at least in
+// flight*. It waits up to grace for that to happen (grace 0 = check the
+// current state only). A tail a peer is already sending will land while
+// the head plays out — the player's tail probe just blocks inside
+// partialReader as ordinary buffering — so holding headers for it
+// trades a play that works for the placeholder. A tail that stays plain
+// missing keeps the gate closed: nobody is sending it, and serving
+// headers then would leave the player spinning on a probe that cannot
+// complete.
 //
 // When grace runs out the wait is extended in readyGraceExtension slices
 // — up to readyGraceMax in total — for as long as every awaited range is
@@ -302,8 +310,8 @@ func (h *Handler) waitStreamReady(ctx context.Context, hash string, headFirst, h
 		if !haveHead {
 			return false
 		}
-		haveTail, _ := h.avail.HaveRange(ctx, hash, tailFirst, tailLast)
-		return haveTail
+		tailServed, _ := h.avail.RangeAtLeast(ctx, hash, tailFirst, tailLast, downloader.PieceDownloading)
+		return tailServed
 	}
 	spent := time.Duration(0)
 	for slice := grace; ; slice = readyGraceExtension {
@@ -337,7 +345,8 @@ func (h *Handler) awaitedStates(ctx context.Context, hash string, headFirst, hea
 	return sum.HeadState, tailSum.HeadState, sum, nil
 }
 
-// waitHeadAndTail waits up to grace for both ranges to land on disk.
+// waitHeadAndTail waits up to grace for the head to land on disk and
+// the tail to be at least in flight.
 func (h *Handler) waitHeadAndTail(ctx context.Context, hash string, headFirst, headLast, tailFirst, tailLast int, grace time.Duration) bool {
 	// Deadline-fetch the head and tail on capable backends when they are
 	// missing: first/last-piece priority covers them eventually, but an
@@ -345,17 +354,23 @@ func (h *Handler) waitHeadAndTail(ctx context.Context, hash string, headFirst, h
 	// Both ranges are waited on (and hinted) concurrently: waiting for
 	// the head first would leave the tail unhinted — and with no time
 	// left in the grace window — whenever the head is slow to arrive.
-	ranges := [2][2]int{{headFirst, headLast}, {tailFirst, tailLast}}
+	ranges := [2]struct {
+		first, last int
+		min         downloader.PieceState
+	}{
+		{headFirst, headLast, downloader.PieceHave},
+		{tailFirst, tailLast, downloader.PieceDownloading},
+	}
 	var wg sync.WaitGroup
 	var errs [2]error
 	for i, rng := range ranges {
 		wg.Add(1)
-		go func(i, first, last int) {
+		go func(i, first, last int, min downloader.PieceState) {
 			defer wg.Done()
-			errs[i] = h.avail.WaitForRangeHint(ctx, hash, first, last, grace, prioRefreshInterval, func() bool {
+			errs[i] = h.avail.WaitForRangeAtLeast(ctx, hash, first, last, min, grace, prioRefreshInterval, func() bool {
 				return h.prio.request(ctx, hash, first, last)
 			})
-		}(i, rng[0], rng[1])
+		}(i, rng.first, rng.last, rng.min)
 	}
 	wg.Wait()
 	return errs[0] == nil && errs[1] == nil
