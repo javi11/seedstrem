@@ -30,6 +30,16 @@ type Settings struct {
 	// config.DeletePolicyOldestFirst (default) or
 	// config.DeletePolicyLowestUpload.
 	DeletePolicy string
+	// IndexerSeedTimes overrides SeedTime per Prowlarr indexer name,
+	// matched case-insensitively against store.Torrent.Indexer.
+	IndexerSeedTimes map[string]time.Duration
+}
+
+// EffectiveSeedTime returns the seed time governing a torrent grabbed from
+// the named indexer: the per-indexer override when one exists, otherwise
+// SeedTime.
+func (s Settings) EffectiveSeedTime(indexer string) time.Duration {
+	return config.EffectiveSeedTime(s.SeedTime, s.IndexerSeedTimes, indexer)
 }
 
 // Cleanup periodically sweeps stored torrents and removes finished ones
@@ -78,8 +88,9 @@ func (c *Cleanup) Run(ctx context.Context) {
 // set by Settings.DeletePolicy.
 func (c *Cleanup) Sweep(ctx context.Context) error {
 	s := c.settings()
-	// Nothing to do when both removal triggers are disabled.
-	if s.SeedTime <= 0 && s.TargetRatio <= 0 {
+	// Nothing to do when both removal triggers are disabled. A global
+	// seed time of 0 still sweeps when some indexer overrides it upward.
+	if !config.HasSeedTimeTrigger(s.SeedTime, s.IndexerSeedTimes) && s.TargetRatio <= 0 {
 		return nil
 	}
 
@@ -114,6 +125,7 @@ func (c *Cleanup) Sweep(ctx context.Context) error {
 		}
 		c.logger.Info("cleanup: removing torrent past removal trigger",
 			"id", tor.ID, "hash", tor.Hash, "seedingTime", info.SeedingTime,
+			"indexer", tor.Indexer, "seedTime", s.EffectiveSeedTime(tor.Indexer),
 			"ratio", info.Ratio, "uploaded", info.Uploaded, "policy", s.DeletePolicy)
 		if err := c.svc.Remove(ctx, tor); err != nil {
 			c.logger.Warn("cleanup: remove torrent", "id", tor.ID, "hash", tor.Hash, "error", err)
@@ -127,8 +139,9 @@ func (c *Cleanup) Sweep(ctx context.Context) error {
 // live download-client state keyed by lowercase infohash, and settings, it
 // returns the removal-eligible torrents in the configured delete order. A
 // torrent is eligible when it has finished downloading (Progress >= 1) and
-// meets at least one enabled trigger: seeded past SeedTime, or reached
-// TargetRatio. Torrents with no live info are skipped (nothing to evaluate).
+// meets at least one enabled trigger: seeded past its indexer's effective
+// seed time, or reached TargetRatio. Torrents with no live info are skipped
+// (nothing to evaluate).
 func selectRemovals(stored []store.Torrent, live map[string]downloader.TorrentInfo, s Settings) []store.Torrent {
 	eligible := make([]store.Torrent, 0, len(stored))
 	for _, tor := range stored {
@@ -136,7 +149,8 @@ func selectRemovals(stored []store.Torrent, live map[string]downloader.TorrentIn
 		if !ok || info.Progress < 1 {
 			continue
 		}
-		byTime := s.SeedTime > 0 && info.SeedingTime >= s.SeedTime
+		seedTime := s.EffectiveSeedTime(tor.Indexer)
+		byTime := seedTime > 0 && info.SeedingTime >= seedTime
 		byRatio := s.TargetRatio > 0 && info.Ratio >= s.TargetRatio
 		if byTime || byRatio {
 			eligible = append(eligible, tor)

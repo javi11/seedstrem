@@ -7,9 +7,11 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"maps"
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -194,6 +196,51 @@ type Cleanup struct {
 	// DeletePolicy sets the order in which eligible torrents are removed:
 	// "oldest_first" (default) or "lowest_upload".
 	DeletePolicy string `yaml:"delete_policy"`
+	// IndexerSeedTimes overrides SeedTime per Prowlarr indexer name —
+	// private trackers impose minimum seed times that public ones do not.
+	// Matching is case-insensitive; an indexer with no entry (including a
+	// torrent whose indexer is unknown) uses SeedTime. A value of 0
+	// disables seed-time removal for that indexer.
+	IndexerSeedTimes map[string]time.Duration `yaml:"indexer_seed_times"`
+}
+
+// EffectiveSeedTime returns the seed time governing a torrent grabbed from
+// the named indexer: the per-indexer override when one exists, otherwise
+// the global one. Matching is case-insensitive and whitespace-trimmed; an
+// empty indexer always resolves to the global value. Shared by the cleanup
+// loop and the admin torrent listing so both report the same number.
+func EffectiveSeedTime(global time.Duration, overrides map[string]time.Duration, indexer string) time.Duration {
+	key := strings.ToLower(strings.TrimSpace(indexer))
+	if key == "" {
+		return global
+	}
+	for name, d := range overrides {
+		if strings.ToLower(strings.TrimSpace(name)) == key {
+			return d
+		}
+	}
+	return global
+}
+
+// HasSeedTimeTrigger reports whether seed-time removal is enabled at all:
+// globally, or for at least one indexer. A global seed time of 0 does not
+// disable cleanup when a per-indexer override is positive.
+func HasSeedTimeTrigger(global time.Duration, overrides map[string]time.Duration) bool {
+	if global > 0 {
+		return true
+	}
+	for _, d := range overrides {
+		if d > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// EffectiveSeedTime resolves the seed time for a torrent from the named
+// indexer against this Cleanup config.
+func (c Cleanup) EffectiveSeedTime(indexer string) time.Duration {
+	return EffectiveSeedTime(c.SeedTime, c.IndexerSeedTimes, indexer)
 }
 
 // Seeding controls download/seed behavior for ratio management.
@@ -422,6 +469,9 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 			cfg.Cleanup.SeedTime = d
 		}
 	}
+	if v := getenv("SEEDSTREM_CLEANUP_INDEXER_SEED_TIMES"); v != "" {
+		cfg.Cleanup.IndexerSeedTimes = parseIndexerSeedTimes(v)
+	}
 	if v := getenv("SEEDSTREM_CLEANUP_MIN_PROGRESS_FOR_CANCEL"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			cfg.Cleanup.MinProgressForCancel = f
@@ -530,6 +580,30 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 	}
 }
 
+// parseIndexerSeedTimes parses the SEEDSTREM_CLEANUP_INDEXER_SEED_TIMES
+// form "Indexer=72h,Other=240h" into a map. Like the other env parsers it
+// skips malformed entries rather than failing startup: a blank name or an
+// unparseable duration drops just that entry.
+func parseIndexerSeedTimes(v string) map[string]time.Duration {
+	out := map[string]time.Duration{}
+	for _, entry := range strings.Split(v, ",") {
+		name, dur, ok := strings.Cut(strings.TrimSpace(entry), "=")
+		if !ok {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		d, err := time.ParseDuration(strings.TrimSpace(dur))
+		if err != nil {
+			continue
+		}
+		out[name] = d
+	}
+	return out
+}
+
 // Validate returns all problems found, joined into one error.
 func (c Config) Validate() error {
 	var errs []error
@@ -601,6 +675,25 @@ func (c Config) Validate() error {
 	}
 	if c.Cleanup.SeedTime < 0 {
 		errs = append(errs, errors.New("cleanup.seed_time must not be negative (0 disables seed-time cleanup)"))
+	}
+	// Sorted so the error text is deterministic across map iterations.
+	seenIndexers := make(map[string]string, len(c.Cleanup.IndexerSeedTimes))
+	for _, name := range slices.Sorted(maps.Keys(c.Cleanup.IndexerSeedTimes)) {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key == "" {
+			errs = append(errs, errors.New("cleanup.indexer_seed_times has an entry with a blank indexer name"))
+			continue
+		}
+		// Lookup is case-insensitive, so two keys differing only in case
+		// would make the effective seed time depend on map iteration order.
+		if first, dup := seenIndexers[key]; dup {
+			errs = append(errs, fmt.Errorf("cleanup.indexer_seed_times has duplicate entries for indexer %q and %q (matching is case-insensitive)", first, name))
+			continue
+		}
+		seenIndexers[key] = name
+		if c.Cleanup.IndexerSeedTimes[name] < 0 {
+			errs = append(errs, fmt.Errorf("cleanup.indexer_seed_times[%q] must not be negative (0 disables seed-time cleanup for that indexer)", name))
+		}
 	}
 	if c.Cleanup.MinProgressForCancel < 0 || c.Cleanup.MinProgressForCancel > 1 {
 		errs = append(errs, errors.New("cleanup.min_progress_for_cancel must be between 0 and 1"))

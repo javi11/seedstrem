@@ -133,7 +133,14 @@ export function Torrents() {
                       className="cursor-pointer hover:bg-base-300/50"
                       onClick={() => setExpanded(expanded === t.id ? null : t.id)}
                     >
-                      <td className="max-w-xs truncate font-medium">{t.name || t.hash}</td>
+                      <td className="max-w-xs">
+                        <div className="truncate font-medium">{t.name || t.hash}</div>
+                        {/* The indexer governs this torrent's seed time, so
+                            it explains the "available until" column. */}
+                        {t.indexer && (
+                          <div className="truncate text-xs opacity-60">⚙ {t.indexer}</div>
+                        )}
+                      </td>
                       <td>
                         <StatusBadge status={t.status} />
                       </td>
@@ -200,6 +207,7 @@ export function Torrents() {
                   <span className="text-xs opacity-60 tabular-nums">
                     {formatBytes(t.size)}
                   </span>
+                  {t.indexer && <span className="truncate text-xs opacity-60">⚙ {t.indexer}</span>}
                 </div>
                 <div className="mt-3">
                   <ProgressCell progress={t.progress} />

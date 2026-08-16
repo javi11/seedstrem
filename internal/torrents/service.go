@@ -111,6 +111,17 @@ func (s *Service) EnsureAdded(ctx context.Context, magnet string, torrentFile []
 				existing.Season, existing.Episode = sel.Season, sel.Episode
 			}
 		}
+		// Same for the indexer — but only when none is recorded yet. The
+		// first attribution wins, so re-playing the same release found
+		// through a different indexer cannot silently change how long
+		// cleanup keeps it seeding.
+		if existing.Indexer == "" && sel.Indexer != "" {
+			if err := s.store.SetTorrentIndexer(ctx, existing.ID, sel.Indexer); err != nil {
+				s.logger.Warn("torrents: backfill indexer", "id", existing.ID, "error", err)
+			} else {
+				existing.Indexer = sel.Indexer
+			}
+		}
 		return existing, nil
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return store.Torrent{}, fmt.Errorf("lookup torrent by hash: %w", err)
@@ -148,6 +159,7 @@ func (s *Service) EnsureAdded(ctx context.Context, magnet string, torrentFile []
 		ContentRef:    sel.ContentRef,
 		Season:        sel.Season,
 		Episode:       sel.Episode,
+		Indexer:       sel.Indexer,
 	}
 	if err := s.store.InsertTorrent(ctx, tor); err != nil {
 		// A concurrent add of the same hash may have won the race (the

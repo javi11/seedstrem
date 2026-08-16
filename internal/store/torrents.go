@@ -33,14 +33,17 @@ type Torrent struct {
 	ContentRef    string // id portion, e.g. "tt0944947" ("" when unknown)
 	Season        int    // 0 for movies / anime absolute numbering
 	Episode       int    // 0 for movies
+	// Indexer is the Prowlarr indexer this torrent was grabbed from
+	// ("" when unknown), used by cleanup to pick a per-indexer seed time.
+	Indexer string
 }
 
-const torrentCols = `id, hash, name, phase, added_at, magnet, error, content_source, content_ref, season, episode`
+const torrentCols = `id, hash, name, phase, added_at, magnet, error, content_source, content_ref, season, episode, indexer`
 
 func scanTorrent(row interface{ Scan(...any) error }) (Torrent, error) {
 	var t Torrent
 	err := row.Scan(&t.ID, &t.Hash, &t.Name, &t.Phase, &t.AddedAt, &t.Magnet, &t.Error,
-		&t.ContentSource, &t.ContentRef, &t.Season, &t.Episode)
+		&t.ContentSource, &t.ContentRef, &t.Season, &t.Episode, &t.Indexer)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Torrent{}, ErrNotFound
 	}
@@ -53,9 +56,9 @@ func scanTorrent(row interface{ Scan(...any) error }) (Torrent, error) {
 // InsertTorrent stores a new torrent row.
 func (s *Store) InsertTorrent(ctx context.Context, t Torrent) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO torrents (`+torrentCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO torrents (`+torrentCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Hash, t.Name, t.Phase, t.AddedAt, t.Magnet, t.Error,
-		t.ContentSource, t.ContentRef, t.Season, t.Episode)
+		t.ContentSource, t.ContentRef, t.Season, t.Episode, t.Indexer)
 	if err != nil {
 		return fmt.Errorf("insert torrent %s: %w", t.ID, err)
 	}
@@ -168,6 +171,12 @@ func (s *Store) SetTorrentContent(ctx context.Context, id, source, ref string, s
 		return ErrNotFound
 	}
 	return nil
+}
+
+// SetTorrentIndexer records the Prowlarr indexer a torrent was grabbed
+// from (used to backfill rows added before the indexer was known).
+func (s *Store) SetTorrentIndexer(ctx context.Context, id, indexer string) error {
+	return s.updateTorrentField(ctx, id, `indexer`, indexer)
 }
 
 // ListTorrents returns a page of torrents ordered newest-first, plus the
