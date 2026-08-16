@@ -572,6 +572,10 @@ func (h *Handler) toStreamItem(externalURL string, q meta.Query, res prowlarr.Re
 	// Persist the content identity through play so later stream requests
 	// can surface this torrent as already-owned (see stream handler).
 	setContentIdentity(v, q)
+	// Persist the indexer too, so cleanup can apply its seed time.
+	if res.Indexer != "" {
+		v.Set("ix", res.Indexer)
+	}
 	playURL := fmt.Sprintf("%s/stremio/play/%s?%s", base, res.InfoHash, v.Encode())
 
 	// Surface the parsed resolution on the name's second line so Stremio's
@@ -639,6 +643,11 @@ func (h *Handler) toOwnedStreamItem(externalURL string, q meta.Query, tor store.
 	v := url.Values{}
 	v.Set("magnet", tor.Magnet)
 	setContentIdentity(v, q)
+	// Carry the already-recorded indexer back through so re-playing an
+	// owned torrent neither clears nor changes its attribution.
+	if tor.Indexer != "" {
+		v.Set("ix", tor.Indexer)
+	}
 	playURL := fmt.Sprintf("%s/stremio/play/%s?%s", base, tor.Hash, v.Encode())
 
 	status := "⬇ downloading"

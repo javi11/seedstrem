@@ -87,6 +87,13 @@ func newStreamEnv(t *testing.T, pieceStates []int, fileProgress float64) *stream
 // playability gate polls from two goroutines) that advances on every
 // poll sleep and invokes onSleep (if non-nil) per sleep. Returns a
 // counter of how many sleeps happened.
+//
+// Caution: the head and tail pollers sleep concurrently but each
+// advances this one shared clock, so it runs at up to twice the rate
+// real time would, by an amount that depends on how the two goroutines
+// interleave. Use it to drive state changes past a threshold (as
+// onSleep does), never to assert how long something waited — such an
+// assertion measures the scheduler.
 func fakeClock(e *streamEnv, onSleep func()) *int {
 	var mu sync.Mutex
 	now := time.Unix(1000, 0)
@@ -322,15 +329,20 @@ func TestPlaceholderGraceNotExtendedWhenAwaitedPiecesMissing(t *testing.T) {
 	// (super-seeding seeder). Waiting longer cannot help, so the grace
 	// must not be extended — the viewer sees the placeholder promptly.
 	e := newStreamEnv(t, []int{0, 0, 0, 0}, 0)
-	start := time.Unix(1000, 0)
+	var logs bytes.Buffer
+	e.h.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	fakeClock(e, nil)
 
 	w := e.get(t, "")
 	if want := placeholderFor(0); !bytes.Equal(w.Body.Bytes(), want) {
 		t.Fatalf("body = %d bytes, want the downloading placeholder", w.Body.Len())
 	}
-	if waited := e.avail.now().Sub(start); waited >= readyGrace+readyGraceExtension {
-		t.Errorf("gate waited %s on pieces nobody is sending, want ~%s", waited, readyGrace)
+	// Assert on the extension decision itself rather than on elapsed fake
+	// time: the gate polls from two goroutines that share one fake clock
+	// (see fakeClock), so measured elapsed time reflects how those two
+	// interleave, not whether the grace was extended.
+	if strings.Contains(logs.String(), "extending playability grace") {
+		t.Errorf("gate extended the grace on pieces nobody is sending: %s", logs.String())
 	}
 }
 

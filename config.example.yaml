@@ -136,6 +136,15 @@ cleanup:
   # Order in which eligible torrents are removed when cleaning up:
   # oldest_first (by add time) or lowest_upload (least bytes uploaded).
   delete_policy: oldest_first
+  # Per-indexer overrides of seed_time, for trackers with their own
+  # minimum seed time. Names must match the Prowlarr indexer
+  # (case-insensitive); anything not listed uses seed_time above, as do
+  # torrents whose indexer is unknown (added before this setting existed,
+  # or added outside a Prowlarr search). 0 means never remove that
+  # indexer's torrents on seed time.
+  # indexer_seed_times:
+  #   TorrentLeech: 240h
+  #   Nyaa: 12h
 
 seeding:
   # Download the whole torrent (played file first, the rest afterwards) so

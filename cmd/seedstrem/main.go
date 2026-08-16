@@ -153,9 +153,10 @@ func run() error {
 	go cleanup.New(db, dc, torrentSvc, sessions, func() cleanup.Settings {
 		c := cm.Get()
 		return cleanup.Settings{
-			SeedTime:     c.Cleanup.SeedTime,
-			TargetRatio:  c.Cleanup.TargetRatio,
-			DeletePolicy: c.Cleanup.DeletePolicy,
+			SeedTime:         c.Cleanup.SeedTime,
+			TargetRatio:      c.Cleanup.TargetRatio,
+			DeletePolicy:     c.Cleanup.DeletePolicy,
+			IndexerSeedTimes: c.Cleanup.IndexerSeedTimes,
 		}
 	}, logger, 30*time.Minute).Run(cleanCtx)
 

@@ -22,12 +22,17 @@ var ErrNoFileMatch = errors.New("no matching file in torrent")
 // picking but are persisted with the torrent so later stream requests for
 // the same content can surface it as already-owned. Both empty when
 // unknown.
+//
+// Indexer is the Prowlarr indexer the release came from; like the content
+// identity it is not used for file picking, only persisted — cleanup reads
+// it to apply a per-indexer seed time. Empty when unknown.
 type Selector struct {
 	IsSeries   bool
 	Season     int // 0 when unknown (anime absolute numbering)
 	Episode    int
 	Source     string
 	ContentRef string
+	Indexer    string
 }
 
 var videoExts = map[string]bool{

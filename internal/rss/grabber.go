@@ -244,7 +244,7 @@ func (g *Grabber) Poll(ctx context.Context) error {
 
 	added := 0
 	for _, r := range grabs {
-		if _, err := g.svc.EnsureAdded(ctx, r.MagnetURL, r.TorrentFile, torrents.Selector{}); err != nil {
+		if _, err := g.svc.EnsureAdded(ctx, r.MagnetURL, r.TorrentFile, torrents.Selector{Indexer: r.Indexer}); err != nil {
 			g.logger.Warn("rss: grab failed", "title", r.Title, "hash", r.InfoHash, "error", err)
 			continue
 		}

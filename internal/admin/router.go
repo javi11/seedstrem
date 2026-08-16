@@ -9,7 +9,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -173,10 +175,11 @@ type configDTO struct {
 		ReadChunk          int64 `json:"read_chunk"`
 	} `json:"stream"`
 	Cleanup struct {
-		SeedTimeHours               int     `json:"seed_time_hours"`
-		MinProgressForCancelPercent int     `json:"min_progress_for_cancel_percent"`
-		TargetRatio                 float64 `json:"target_ratio"`
-		DeletePolicy                string  `json:"delete_policy"`
+		SeedTimeHours               int               `json:"seed_time_hours"`
+		MinProgressForCancelPercent int               `json:"min_progress_for_cancel_percent"`
+		TargetRatio                 float64           `json:"target_ratio"`
+		DeletePolicy                string            `json:"delete_policy"`
+		IndexerSeedTimes            []indexerSeedTime `json:"indexer_seed_times"`
 	} `json:"cleanup"`
 	Seeding struct {
 		Full bool `json:"full"`
@@ -256,6 +259,7 @@ func toDTO(cfg config.Config) configDTO {
 	dto.Cleanup.MinProgressForCancelPercent = int(cfg.Cleanup.MinProgressForCancel * 100)
 	dto.Cleanup.TargetRatio = cfg.Cleanup.TargetRatio
 	dto.Cleanup.DeletePolicy = cfg.Cleanup.DeletePolicy
+	dto.Cleanup.IndexerSeedTimes = indexerSeedTimesToDTO(cfg.Cleanup.IndexerSeedTimes)
 	dto.Seeding.Full = cfg.Seeding.Full
 	dto.RSS.Enabled = cfg.RSS.Enabled
 	dto.RSS.IntervalMinutes = int(cfg.RSS.Interval / time.Minute)
@@ -280,6 +284,43 @@ func toDTO(cfg config.Config) configDTO {
 	}
 	dto.Log.Level = cfg.Log.Level
 	return dto
+}
+
+// indexerSeedTime is one per-indexer seed-time override. The map in the
+// config is exchanged with the UI as a sorted list so rows keep a stable
+// order (and a stable React key) while a name is being edited.
+type indexerSeedTime struct {
+	Indexer       string `json:"indexer"`
+	SeedTimeHours int    `json:"seed_time_hours"`
+}
+
+// indexerSeedTimesToDTO converts the config map to a list sorted by
+// indexer name. Always non-nil so clients can treat it as an array.
+func indexerSeedTimesToDTO(m map[string]time.Duration) []indexerSeedTime {
+	out := make([]indexerSeedTime, 0, len(m))
+	for _, name := range slices.Sorted(maps.Keys(m)) {
+		out = append(out, indexerSeedTime{Indexer: name, SeedTimeHours: int(m[name] / time.Hour)})
+	}
+	return out
+}
+
+// indexerSeedTimesFromDTO converts the UI list back to a config map.
+// Rows with a blank indexer are dropped — an empty row is how the UI
+// represents "not filled in yet", not a value worth rejecting. Negative
+// hours are clamped to 0 rather than rejected here so the whole save
+// doesn't fail on a transient input state; 0 means "never remove by seed
+// time" for that indexer. Case-insensitive duplicates survive as separate
+// keys and are rejected by config.Validate, where the ambiguity is real.
+func indexerSeedTimesFromDTO(list []indexerSeedTime) map[string]time.Duration {
+	out := make(map[string]time.Duration, len(list))
+	for _, row := range list {
+		name := strings.TrimSpace(row.Indexer)
+		if name == "" {
+			continue
+		}
+		out[name] = time.Duration(max(row.SeedTimeHours, 0)) * time.Hour
+	}
+	return out
 }
 
 // apply merges a DTO into an existing config, respecting mask/empty
@@ -380,6 +421,12 @@ func (dto configDTO) apply(cfg config.Config) config.Config {
 	// Validate rejects any non-empty value outside the allowed set.
 	if dto.Cleanup.DeletePolicy != "" {
 		cfg.Cleanup.DeletePolicy = dto.Cleanup.DeletePolicy
+	}
+	// The per-indexer overrides replace the stored map wholesale, so
+	// removing a row in the UI removes the override. A nil list (older
+	// clients that don't send the field) leaves the stored map alone.
+	if dto.Cleanup.IndexerSeedTimes != nil {
+		cfg.Cleanup.IndexerSeedTimes = indexerSeedTimesFromDTO(dto.Cleanup.IndexerSeedTimes)
 	}
 	cfg.Seeding.Full = dto.Seeding.Full
 	cfg.RSS.Enabled = dto.RSS.Enabled
@@ -616,16 +663,20 @@ func (h *Handler) liveByHash(ctx context.Context, stored []store.Torrent) map[st
 
 // torrentItem is the UI torrent listing shape.
 type torrentItem struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	Hash        string     `json:"hash"`
-	Status      string     `json:"status"`
-	Progress    float64    `json:"progress"`
-	Speed       int64      `json:"speed"`
-	Seeders     int64      `json:"seeders"`
-	Size        int64      `json:"size"`
-	Uploaded    int64      `json:"uploaded"`
-	Ratio       float64    `json:"ratio"`
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	Hash     string  `json:"hash"`
+	Status   string  `json:"status"`
+	Progress float64 `json:"progress"`
+	Speed    int64   `json:"speed"`
+	Seeders  int64   `json:"seeders"`
+	Size     int64   `json:"size"`
+	Uploaded int64   `json:"uploaded"`
+	Ratio    float64 `json:"ratio"`
+	Indexer  string  `json:"indexer,omitempty"`
+	// SeedTime is the seed time governing THIS torrent (its indexer's
+	// override when it has one, else the global default), in seconds, so
+	// the UI's time-left readout matches what cleanup will actually do.
 	SeedTime    int64      `json:"seed_time"`
 	SeedingTime int64      `json:"seeding_time"`
 	AddedAt     int64      `json:"added_at"`
@@ -679,7 +730,8 @@ func (h *Handler) torrents(w http.ResponseWriter, r *http.Request) {
 			Size:        info.Size,
 			Uploaded:    info.Uploaded,
 			Ratio:       info.Ratio,
-			SeedTime:    int64(cfg.Cleanup.SeedTime / time.Second),
+			Indexer:     tor.Indexer,
+			SeedTime:    int64(cfg.Cleanup.EffectiveSeedTime(tor.Indexer) / time.Second),
 			SeedingTime: int64(info.SeedingTime / time.Second),
 			AddedAt:     tor.AddedAt,
 			Error:       tor.Error,

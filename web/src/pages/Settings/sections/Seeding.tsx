@@ -26,6 +26,7 @@ export function Seeding({ config, update }: SectionProps) {
           hint="A completed torrent also becomes removal-eligible once it reaches this upload/download ratio — whichever of ratio or seed time comes first."
         />
       </div>
+      <IndexerSeedTimes config={config} update={update} />
       <div className="grid gap-4 sm:grid-cols-2">
         <SelectField
           label="Delete order when cleaning up"
@@ -46,5 +47,73 @@ export function Seeding({ config, update }: SectionProps) {
         />
       </div>
     </SectionCard>
+  );
+}
+
+// IndexerSeedTimes edits per-indexer overrides of the global seed time —
+// private trackers impose minimum seed times that public ones do not.
+// Rows left with a blank indexer name are dropped on save.
+function IndexerSeedTimes({ config, update }: SectionProps) {
+  const rows = config.cleanup.indexer_seed_times ?? [];
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="label-text">Per-indexer seed time overrides</span>
+      <span className="label-text-alt text-base-content/60">
+        Torrents grabbed from these indexers use their own seed time instead of the global one.
+        The name must match the Prowlarr indexer (case-insensitive); 0 hours = never remove.
+      </span>
+      {rows.map((row, i) => (
+        <div className="flex items-end gap-2" key={i}>
+          <label className="form-control flex-1">
+            <span className="label-text mb-1">Indexer</span>
+            <input
+              className="input input-bordered"
+              value={row.indexer}
+              onChange={(e) =>
+                update((c) => (c.cleanup.indexer_seed_times[i].indexer = e.target.value))
+              }
+            />
+          </label>
+          <label className="form-control w-40">
+            <span className="label-text mb-1">Seed time (hours)</span>
+            <input
+              type="number"
+              min={0}
+              className="input input-bordered"
+              value={row.seed_time_hours}
+              onChange={(e) =>
+                update(
+                  (c) => (c.cleanup.indexer_seed_times[i].seed_time_hours = Number(e.target.value)),
+                )
+              }
+            />
+          </label>
+          <button
+            type="button"
+            className="btn btn-outline btn-error"
+            aria-label="Remove override"
+            onClick={() => update((c) => c.cleanup.indexer_seed_times.splice(i, 1))}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      <div>
+        <button
+          type="button"
+          className="btn btn-outline btn-sm"
+          onClick={() =>
+            update((c) => {
+              c.cleanup.indexer_seed_times = [
+                ...(c.cleanup.indexer_seed_times ?? []),
+                { indexer: "", seed_time_hours: 0 },
+              ];
+            })
+          }
+        >
+          + Add override
+        </button>
+      </div>
+    </div>
   );
 }

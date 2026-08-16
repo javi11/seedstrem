@@ -45,6 +45,14 @@ export interface Mapping {
   local: string;
 }
 
+// A per-indexer override of cleanup.seed_time_hours. Indexer names match
+// the Prowlarr indexer, case-insensitively; 0 hours means never remove
+// that indexer's torrents on seed time.
+export interface IndexerSeedTime {
+  indexer: string;
+  seed_time_hours: number;
+}
+
 export interface Config {
   server: {
     listen: string;
@@ -105,6 +113,7 @@ export interface Config {
     min_progress_for_cancel_percent: number;
     target_ratio: number;
     delete_policy: string;
+    indexer_seed_times: IndexerSeedTime[];
   };
   seeding: { full: boolean };
   rss: {
@@ -166,6 +175,9 @@ export interface Torrent {
   size: number;
   uploaded: number;
   ratio: number;
+  indexer?: string;
+  // Seed time governing this torrent (its indexer's override when it has
+  // one, else the global default), in seconds.
   seed_time: number;
   seeding_time: number;
   added_at: number;
