@@ -76,13 +76,20 @@ never destroy an in-flight stream.
 ### Configuration
 
 ```yaml
-download_client:
-  label: seedstrem        # existing (Deluge label / qBittorrent category)
+downloader:
+  type: qbittorrent
   adopt_labelled: false   # new
+
+qbittorrent:
+  category: seedstrem     # existing
+deluge:
+  label: seedstrem        # existing
 ```
 
-Adoption is disabled when `adopt_labelled` is false **or** the label is
-empty.
+`adopt_labelled` lives in the backend-neutral `downloader` section; the
+label itself is read from whichever backend `downloader.type` selects, via
+a new `Config.ClientLabel()` helper. Adoption is disabled when
+`adopt_labelled` is false **or** the resolved label is empty.
 
 ### New `downloader.Client` method
 
