@@ -43,6 +43,10 @@ func (s *Swappable) Torrents(ctx context.Context, hashes []string) ([]TorrentInf
 	return s.get().Torrents(ctx, hashes)
 }
 
+func (s *Swappable) TorrentsByLabel(ctx context.Context, label string) ([]TorrentInfo, error) {
+	return s.get().TorrentsByLabel(ctx, label)
+}
+
 func (s *Swappable) Torrent(ctx context.Context, hash string) (TorrentInfo, error) {
 	return s.get().Torrent(ctx, hash)
 }

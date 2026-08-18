@@ -176,6 +176,9 @@ export interface Torrent {
   uploaded: number;
   ratio: number;
   indexer?: string;
+  // "native" when seedstrem added it, "adopted" when it was picked up
+  // from the download client by label.
+  origin?: string;
   // Seed time governing this torrent (its indexer's override when it has
   // one, else the global default), in seconds.
   seed_time: number;

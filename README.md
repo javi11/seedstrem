@@ -24,6 +24,12 @@ fetched when you press play. Seeding stays entirely in the client.
 - Fast in-stream seeking on Deluge via the bundled
   [Seedstream plugin](contrib/deluge-seedstream/) (libtorrent piece
   deadlines — something qBittorrent's API cannot do)
+- Adopts torrents you added by hand: label one with seedstrem's
+  category/label in your client (`downloader.adopt_labelled: true`) and it
+  becomes streamable through seedstrem. Adopted torrents obey the same
+  cleanup rules as any other, so the label also arms their seed-time
+  deletion; removing the label un-adopts them and leaves the torrent
+  alone. Deluge needs the Label plugin.
 - Web UI for setup and monitoring
 
 ## Quick start

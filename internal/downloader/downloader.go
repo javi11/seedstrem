@@ -37,6 +37,14 @@ type Client interface {
 	AddMagnet(ctx context.Context, magnet string, opts AddOptions) error
 	AddTorrentFile(ctx context.Context, raw []byte, opts AddOptions) error
 	Torrents(ctx context.Context, hashes []string) ([]TorrentInfo, error)
+
+	// TorrentsByLabel lists the client's torrents carrying label (a
+	// Deluge label, a qBittorrent category). Unlike Torrents it is a
+	// server-side filter, so it never returns torrents unrelated to
+	// seedstrem on a shared instance. An empty label returns no
+	// torrents. Backends that cannot filter by label — Deluge without
+	// the Label plugin — return ErrNotSupported.
+	TorrentsByLabel(ctx context.Context, label string) ([]TorrentInfo, error)
 	Torrent(ctx context.Context, hash string) (TorrentInfo, error)
 	Files(ctx context.Context, hash string) ([]FileInfo, error)
 	Properties(ctx context.Context, hash string) (Properties, error)

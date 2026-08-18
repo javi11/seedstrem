@@ -53,8 +53,8 @@ var (
 	reBracketNum = regexp.MustCompile(`\[0*(\d{1,4})\]`)
 )
 
-// isVideo reports whether name has a known video extension.
-func isVideo(name string) bool {
+// IsVideo reports whether name has a known video extension.
+func IsVideo(name string) bool {
 	return videoExts[strings.ToLower(path.Ext(name))]
 }
 
@@ -105,7 +105,7 @@ func PickFile(files []downloader.FileInfo, sel Selector) (int, error) {
 	best := -1
 	var bestSize int64 = -1
 	for _, f := range files {
-		if !isVideo(f.Name) || isSample(f.Name) {
+		if !IsVideo(f.Name) || isSample(f.Name) {
 			continue
 		}
 		if sel.IsSeries && !matchEpisode(f.Name, sel.Season, sel.Episode) {

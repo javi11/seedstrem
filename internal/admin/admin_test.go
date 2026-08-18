@@ -490,3 +490,34 @@ func TestTorrentsListingExposesSeedTimes(t *testing.T) {
 		t.Errorf("seeding_time = %v, want %d", got, 2*3600)
 	}
 }
+
+func TestTorrentsExposesOrigin(t *testing.T) {
+	// The UI distinguishes torrents seedstrem added from ones adopted out
+	// of the download client, so origin has to reach the client.
+	e := newEnv(t)
+	e.login(t)
+	if err := e.store.InsertTorrent(context.Background(), store.Torrent{
+		ID: "T1", Hash: "aaaa", Name: "adopted one", Phase: store.PhaseSelected,
+		AddedAt: 1, Origin: store.OriginAdopted,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	w := e.do(t, http.MethodGet, "/torrents", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var items []struct {
+		ID     string `json:"id"`
+		Origin string `json:"origin"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&items); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("got %d torrents, want 1", len(items))
+	}
+	if items[0].Origin != store.OriginAdopted {
+		t.Fatalf("origin = %q, want %q", items[0].Origin, store.OriginAdopted)
+	}
+}

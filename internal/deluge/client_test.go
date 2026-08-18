@@ -23,6 +23,8 @@ type fakeAPI struct {
 	piecesNil  map[string]bool
 	plugins    []string
 
+	byLabel map[string]map[string]*delugerpc.TorrentStatus
+
 	setFilePriorities map[string][]int
 	torrentOptions    []string
 
@@ -52,6 +54,15 @@ func (f *fakeAPI) TorrentStatus(_ context.Context, hash string) (*delugerpc.Torr
 		return nil, delugerpc.RPCError{ExceptionType: "InvalidTorrentError"}
 	}
 	return ts, nil
+}
+
+func (f *fakeAPI) TorrentsStatusByLabel(_ context.Context, label string) (map[string]*delugerpc.TorrentStatus, error) {
+	f.record("torrentsStatusByLabel %s", label)
+	out := map[string]*delugerpc.TorrentStatus{}
+	for hash, ts := range f.byLabel[label] {
+		out[hash] = ts
+	}
+	return out, nil
 }
 
 func (f *fakeAPI) TorrentsStatus(_ context.Context, _ delugerpc.TorrentState, ids []string) (map[string]*delugerpc.TorrentStatus, error) {

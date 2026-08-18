@@ -54,6 +54,21 @@ const (
 type Downloader struct {
 	// Type is "qbittorrent" (default) or "deluge".
 	Type string `yaml:"type"`
+	// AdoptLabelled brings torrents added directly in the download
+	// client under seedstrem's management when they carry its
+	// label/category. Off by default: an adopted torrent is swept by
+	// cleanup like any other, so enabling it is a deliberate choice.
+	AdoptLabelled bool `yaml:"adopt_labelled"`
+}
+
+// ClientLabel returns the label the active download client tags
+// seedstrem's torrents with — a Deluge label or a qBittorrent category
+// depending on Downloader.Type.
+func (c Config) ClientLabel() string {
+	if c.Downloader.Type == DownloaderDeluge {
+		return c.Deluge.Label
+	}
+	return c.QBittorrent.Category
 }
 
 // Deluge configures the connection to a Deluge 2 daemon (native RPC,
@@ -491,6 +506,7 @@ func applyEnv(cfg *Config, getenv func(string) string) {
 	setBool("ADDON_ENABLE_MOVIES", &cfg.Addon.EnableMovies)
 	setBool("ADDON_ENABLE_SERIES", &cfg.Addon.EnableSeries)
 	setBool("ADDON_ENABLE_ANIME", &cfg.Addon.EnableAnime)
+	setBool("DOWNLOADER_ADOPT_LABELLED", &cfg.Downloader.AdoptLabelled)
 	setBool("SEEDING_FULL", &cfg.Seeding.Full)
 	setBool("RSS_ENABLED", &cfg.RSS.Enabled)
 	setBool("RSS_FREELEECH_ONLY", &cfg.RSS.FreeleechOnly)

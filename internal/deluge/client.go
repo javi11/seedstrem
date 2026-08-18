@@ -25,6 +25,7 @@ type api interface {
 	Close() error
 	TorrentStatus(ctx context.Context, hash string) (*delugerpc.TorrentStatus, error)
 	TorrentsStatus(ctx context.Context, state delugerpc.TorrentState, ids []string) (map[string]*delugerpc.TorrentStatus, error)
+	TorrentsStatusByLabel(ctx context.Context, label string) (map[string]*delugerpc.TorrentStatus, error)
 	AddTorrentMagnet(ctx context.Context, magnetURI string, options *delugerpc.Options) (string, error)
 	AddTorrentFile(ctx context.Context, fileName, fileContentBase64 string, options *delugerpc.Options) (string, error)
 	RemoveTorrent(ctx context.Context, id string, rmFiles bool) (bool, error)
@@ -128,10 +129,15 @@ func (c *client) do(ctx context.Context, fn func(context.Context) error) error {
 // redials the daemon on every retry — during the first seconds after an
 // add, when the availability poller shares that same connection and the
 // playability grace is already running out.
+// ErrNotSupported belongs here for the same reason: it means the daemon
+// answered and lacks a capability (no Label plugin), which no amount of
+// redialling fixes — dropping the connection would only redial on every
+// scan.
 func isDaemonError(err error) bool {
 	return errors.As(err, new(delugerpc.RPCError)) ||
 		errors.Is(err, downloader.ErrTorrentNotFound) ||
-		errors.Is(err, downloader.ErrHintDeclined)
+		errors.Is(err, downloader.ErrHintDeclined) ||
+		errors.Is(err, downloader.ErrNotSupported)
 }
 
 func (c *client) cachedFlags(hash string) flags {
@@ -259,6 +265,38 @@ func (c *client) Torrents(ctx context.Context, hashes []string) ([]downloader.To
 		statuses, err := c.rpc.TorrentsStatus(ctx, delugerpc.StateUnspecified, lower)
 		if err != nil {
 			return fmt.Errorf("deluge list torrents: %w", err)
+		}
+		infos = make([]downloader.TorrentInfo, 0, len(statuses))
+		for hash, ts := range statuses {
+			info := convertTorrent(hash, ts)
+			f := c.cachedFlags(info.Hash)
+			info.SequentialDownload, info.FirstLastPiecePrio = f.seq, f.flp
+			infos = append(infos, info)
+		}
+		return nil
+	})
+	return infos, err
+}
+
+func (c *client) TorrentsByLabel(ctx context.Context, label string) ([]downloader.TorrentInfo, error) {
+	if label == "" {
+		return nil, nil
+	}
+	var infos []downloader.TorrentInfo
+	err := c.do(ctx, func(ctx context.Context) error {
+		plugins, err := c.rpc.GetEnabledPlugins(ctx)
+		if err != nil {
+			return fmt.Errorf("deluge enabled plugins: %w", err)
+		}
+		if !slices.Contains(plugins, "Label") {
+			// Without the Label plugin no torrent carries a label at
+			// all, so a label query cannot be answered — not even
+			// negatively.
+			return downloader.ErrNotSupported
+		}
+		statuses, err := c.rpc.TorrentsStatusByLabel(ctx, strings.ToLower(label))
+		if err != nil {
+			return fmt.Errorf("deluge list torrents by label: %w", err)
 		}
 		infos = make([]downloader.TorrentInfo, 0, len(statuses))
 		for hash, ts := range statuses {

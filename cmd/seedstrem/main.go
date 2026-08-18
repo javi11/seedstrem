@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/javib/seedstrem/internal/admin"
+	"github.com/javib/seedstrem/internal/adopt"
 	"github.com/javib/seedstrem/internal/cleanup"
 	"github.com/javib/seedstrem/internal/config"
 	"github.com/javib/seedstrem/internal/deluge"
@@ -159,6 +160,16 @@ func run() error {
 			IndexerSeedTimes: c.Cleanup.IndexerSeedTimes,
 		}
 	}, logger, 30*time.Minute).Run(cleanCtx)
+
+	adoptCtx, stopAdopt := context.WithCancel(context.Background())
+	defer stopAdopt()
+	go adopt.New(db, dc, func() adopt.Settings {
+		c := cm.Get()
+		return adopt.Settings{
+			Enabled: c.Downloader.AdoptLabelled,
+			Label:   c.ClientLabel(),
+		}
+	}, logger, time.Minute).Run(adoptCtx)
 
 	rssCtx, stopRSS := context.WithCancel(context.Background())
 	defer stopRSS()

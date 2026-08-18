@@ -13,6 +13,15 @@ downloader:
   # "deluge". Only the matching section below is used.
   type: "qbittorrent"
 
+  # Bring torrents you added directly in the download client under
+  # seedstrem's management when they carry the label/category configured
+  # below (qbittorrent.category / deluge.label). Adopted torrents are
+  # streamable and are swept by the cleanup rules like any other, so
+  # labelling a torrent also arms its seed-time deletion. Removing the
+  # label un-adopts it, leaving the torrent itself alone. Deluge needs
+  # the Label plugin.
+  adopt_labelled: false
+
 qbittorrent:
   # seedstrem talks to qBittorrent's WebUI API — the WebUI must be
   # enabled and reachable at this URL.

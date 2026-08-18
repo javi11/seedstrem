@@ -14,6 +14,15 @@ const (
 	PhaseSelected = "selected"
 )
 
+// Origin values for Torrent.Origin: how the torrent entered seedstrem.
+// Only OriginAdopted rows are removable by the label scan
+// (internal/adopt); OriginNative rows are created by seedstrem itself
+// and are never dropped for lacking a label.
+const (
+	OriginNative  = "native"
+	OriginAdopted = "adopted"
+)
+
 // ErrNotFound is returned when a torrent or link does not exist.
 var ErrNotFound = errors.New("not found")
 
@@ -36,14 +45,16 @@ type Torrent struct {
 	// Indexer is the Prowlarr indexer this torrent was grabbed from
 	// ("" when unknown), used by cleanup to pick a per-indexer seed time.
 	Indexer string
+	// Origin is OriginNative or OriginAdopted; see the Origin constants.
+	Origin string
 }
 
-const torrentCols = `id, hash, name, phase, added_at, magnet, error, content_source, content_ref, season, episode, indexer`
+const torrentCols = `id, hash, name, phase, added_at, magnet, error, content_source, content_ref, season, episode, indexer, origin`
 
 func scanTorrent(row interface{ Scan(...any) error }) (Torrent, error) {
 	var t Torrent
 	err := row.Scan(&t.ID, &t.Hash, &t.Name, &t.Phase, &t.AddedAt, &t.Magnet, &t.Error,
-		&t.ContentSource, &t.ContentRef, &t.Season, &t.Episode, &t.Indexer)
+		&t.ContentSource, &t.ContentRef, &t.Season, &t.Episode, &t.Indexer, &t.Origin)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Torrent{}, ErrNotFound
 	}
@@ -55,10 +66,14 @@ func scanTorrent(row interface{ Scan(...any) error }) (Torrent, error) {
 
 // InsertTorrent stores a new torrent row.
 func (s *Store) InsertTorrent(ctx context.Context, t Torrent) error {
+	origin := t.Origin
+	if origin == "" {
+		origin = OriginNative
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO torrents (`+torrentCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO torrents (`+torrentCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Hash, t.Name, t.Phase, t.AddedAt, t.Magnet, t.Error,
-		t.ContentSource, t.ContentRef, t.Season, t.Episode, t.Indexer)
+		t.ContentSource, t.ContentRef, t.Season, t.Episode, t.Indexer, origin)
 	if err != nil {
 		return fmt.Errorf("insert torrent %s: %w", t.ID, err)
 	}
@@ -273,4 +288,26 @@ func (s *Store) DeleteTorrent(ctx context.Context, id string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// AdoptedTorrents returns every torrent adopted from the download client
+// by label (Origin == OriginAdopted). The label scan uses it to find rows
+// whose label has since been removed.
+func (s *Store) AdoptedTorrents(ctx context.Context) ([]Torrent, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+torrentCols+` FROM torrents WHERE origin = ? ORDER BY added_at DESC`, OriginAdopted)
+	if err != nil {
+		return nil, fmt.Errorf("query adopted torrents: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Torrent
+	for rows.Next() {
+		t, err := scanTorrent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
