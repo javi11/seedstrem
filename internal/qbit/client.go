@@ -109,6 +109,7 @@ func convertTorrent(t qbt.Torrent) downloader.TorrentInfo {
 		SavePath:    t.SavePath,
 		ContentPath: t.ContentPath,
 		SeedingTime: time.Duration(t.SeedingTime) * time.Second,
+		AddedAt:     time.Unix(t.AddedOn, 0),
 
 		SequentialDownload: t.SequentialDownload,
 		FirstLastPiecePrio: t.FirstLastPiecePrio,
@@ -124,6 +125,23 @@ func (c *client) Torrents(ctx context.Context, hashes []string) ([]downloader.To
 	list, err := c.qb.GetTorrentsCtx(ctx, qbt.TorrentFilterOptions{Hashes: hashes})
 	if err != nil {
 		return nil, fmt.Errorf("qbit list torrents: %w", err)
+	}
+	infos := make([]downloader.TorrentInfo, 0, len(list))
+	for _, t := range list {
+		infos = append(infos, convertTorrent(t))
+	}
+	return infos, nil
+}
+
+func (c *client) TorrentsByLabel(ctx context.Context, label string) ([]downloader.TorrentInfo, error) {
+	if label == "" {
+		// An empty category means "uncategorised" to qBittorrent, which
+		// is not what a caller with no label configured is asking for.
+		return nil, nil
+	}
+	list, err := c.qb.GetTorrentsCtx(ctx, qbt.TorrentFilterOptions{Category: label})
+	if err != nil {
+		return nil, fmt.Errorf("qbit list torrents by category: %w", err)
 	}
 	infos := make([]downloader.TorrentInfo, 0, len(list))
 	for _, t := range list {

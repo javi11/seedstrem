@@ -25,6 +25,9 @@ type TorrentInfo struct {
 	// then relies on SavePath + file name.
 	ContentPath string
 	SeedingTime time.Duration // time spent seeding since the torrent finished
+	// AddedAt is when the download client took the torrent on. Zero when
+	// the backend does not report it.
+	AddedAt time.Time
 	// Streaming flags as currently in effect in the client. Read back so
 	// seedstrem can re-assert them when they were dropped or never stuck.
 	// Best-effort: backends that cannot read them back report false.

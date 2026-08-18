@@ -56,6 +56,7 @@ func convertTorrent(hash string, ts *delugerpc.TorrentStatus) downloader.Torrent
 		// live under SavePath with their final names.
 		ContentPath: "",
 		SeedingTime: time.Duration(ts.SeedingTime) * time.Second,
+		AddedAt:     time.Unix(int64(ts.TimeAdded), 0),
 	}
 	if ts.Hash != "" {
 		info.Hash = strings.ToLower(ts.Hash)

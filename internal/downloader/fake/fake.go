@@ -38,6 +38,7 @@ type Torrent struct {
 	SavePath    string
 	ContentPath string
 	SeedingTime time.Duration
+	AddedAt     time.Time
 	Files       []File
 
 	PieceSize   int64
@@ -65,6 +66,9 @@ type Server struct {
 	// ErrNotSupported so tests opt in to a capable backend explicitly.
 	freeSpace    int64
 	freeSpaceErr error
+	// byLabelErr is returned by TorrentsByLabel, so callers can be tested
+	// against an unreachable or incapable download client.
+	byLabelErr error
 }
 
 // SetHints sets the value returned by IncompleteFileHints.
@@ -227,6 +231,34 @@ func (s *Server) Torrents(_ context.Context, hashes []string) ([]downloader.Torr
 	return out, nil
 }
 
+// SetTorrentsByLabelErr makes TorrentsByLabel fail, so callers can be
+// tested against an unreachable or incapable download client.
+func (s *Server) SetTorrentsByLabelErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byLabelErr = err
+}
+
+// TorrentsByLabel returns the fake torrents whose Category matches label.
+func (s *Server) TorrentsByLabel(_ context.Context, label string) ([]downloader.TorrentInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.record("torrentsByLabel label=%s", label)
+	if label == "" {
+		return nil, nil
+	}
+	if s.byLabelErr != nil {
+		return nil, s.byLabelErr
+	}
+	var out []downloader.TorrentInfo
+	for _, t := range s.torrents {
+		if strings.EqualFold(t.Category, label) {
+			out = append(out, toTorrentInfo(t))
+		}
+	}
+	return out, nil
+}
+
 func (s *Server) Torrent(_ context.Context, hash string) (downloader.TorrentInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -251,6 +283,7 @@ func toTorrentInfo(t *Torrent) downloader.TorrentInfo {
 		SavePath:    t.SavePath,
 		ContentPath: t.ContentPath,
 		SeedingTime: t.SeedingTime,
+		AddedAt:     t.AddedAt,
 
 		SequentialDownload: t.SequentialDownload,
 		FirstLastPiecePrio: t.FirstLastPiecePrio,
