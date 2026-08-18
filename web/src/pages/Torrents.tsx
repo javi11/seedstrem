@@ -140,6 +140,11 @@ export function Torrents() {
                         {t.indexer && (
                           <div className="truncate text-xs opacity-60">⚙ {t.indexer}</div>
                         )}
+                        {t.origin === "adopted" && (
+                          <div className="truncate text-xs opacity-60">
+                            ⬇ adopted from download client
+                          </div>
+                        )}
                       </td>
                       <td>
                         <StatusBadge status={t.status} />
@@ -208,6 +213,9 @@ export function Torrents() {
                     {formatBytes(t.size)}
                   </span>
                   {t.indexer && <span className="truncate text-xs opacity-60">⚙ {t.indexer}</span>}
+                  {t.origin === "adopted" && (
+                    <span className="truncate text-xs opacity-60">⬇ adopted</span>
+                  )}
                 </div>
                 <div className="mt-3">
                   <ProgressCell progress={t.progress} />

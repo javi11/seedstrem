@@ -677,11 +677,14 @@ type torrentItem struct {
 	// SeedTime is the seed time governing THIS torrent (its indexer's
 	// override when it has one, else the global default), in seconds, so
 	// the UI's time-left readout matches what cleanup will actually do.
-	SeedTime    int64      `json:"seed_time"`
-	SeedingTime int64      `json:"seeding_time"`
-	AddedAt     int64      `json:"added_at"`
-	Error       string     `json:"error,omitempty"`
-	Links       []linkItem `json:"links"`
+	SeedTime    int64 `json:"seed_time"`
+	SeedingTime int64 `json:"seeding_time"`
+	AddedAt     int64 `json:"added_at"`
+	// Origin is "native" (seedstrem added it) or "adopted" (discovered in
+	// the download client by label).
+	Origin string     `json:"origin"`
+	Error  string     `json:"error,omitempty"`
+	Links  []linkItem `json:"links"`
 }
 
 type linkItem struct {
@@ -734,6 +737,7 @@ func (h *Handler) torrents(w http.ResponseWriter, r *http.Request) {
 			SeedTime:    int64(cfg.Cleanup.EffectiveSeedTime(tor.Indexer) / time.Second),
 			SeedingTime: int64(info.SeedingTime / time.Second),
 			AddedAt:     tor.AddedAt,
+			Origin:      tor.Origin,
 			Error:       tor.Error,
 			Links:       linkItems,
 		})
