@@ -379,3 +379,27 @@ func TestValidateDiskManagementFields(t *testing.T) {
 		})
 	}
 }
+
+func TestAdoptLabelledDefaultsOff(t *testing.T) {
+	// Adoption subjects a hand-added torrent to cleanup's delete rules,
+	// so an upgrade must never switch it on.
+	if Default().Downloader.AdoptLabelled {
+		t.Fatal("adopt_labelled defaults on, want off")
+	}
+}
+
+func TestClientLabelFollowsDownloaderType(t *testing.T) {
+	cfg := Default()
+
+	cfg.Downloader.Type = DownloaderQBittorrent
+	cfg.QBittorrent.Category = "qbit-cat"
+	if got := cfg.ClientLabel(); got != "qbit-cat" {
+		t.Fatalf("ClientLabel() = %q, want %q", got, "qbit-cat")
+	}
+
+	cfg.Downloader.Type = DownloaderDeluge
+	cfg.Deluge.Label = "deluge-label"
+	if got := cfg.ClientLabel(); got != "deluge-label" {
+		t.Fatalf("ClientLabel() = %q, want %q", got, "deluge-label")
+	}
+}
