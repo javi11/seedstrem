@@ -35,7 +35,7 @@ func TestTorrentCRUD(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	tor := Torrent{ID: "ABC123DEF4567", Hash: "aabbcc", Name: "test", Phase: PhaseAdded, AddedAt: 1000, Magnet: "magnet:?xt=..."}
+	tor := Torrent{ID: "ABC123DEF4567", Hash: "aabbcc", Name: "test", Phase: PhaseAdded, AddedAt: 1000, Magnet: "magnet:?xt=...", Origin: OriginNative}
 	if err := s.InsertTorrent(ctx, tor); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -85,6 +85,7 @@ func TestTorrentContentRoundTrip(t *testing.T) {
 	tor := Torrent{
 		ID: "CONTENT0000001", Hash: "hc", Phase: PhaseAdded, AddedAt: 1,
 		ContentSource: "tt", ContentRef: "tt0944947", Season: 1, Episode: 5,
+		Origin: OriginNative,
 	}
 	if err := s.InsertTorrent(ctx, tor); err != nil {
 		t.Fatalf("insert: %v", err)
