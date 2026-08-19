@@ -464,7 +464,14 @@ func (s *Service) StoredByHashes(ctx context.Context, hashes []string) map[strin
 // Remove deletes a torrent from qBittorrent and the local store. A torrent
 // already missing on either side is treated as already-removed, not an
 // error.
-func (s *Service) Remove(ctx context.Context, tor store.Torrent) error {
+//
+// ev records why the torrent went away. Callers supply the reason and the
+// evidence only they hold — cleanup knows the seed time it enforced, the
+// stream handler knows the progress threshold — while the torrent's
+// identity and whether files were deleted are filled in here. Taking the
+// event as a parameter makes it a compile error to add a removal path
+// without stating a reason.
+func (s *Service) Remove(ctx context.Context, tor store.Torrent, ev store.DeletionEvent) error {
 	deleteFiles := s.settings().DeleteFilesOnRemove
 	if err := s.dc.Delete(ctx, tor.Hash, deleteFiles); err != nil && !errors.Is(err, downloader.ErrTorrentNotFound) {
 		return fmt.Errorf("delete from download client: %w", err)
@@ -476,6 +483,18 @@ func (s *Service) Remove(ctx context.Context, tor store.Torrent) error {
 	delete(s.prioAsserted, tor.Hash)
 	delete(s.kickAsserted, tor.Hash)
 	s.prioMu.Unlock()
+
+	ev.TorrentID = tor.ID
+	ev.Hash = tor.Hash
+	ev.Name = tor.Name
+	ev.Indexer = tor.Indexer
+	ev.Origin = tor.Origin
+	ev.FilesDeleted = deleteFiles
+	// The removal itself succeeded; a failure to write the audit record
+	// must not be reported as a failed removal.
+	if err := s.store.RecordDeletion(ctx, ev); err != nil {
+		s.logger.Warn("could not record deletion", "id", tor.ID, "hash", tor.Hash, "error", err)
+	}
 	return nil
 }
 

@@ -127,12 +127,32 @@ func (c *Cleanup) Sweep(ctx context.Context) error {
 			"id", tor.ID, "hash", tor.Hash, "seedingTime", info.SeedingTime,
 			"indexer", tor.Indexer, "seedTime", s.EffectiveSeedTime(tor.Indexer),
 			"ratio", info.Ratio, "uploaded", info.Uploaded, "policy", s.DeletePolicy)
-		if err := c.svc.Remove(ctx, tor); err != nil {
+		if err := c.svc.Remove(ctx, tor, deletionEvent(info, s, tor.Indexer)); err != nil {
 			c.logger.Warn("cleanup: remove torrent", "id", tor.ID, "hash", tor.Hash, "error", err)
 		}
 		done()
 	}
 	return nil
+}
+
+// deletionEvent builds the audit record for a cleanup removal. Both
+// triggers can fire in the same pass; seed time takes precedence for the
+// reason, but both evidence pairs are recorded either way so the decision
+// stays reconstructible from the history alone.
+func deletionEvent(info downloader.TorrentInfo, s Settings, indexer string) store.DeletionEvent {
+	seedTime := s.EffectiveSeedTime(indexer)
+	reason := store.DeleteReasonRatio
+	if seedTime > 0 && info.SeedingTime >= seedTime {
+		reason = store.DeleteReasonSeedTime
+	}
+	return store.DeletionEvent{
+		Reason:      reason,
+		SeedingTime: info.SeedingTime,
+		SeedLimit:   seedTime,
+		Ratio:       info.Ratio,
+		RatioLimit:  s.TargetRatio,
+		Progress:    info.Progress,
+	}
 }
 
 // selectRemovals is the pure decision core: given the stored torrents, the

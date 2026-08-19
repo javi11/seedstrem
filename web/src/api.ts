@@ -188,6 +188,26 @@ export interface Torrent {
   links: TorrentLink[];
 }
 
+// Deletion is one entry of the 48h removal history. Durations are
+// seconds, matching Torrent.
+export interface Deletion {
+  id: string;
+  torrent_id: string;
+  hash: string;
+  name: string;
+  indexer: string;
+  origin: string;
+  deleted_at: number;
+  reason: string;
+  seeding_time: number;
+  seed_limit: number;
+  ratio: number;
+  ratio_limit: number;
+  progress: number;
+  progress_limit: number;
+  files_deleted: boolean;
+}
+
 export const api = {
   login: (password: string) => request<void>("POST", "/api/session", { password }),
   logout: () => request<void>("DELETE", "/api/session"),
@@ -230,6 +250,7 @@ export const api = {
     ),
   status: () => request<Status>("GET", "/api/status"),
   torrents: () => request<Torrent[]>("GET", "/api/torrents"),
+  deletions: () => request<Deletion[]>("GET", "/api/deletions"),
   deleteTorrent: (id: string) =>
     request<void>("DELETE", `/api/torrents/${encodeURIComponent(id)}`),
 };

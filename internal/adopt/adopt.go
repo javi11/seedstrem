@@ -199,6 +199,19 @@ func (a *Adopter) unadopt(ctx context.Context, labelled map[string]downloader.To
 			a.logger.Warn("adopt: could not un-adopt torrent", "id", tor.ID, "error", err)
 			continue
 		}
+		// This path bypasses torrents.Service, so it records its own
+		// removal. FilesDeleted stays false: only the store row goes
+		// away, and the torrent keeps seeding in the client.
+		if err := a.store.RecordDeletion(ctx, store.DeletionEvent{
+			TorrentID: tor.ID,
+			Hash:      tor.Hash,
+			Name:      tor.Name,
+			Indexer:   tor.Indexer,
+			Origin:    tor.Origin,
+			Reason:    store.DeleteReasonUnadopted,
+		}); err != nil {
+			a.logger.Warn("adopt: could not record un-adoption", "id", tor.ID, "error", err)
+		}
 		a.logger.Info("adopt: un-adopted torrent, label no longer set",
 			"id", tor.ID, "hash", tor.Hash)
 	}

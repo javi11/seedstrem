@@ -9,6 +9,7 @@ import { AppShell } from "./components/AppShell";
 import { Login } from "./pages/Login";
 import { Dashboard } from "./pages/Dashboard";
 import { Torrents } from "./pages/Torrents";
+import { History } from "./pages/History";
 import { Settings } from "./pages/Settings/Settings";
 
 // Apply the remembered theme before first paint to avoid a flash.
@@ -24,6 +25,7 @@ createRoot(document.getElementById("root")!).render(
             <Route element={<AppShell />}>
               <Route path="/" element={<Dashboard />} />
               <Route path="/torrents" element={<Torrents />} />
+              <Route path="/history" element={<History />} />
               <Route path="/settings" element={<Settings />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

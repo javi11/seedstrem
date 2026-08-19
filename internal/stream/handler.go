@@ -536,7 +536,11 @@ func (h *Handler) checkAbandoned(tor store.Torrent) {
 	}
 	defer done()
 
-	if err := h.svc.Remove(ctx, tor); err != nil {
+	if err := h.svc.Remove(ctx, tor, store.DeletionEvent{
+		Reason:        store.DeleteReasonAbandoned,
+		Progress:      info.Progress,
+		ProgressLimit: threshold,
+	}); err != nil {
 		h.logger.Warn("stream: remove abandoned torrent", "hash", tor.Hash, "error", err)
 		return
 	}

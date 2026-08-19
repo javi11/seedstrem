@@ -25,6 +25,7 @@ export function Sidebar({ theme, onToggleTheme, onLogout, onNavigate }: SidebarP
       <nav className="flex flex-col gap-1">
         <NavItem to="/" icon="▦" label="Dashboard" end onNavigate={onNavigate} />
         <NavItem to="/torrents" icon="↯" label="Torrents" onNavigate={onNavigate} />
+        <NavItem to="/history" icon="🗒" label="History" onNavigate={onNavigate} />
         <NavItem to="/settings" icon="⚙" label="Settings" onNavigate={onNavigate} />
       </nav>
 

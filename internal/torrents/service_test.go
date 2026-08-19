@@ -340,7 +340,7 @@ func TestRemove(t *testing.T) {
 		t.Fatalf("ensure added: %v", err)
 	}
 
-	if err := svc.Remove(ctx, tor); err != nil {
+	if err := svc.Remove(ctx, tor, store.DeletionEvent{Reason: store.DeleteReasonManual}); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 
@@ -363,7 +363,7 @@ func TestRemoveMissingFromqBittorrentIsNotAnError(t *testing.T) {
 	}
 	fakeDC.Remove(testHash) // simulate it having vanished from qBittorrent already
 
-	if err := svc.Remove(ctx, tor); err != nil {
+	if err := svc.Remove(ctx, tor, store.DeletionEvent{Reason: store.DeleteReasonManual}); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	if _, err := db.TorrentByID(ctx, tor.ID); !errors.Is(err, store.ErrNotFound) {
