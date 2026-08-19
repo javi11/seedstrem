@@ -77,6 +77,7 @@ func (h *Handler) Router() http.Handler {
 		r.Post("/config/prowlarr-indexers", h.prowlarrIndexers)
 		r.Get("/status", h.status)
 		r.Get("/torrents", h.torrents)
+		r.Get("/deletions", h.deletions)
 		r.Delete("/torrents/{id}", h.deleteTorrent)
 	})
 	return r
@@ -766,7 +767,7 @@ func (h *Handler) deleteTorrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.svc.Remove(ctx, tor); err != nil {
+	if err := h.svc.Remove(ctx, tor, store.DeletionEvent{Reason: store.DeleteReasonManual}); err != nil {
 		h.logger.Warn("admin: delete torrent failed", "id", id, "error", err)
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -842,4 +843,56 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// deletionItem is one row of the deletion history. Durations serialize as
+// seconds, matching torrentItem.
+type deletionItem struct {
+	ID            string  `json:"id"`
+	TorrentID     string  `json:"torrent_id"`
+	Hash          string  `json:"hash"`
+	Name          string  `json:"name"`
+	Indexer       string  `json:"indexer"`
+	Origin        string  `json:"origin"`
+	DeletedAt     int64   `json:"deleted_at"`
+	Reason        string  `json:"reason"`
+	SeedingTime   int64   `json:"seeding_time"`
+	SeedLimit     int64   `json:"seed_limit"`
+	Ratio         float64 `json:"ratio"`
+	RatioLimit    float64 `json:"ratio_limit"`
+	Progress      float64 `json:"progress"`
+	ProgressLimit float64 `json:"progress_limit"`
+	FilesDeleted  bool    `json:"files_deleted"`
+}
+
+// deletions returns the torrents removed within the retention window,
+// newest first, with the reason and the evidence behind each removal.
+func (h *Handler) deletions(w http.ResponseWriter, r *http.Request) {
+	records, err := h.store.Deletions(r.Context())
+	if err != nil {
+		h.logger.Warn("admin: list deletions", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "list deletions")
+		return
+	}
+	items := make([]deletionItem, 0, len(records))
+	for _, d := range records {
+		items = append(items, deletionItem{
+			ID:            d.ID,
+			TorrentID:     d.TorrentID,
+			Hash:          d.Hash,
+			Name:          d.Name,
+			Indexer:       d.Indexer,
+			Origin:        d.Origin,
+			DeletedAt:     d.DeletedAt,
+			Reason:        d.Reason,
+			SeedingTime:   int64(d.SeedingTime / time.Second),
+			SeedLimit:     int64(d.SeedLimit / time.Second),
+			Ratio:         d.Ratio,
+			RatioLimit:    d.RatioLimit,
+			Progress:      d.Progress,
+			ProgressLimit: d.ProgressLimit,
+			FilesDeleted:  d.FilesDeleted,
+		})
+	}
+	writeJSON(w, http.StatusOK, items)
 }
