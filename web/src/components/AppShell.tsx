@@ -7,6 +7,7 @@ import { OfflineBanner } from "./OfflineBanner";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Skeleton } from "./Skeleton";
 import { NavigationGuardProvider } from "./NavigationGuard";
+import logo from "../assets/logo.png";
 
 // The authenticated application shell: left sidebar on desktop, a top bar +
 // slide-in drawer on mobile, plus app-wide offline and session-expired handling.
@@ -73,9 +74,7 @@ export function AppShell() {
           ☰
         </button>
         <span className="flex items-center gap-2 font-bold tracking-brand">
-          <span className="grid h-7 w-7 place-items-center rounded-field bg-gradient-to-br from-primary to-accent text-sm">
-            🌱
-          </span>
+          <img src={logo} alt="seedstrem" className="h-7 w-7 rounded-field" />
           seedstrem
         </span>
       </div>

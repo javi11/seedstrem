@@ -1,5 +1,6 @@
 import { ThemeName } from "../lib/theme";
 import { NavItem } from "./NavItem";
+import logo from "../assets/logo.png";
 
 interface SidebarProps {
   theme: ThemeName;
@@ -16,9 +17,7 @@ export function Sidebar({ theme, onToggleTheme, onLogout, onNavigate }: SidebarP
   return (
     <div className="flex h-full w-64 flex-col gap-1 bg-base-100 p-3">
       <div className="mb-4 flex items-center gap-2.5 px-2 py-2">
-        <span className="grid h-9 w-9 place-items-center rounded-field bg-gradient-to-br from-primary to-accent text-lg shadow-md">
-          🌱
-        </span>
+        <img src={logo} alt="seedstrem" className="h-9 w-9 rounded-field shadow-md" />
         <span className="text-lg font-bold tracking-brand">seedstrem</span>
       </div>
 
