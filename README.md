@@ -1,4 +1,8 @@
-# 🌱 seedstrem
+<p align="center">
+  <img src="docs/assets/logo.png" alt="seedstrem" width="120">
+</p>
+
+# seedstrem
 
 A self-hosted **Stremio addon** that searches your **Prowlarr** indexers and
 streams the chosen torrent through your download client — **qBittorrent**
